@@ -1,0 +1,6 @@
+# Map atmosphere and coastal art
+
+- `clouds.png` is a resized Wikimedia thumbnail of GabrielGGD's [Transparent Clouds Map Without North America](https://commons.wikimedia.org/wiki/File:Transparent_Clouds_Map_Without_North_America.png), [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Its original transparency is retained; only the outer edges were faded for scrolling.
+- `waves.png` uses frame 00 of the `waves3` heightmap from zookeeper's [Seamless looping waves heightmaps](https://lpc.opengameart.org/content/seamless-looping-waves-heightmaps), [CC0](https://creativecommons.org/publicdomain/zero/1.0/). The sourced grayscale image was converted to faint blue highlights and shadows and repeated four times in each direction. Motion is supplied by the map renderer.
+- `ripples.png` uses frame 000 of the directional `waves5` heightmap from the same CC0 source. `scripts/build-water-ripples.py` verifies the downloaded archive and maps its wave heights to transparent highlights and shadows. Two drifting layers become visible as the map zooms in.
+- `coastal-gradient.png` is generated from the rendered map geometry by `scripts/build-coast-gradient.py`. It fades the shallow-water tint smoothly into the deep sea.

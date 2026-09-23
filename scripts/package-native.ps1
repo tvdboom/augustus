@@ -1,0 +1,60 @@
+[CmdletBinding()]
+param(
+    [string]$Target = "",
+    [string]$Channel = "",
+    [string]$OutputDirectory = "dist",
+    [string]$BinaryPath = "",
+    [switch]$SkipBuild
+)
+
+$ErrorActionPreference = "Stop"
+$repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$outputRoot = [System.IO.Path]::GetFullPath((Join-Path $repository $OutputDirectory))
+
+if (-not $Target) {
+    $Target = (rustc -vV | Select-String '^host: ' | ForEach-Object { $_.Line.Substring(6) }).Trim()
+}
+if (-not $Channel) {
+    $Channel = if ($Target -match 'windows') { 'windows' } elseif ($Target -match 'apple-darwin') { 'mac' } else { 'linux' }
+}
+if ($Channel -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+    throw "Package channel must contain only letters, digits, hyphens, and underscores."
+}
+if (-not (Test-Path -LiteralPath (Join-Path $repository "assets-runtime/.augustus-assets") -PathType Leaf)) {
+    throw "Runtime assets are missing. Install KTX-Software 4.x and run 'just assets' before packaging."
+}
+$stage = Join-Path $outputRoot "augustus-$Channel"
+$archive = Join-Path $outputRoot "augustus-$Channel.zip"
+
+. (Join-Path $PSScriptRoot "common.ps1")
+
+Assert-PackagePath -Repository $repository -Path $stage
+Assert-PackagePath -Repository $repository -Path $archive
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+if (Test-Path -LiteralPath $stage) {
+    Remove-Item -LiteralPath $stage -Recurse -Force
+}
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+Set-Location $repository
+Set-HeavyProcessLimits
+if (-not $SkipBuild) {
+    Invoke-Checked { cargo build --release --target $Target --bin augustus -j12 }
+}
+
+if (-not $BinaryPath) {
+    $executable = if ($Target -match 'windows') { 'augustus.exe' } else { 'augustus' }
+    $BinaryPath = Join-Path $repository "target/$Target/release/$executable"
+}
+Copy-Item -LiteralPath (Resolve-Path $BinaryPath) -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository "assets-runtime") -Destination $stage -Recurse
+New-Item -ItemType Directory -Path (Join-Path $stage "assets/images") -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repository "assets/images/icons") -Destination (Join-Path $stage "assets/images/icons") -Recurse
+Copy-Item -LiteralPath (Join-Path $repository "LICENSE") -Destination $stage
+Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stage
+
+if (Test-Path -LiteralPath $archive) {
+    Remove-Item -LiteralPath $archive -Force
+}
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
+Write-Host "Created $archive"

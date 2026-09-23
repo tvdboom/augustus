@@ -1,0 +1,171 @@
+name: Augustus validation and packaging
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "12"
+
+jobs:
+  quality:
+    name: Check Augustus shell and assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux libraries
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libudev-dev pkg-config libx11-dev libxi-dev
+          libxcursor-dev libxrandr-dev libxkbcommon-dev
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check Augustus executable
+        run: cargo check --package augustus --bin augustus -j12
+      - name: Run Clippy
+        run: cargo clippy --package augustus --bin augustus -j12 -- -D warnings
+      - name: Install KTX-Software
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/KhronosGroup/KTX-Software/releases/download/v4.4.2/KTX-Software-4.4.2-Linux-x86_64.deb \
+            --output "$RUNNER_TEMP/ktx-software.deb"
+          echo "ca635ed489d8bf54fac8d7687056c651193de0740830a7738cc034adc63e3027  $RUNNER_TEMP/ktx-software.deb" | sha256sum --check
+          sudo apt-get install -y "$RUNNER_TEMP/ktx-software.deb"
+      - name: Generate runtime assets
+        run: cargo run --features asset-pipeline --bin build-assets -j12 -- --jobs 12
+      - name: Verify package cleanup paths
+        run: bash tests/scripts/packaging.sh
+      - name: Verify generated runtime assets
+        run: cargo run --features asset-pipeline --bin build-assets -j12 -- --check --jobs 12
+      - name: Share verified runtime assets with packaging jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-assets
+          path: assets-runtime/
+          include-hidden-files: true
+          compression-level: 0
+          if-no-files-found: error
+
+  wasm:
+    name: WebAssembly
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install matching wasm-bindgen CLI
+        run: |
+          version="$(tr -d '[:space:]' < scripts/wasm-bindgen-version.txt)"
+          cargo install wasm-bindgen-cli --version "$version" --locked -j12
+      - name: Build and package HTML5 bundle
+        run: bash scripts/package-web.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: augustus-html
+          path: dist/augustus-html.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  native:
+    name: Native ${{ matrix.channel }}
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            channel: windows
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            channel: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libasound2-dev libudev-dev pkg-config libx11-dev libxi-dev
+          libxcursor-dev libxrandr-dev libxkbcommon-dev zip
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/scripts/packaging.ps1
+          ./scripts/package-native.ps1 -Target '${{ matrix.target }}' -Channel '${{ matrix.channel }}'
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          CHANNEL: ${{ matrix.channel }}
+        run: bash scripts/package-native.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: augustus-${{ matrix.channel }}
+          path: dist/augustus-${{ matrix.channel }}.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  macos:
+    name: Native macOS universal
+    needs: quality
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: runtime-assets
+          path: assets-runtime/
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both macOS architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin --bin augustus -j12
+          cargo build --release --target x86_64-apple-darwin --bin augustus -j12
+          mkdir -p dist
+          lipo -create \
+            target/aarch64-apple-darwin/release/augustus \
+            target/x86_64-apple-darwin/release/augustus \
+            -output dist/augustus-universal
+          chmod +x dist/augustus-universal
+      - name: Package universal binary
+        env:
+          TARGET: aarch64-apple-darwin
+          CHANNEL: mac
+          BINARY_PATH: ${{ github.workspace }}/dist/augustus-universal
+          SKIP_BUILD: "1"
+        run: bash scripts/package-native.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: augustus-mac
+          path: dist/augustus-mac.zip
+          compression-level: 0
+          if-no-files-found: error

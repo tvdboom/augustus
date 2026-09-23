@@ -1,0 +1,14 @@
+# IDE
+.idea/
+.vscode/
+.spyproject/
+
+target/
+
+dist/
+assets-runtime/
+
+node_modules/
+
+__pycache__/
+*.pyc
