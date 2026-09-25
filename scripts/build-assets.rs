@@ -1,4 +1,4 @@
-//! Reproducible `assets` to `assets-runtime` conversion and copy pipeline.
+//! Builds the external assets loaded from disk; embedded artwork stays in `assets`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
@@ -89,9 +89,8 @@ fn run() -> Result<(), String> {
         match source.extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
             Some(extension)
                 if extension == "ogg"
-                    || extension == "ttf"
-                    || extension == "ico"
-                    || (extension == "png" && relative.starts_with("images/icons/")) =>
+                    || relative == "images/icons/augustus.png"
+                    || relative == "images/icons/augustus.ico" =>
             {
                 let destination = runtime_root.join(&relative_path);
                 expected.insert(
@@ -104,7 +103,10 @@ fn run() -> Result<(), String> {
                 );
                 copies.push((source, destination, relative.clone(), relative));
             },
-            Some(extension) if matches!(extension.as_str(), "png" | "jpg" | "jpeg") => {
+            Some(extension)
+                if matches!(extension.as_str(), "png" | "jpg" | "jpeg")
+                    && relative.starts_with("images/bg/") =>
+            {
                 let mut destination_relative = relative_path.clone();
                 destination_relative.set_extension("basisu.ktx2");
                 let destination_name = normalized(&destination_relative)?;
@@ -125,8 +127,14 @@ fn run() -> Result<(), String> {
                     mipmaps: should_generate_mipmaps(&relative),
                 });
             },
-            // These are map inputs/documentation; only atlas.json is compiled into the app.
-            Some(extension) if matches!(extension.as_str(), "geojson" | "json" | "md") => {},
+            // UI/map artwork, gameplay icons, the font, and generated map JSON
+            // are embedded with include_bytes!/include_str!. Keep their sources,
+            // map-generation inputs, and documentation out of runtime packages.
+            Some(extension)
+                if matches!(
+                    extension.as_str(),
+                    "png" | "jpg" | "jpeg" | "ttf" | "geojson" | "json" | "md"
+                ) => {},
             Some(extension) => {
                 return Err(format!("unsupported source asset extension .{extension}: {relative}"));
             },
@@ -283,7 +291,7 @@ fn parse_options() -> Result<Options, String> {
             "-h" | "--help" => {
                 println!(
                     "Usage: build-assets [--check] [--force] [--jobs 1..={MAX_JOBS}]\n\
-                     Converts source images to UASTC/Zstd KTX2, copies icon images/ICO files, fonts, and audio incrementally."
+                     Converts wallpapers to UASTC/Zstd KTX2 and copies application icons and audio incrementally."
                 );
                 std::process::exit(0);
             },

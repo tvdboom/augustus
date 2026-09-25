@@ -30,8 +30,6 @@ fi
 wasm-bindgen "$repository/target/wasm32-unknown-unknown/wasm-release/augustus.wasm" \
   --target web --out-dir "$stage" --out-name augustus --no-typescript
 cp "$repository/web/index.html" "$repository/LICENSE" "$repository/README.md" "$stage/"
-mkdir -p "$stage/assets/images"
-cp -R "$repository/assets/images/icons" "$stage/assets/images/icons"
 cp -R "$repository/assets-runtime" "$stage/assets-runtime"
 
 rm -f -- "$archive"

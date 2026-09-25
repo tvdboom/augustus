@@ -48,8 +48,6 @@ Invoke-Checked {
 }
 
 Copy-Item -LiteralPath (Join-Path $repository "web/index.html") -Destination $stage
-New-Item -ItemType Directory -Path (Join-Path $stage "assets/images") -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $repository "assets/images/icons") -Destination (Join-Path $stage "assets/images/icons") -Recurse
 Copy-Item -LiteralPath (Join-Path $repository "assets-runtime") -Destination $stage -Recurse
 Copy-Item -LiteralPath (Join-Path $repository "LICENSE") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stage

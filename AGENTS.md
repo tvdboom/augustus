@@ -4,7 +4,10 @@ This repository currently implements the menu-first Augustus shell, an offline l
 
 ## Structure
 
-- `src/app.rs`: menu, lobby preview, audio controls, and app states.
+- `src/app.rs`: app states, shared resources, and Bevy system registration.
+- `src/menu/`: menu screens, forms, wallpapers, and menu audio.
+- `src/ui/`: map HUD, panels, notifications, and circular audio controls.
+- `src/game/`: local resource simulation and game shortcuts.
 - `src/map/map.rs`: historical province map and navigation.
 - `src/multiplayer/`: lobby preview contract and Supabase integration boundary.
 - `src/platform/config.rs`: public Supabase configuration; never put a service-role key in the client.

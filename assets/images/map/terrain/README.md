@@ -1,0 +1,5 @@
+# Terrain portraits
+
+These 12 PNG portraits came from the [Imperator Wiki terrain table](https://imperator.paradoxwikis.com/Territories#Terrain) on 25 September 2026. Each filename matches its wiki file page: `desert.png` comes from `File:Terrain_desert_big.png`, and likewise for farmland, forest, hills, impassable, jungle, marsh, mountain, plains, coastal, ocean, and river. The land portraits are the original 735 × 92 images rather than the 400 × 50 thumbnails. Some originals were retrieved through the [Internet Archive](https://web.archive.org/) when the wiki's image server returned a client challenge. Land provinces currently use seven of these portraits; the remaining images are retained as the complete terrain set from the page.
+
+The images are copyrighted by Paradox Interactive. The [file page](https://imperator.paradoxwikis.com/File:Terrain_desert_big.png) says the wiki has permission to use them and that use elsewhere may infringe copyright. Confirm redistribution rights before publishing a build containing these portraits.

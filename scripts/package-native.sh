@@ -38,8 +38,6 @@ executable="augustus"
 binary_path="${BINARY_PATH:-$repository/target/$target/release/$executable}"
 cp "$binary_path" "$stage/"
 cp -R "$repository/assets-runtime" "$stage/assets-runtime"
-mkdir -p "$stage/assets/images"
-cp -R "$repository/assets/images/icons" "$stage/assets/images/icons"
 cp "$repository/LICENSE" "$repository/README.md" "$stage/"
 rm -f -- "$archive"
 (cd "$stage" && zip -qr "$archive" .)

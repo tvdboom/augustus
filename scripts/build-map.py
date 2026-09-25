@@ -25,18 +25,19 @@ GEOD = Geod(ellps="WGS84")
 MIN_ISLAND_AREA_KM2 = 316  # Approximate area of Malta, including its smaller islands.
 MALTA = Point(14.45, 35.91)
 REGIONS = {
-    "I": ("Latium et Campania", "Latium"),
-    "II": ("Apulia et Calabria", "Apulia"),
-    "III": ("Lucania et Bruttii", "Lucania"),
-    "IV": ("Samnium", "Samnium"),
-    "V": ("Picenum", "Picenum"),
-    "VI": ("Umbria et Ager Gallicus", "Umbria"),
-    "VII": ("Etruria", "Etruria"),
-    "VIII": ("Aemilia", "Aemilia"),
-    "IX": ("Liguria", "Liguria"),
-    "X": ("Venetia et Histria", "Venetia"),
-    "XI": ("Transpadana", "Transpadana"),
+    "I": "Latium",
+    "II": "Apulia",
+    "III": "Lucania",
+    "IV": "Samnium",
+    "V": "Picenum",
+    "VI": "Umbria",
+    "VII": "Etruria",
+    "VIII": "Aemilia",
+    "IX": "Liguria",
+    "X": "Venetia",
+    "XI": "Transpadana",
 }
+CRETA_CYRENE = "Creta et Cyrene"
 
 
 def mesh(polygon):
@@ -76,21 +77,37 @@ def main():
     province_shapes = []
     for feature in source["features"]:
         original = feature["properties"]["name"]
-        name, short = REGIONS.get(original, (original, original))
         geometry = shape(feature["geometry"])
         parts = [part for part in polygons(geometry) if keep_land_part(part)]
-        visible_geometry = unary_union(parts)
-        province_shapes.append(visible_geometry)
-        label = labels[original]
-        if not visible_geometry.covers(Point(label)):
-            label = list(visible_geometry.representative_point().coords[0])
-        provinces.append({
-            "name": name,
-            "short": short,
-            "label": [round(value, 5) for value in label],
-            "bounds": [round(value, 5) for value in visible_geometry.bounds],
-            "parts": [mesh(part) for part in parts],
-        })
+        if original == CRETA_CYRENE:
+            # The source combines mainland Cyrenaica with Crete. Its islands
+            # lie north of the gap at 34° N, so assign each retained polygon
+            # to one independently selectable province.
+            cyrenaica_parts = [part for part in parts if part.bounds[3] < 34]
+            creta_parts = [part for part in parts if part.bounds[1] > 34]
+            assert cyrenaica_parts and creta_parts
+            assert len(cyrenaica_parts) + len(creta_parts) == len(parts)
+            groups = [
+                ("Cyrenaica", cyrenaica_parts, labels[original]),
+                ("Creta", creta_parts, None),
+            ]
+        else:
+            full_name = REGIONS.get(original, original)
+            name = full_name.split(" et ", 1)[0]
+            groups = [(name, parts, labels[original])]
+
+        for name, province_parts, label in groups:
+            visible_geometry = unary_union(province_parts)
+            province_shapes.append(visible_geometry)
+            if label is None or not visible_geometry.covers(Point(label)):
+                label = list(visible_geometry.representative_point().coords[0])
+            provinces.append({
+                "name": name,
+                "short": name,
+                "label": [round(value, 5) for value in label],
+                "bounds": [round(value, 5) for value in visible_geometry.bounds],
+                "parts": [mesh(part) for part in province_parts],
+            })
 
     land_source = json.loads((MAP / "world-land.geojson").read_text(encoding="utf-8"))
     frame = box(-35, 5, 70, 70)
@@ -115,11 +132,27 @@ def main():
         for part in land_shapes
         if part.area < 0.2 and part.intersects(province_footprint)
     ]
+    backdrop_only = backdrop.difference(province_footprint)
     coastal_slivers = (
-        backdrop.difference(province_footprint)
+        backdrop_only
         .intersection(province_footprint.buffer(0.35))
         .intersection(backdrop.boundary.buffer(0.35))
     )
+    # Natural Earth fills the Guadalquivir estuary farther out than the DARE
+    # Baetica shore. Its separate backdrop polygon must be removed completely;
+    # the distance-based trim otherwise leaves a pale strip in the water.
+    guadalquivir = next(
+        part for part in polygons(backdrop_only) if part.covers(Point(-5.93, 37.16))
+    )
+    coastal_slivers = coastal_slivers.union(guadalquivir)
+
+    # The same trim mistakes the southern edge of Mauretania Tingitana for a
+    # shoreline near Rabat and cuts a water notch into the Moroccan mainland.
+    # Preserve that one connected piece of the Natural Earth coast.
+    rabat_mainland = next(
+        part for part in polygons(coastal_slivers) if part.covers(Point(-6.8, 33.95))
+    )
+    coastal_slivers = coastal_slivers.difference(rabat_mainland)
     land = []
     for part in land_shapes:
         # Apply the same coastline cleanup to islands. Their two source

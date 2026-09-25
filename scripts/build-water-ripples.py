@@ -32,7 +32,13 @@ def main() -> None:
             pixels.append((20, 58, 86, min(65, (124 - height) * 2)))
     ripples = Image.new("RGBA", heightmap.size)
     ripples.putdata(pixels)
-    ripples.save(OUTPUT, optimize=True)
+    # One map tile contains four source repeats per axis. This preserves the
+    # fine wave scale while keeping the renderer's tile count manageable.
+    tiled = Image.new("RGBA", (heightmap.width * 4, heightmap.height * 4))
+    for row in range(4):
+        for column in range(4):
+            tiled.paste(ripples, (column * heightmap.width, row * heightmap.height))
+    tiled.save(OUTPUT, optimize=True)
     print(OUTPUT)
 
 
