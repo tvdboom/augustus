@@ -4,6 +4,7 @@
 
 pub mod app;
 pub(crate) mod basis_texture;
+pub mod game;
 pub(crate) mod map;
 pub mod multiplayer;
 pub mod platform;

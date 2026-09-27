@@ -2,14 +2,14 @@
 
 use super::*;
 
-pub(super) const MAP_MENU_ICONS: [(&str, &[u8]); 4] = [
+pub(in crate::app) const MAP_MENU_ICONS: [(&str, &[u8]); 4] = [
     ("Governance", include_bytes!("../../assets/images/ui/map-menu/laws.png")),
     ("Military", include_bytes!("../../assets/images/ui/map-menu/military.png")),
     ("Trade", include_bytes!("../../assets/images/ui/map-menu/trade.png")),
     ("Politics", include_bytes!("../../assets/images/ui/map-menu/politics.png")),
 ];
 
-pub(super) fn map_menu_icon(
+pub(in crate::app) fn map_menu_icon(
     ctx: &egui::Context,
     textures: &mut [Option<egui::TextureHandle>; 4],
     index: usize,
@@ -52,12 +52,12 @@ pub(super) fn map_menu_icon(
         .clone()
 }
 
-pub(super) fn draw_map_left_menu(
+pub(in crate::app) fn draw_map_left_menu(
     ctx: &egui::Context,
     scale: f32,
     textures: &mut [Option<egui::TextureHandle>; 4],
     interactive: bool,
-) -> bool {
+) -> Option<usize> {
     let screen = ctx.content_rect();
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
@@ -65,7 +65,7 @@ pub(super) fn draw_map_left_menu(
     ));
     let standard_height = map_standard_height(screen, scale);
     if standard_height - MAP_STANDARD_FLAG_HEIGHT < 260.0 {
-        return false;
+        return None;
     }
     // Centers of the four cloth panels, measured between the thin seams in
     // player-standard-*.png. The edge frame maps source y 20..1684 to the rail.
@@ -73,7 +73,7 @@ pub(super) fn draw_map_left_menu(
     // The visible cloth is centered at x=29 after the standard's transparent
     // edge is mapped to the rail; the 64-pixel hitbox extends farther right.
     const CLOTH_CENTER_X: f32 = 29.0;
-    let mut governance_clicked = false;
+    let mut governance_clicked = None;
     for (index, (name, _)) in MAP_MENU_ICONS.iter().enumerate() {
         let icon = map_menu_icon(ctx, textures, index);
         let center_y = (PANEL_CENTERS[index] - 20.0) / (1684.0 - 20.0) * standard_height;
@@ -117,8 +117,8 @@ pub(super) fn draw_map_left_menu(
                 false,
             )
         };
-        if index == 0 && clicked {
-            governance_clicked = true;
+        if clicked {
+            governance_clicked = Some(index);
         }
         let icon_size = icon.size_vec2() / icon.size_vec2().max_elem() * 44.0 * scale;
         painter.image(
@@ -137,23 +137,23 @@ pub(super) fn draw_map_left_menu(
     governance_clicked
 }
 
-pub(super) const MAP_STANDARD_WIDTH: f32 = 146.0;
-pub(super) const MAP_STANDARD_RAIL_IMAGE_WIDTH: f32 = 120.0;
-pub(super) const MAP_STANDARD_RAIL_WIDTH: f32 = 64.0;
-pub(super) const MAP_STANDARD_FLAG_HEIGHT: f32 = 245.0;
-pub(super) const MAP_RESOURCE_STRIP_LEFT: f32 = MAP_STANDARD_WIDTH - 2.0;
-pub(super) const MAP_RESOURCE_STRIP_HEIGHT: f32 = 48.0;
-pub(super) const MAP_DATE_SECTION_WIDTH: f32 = 230.0;
+pub(in crate::app) const MAP_STANDARD_WIDTH: f32 = 146.0;
+pub(in crate::app) const MAP_STANDARD_RAIL_IMAGE_WIDTH: f32 = 120.0;
+pub(in crate::app) const MAP_STANDARD_RAIL_WIDTH: f32 = 64.0;
+pub(in crate::app) const MAP_STANDARD_FLAG_HEIGHT: f32 = 245.0;
+pub(in crate::app) const MAP_RESOURCE_STRIP_LEFT: f32 = MAP_STANDARD_WIDTH - 2.0;
+pub(in crate::app) const MAP_RESOURCE_STRIP_HEIGHT: f32 = 48.0;
+pub(in crate::app) const MAP_DATE_SECTION_WIDTH: f32 = 230.0;
 
-pub(super) fn map_standard_height(screen: egui::Rect, scale: f32) -> f32 {
+pub(in crate::app) fn map_standard_height(screen: egui::Rect, scale: f32) -> f32 {
     (screen.height() / scale - 35.0).clamp(300.0, 842.0)
 }
 
-pub(super) fn map_resource_strip_right(screen: egui::Rect, scale: f32) -> f32 {
+pub(in crate::app) fn map_resource_strip_right(screen: egui::Rect, scale: f32) -> f32 {
     (screen.width() / scale - 170.0).max(310.0)
 }
 
-pub(super) fn map_resource_strip_visible(screen: egui::Rect, scale: f32) -> bool {
+pub(in crate::app) fn map_resource_strip_visible(screen: egui::Rect, scale: f32) -> bool {
     map_resource_strip_right(screen, scale) > MAP_RESOURCE_STRIP_LEFT + MAP_DATE_SECTION_WIDTH
 }
 
@@ -171,7 +171,7 @@ pub(crate) fn map_hud_contains(screen: egui::Rect, pointer: egui::Pos2) -> bool 
             && local.y < MAP_RESOURCE_STRIP_HEIGHT)
 }
 
-pub(super) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
+pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
     let screen = ctx.content_rect();
     let rail_height = map_standard_height(screen, scale) - MAP_STANDARD_FLAG_HEIGHT;
     let strip_right = map_resource_strip_right(screen, scale);
@@ -213,7 +213,7 @@ pub(super) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
     }
 }
 
-pub(super) fn map_date_hitbox(
+pub(in crate::app) fn map_date_hitbox(
     ctx: &egui::Context,
     scale: f32,
     id: &'static str,
@@ -242,7 +242,10 @@ pub(super) fn map_date_hitbox(
         .inner
 }
 
-pub(super) fn load_player_standard(ctx: &egui::Context, color_index: usize) -> egui::TextureHandle {
+pub(in crate::app) fn load_player_standard(
+    ctx: &egui::Context,
+    color_index: usize,
+) -> egui::TextureHandle {
     let (name, png) = PLAYER_STANDARDS[color_index];
     let mut rgba =
         image::load_from_memory(png).expect("player standard PNG must be valid").to_rgba8();

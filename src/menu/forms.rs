@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn menu_form(
+pub(in crate::app) fn menu_form(
     ui: &mut egui::Ui,
     id: &str,
     title: &str,
@@ -28,7 +28,7 @@ pub(super) fn menu_form(
     ui.add_space(FORM_ACTION_GAP);
 }
 
-pub(super) fn card_frame() -> egui::Frame {
+pub(in crate::app) fn card_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_unmultiplied(31, 20, 18, 232))
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(190, 143, 94, 115)))
@@ -36,7 +36,7 @@ pub(super) fn card_frame() -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(18, 12))
 }
 
-pub(super) fn code_card_heading(
+pub(in crate::app) fn code_card_heading(
     ui: &mut egui::Ui,
     label: &str,
     tooltip: &str,
@@ -62,7 +62,7 @@ pub(super) fn code_card_heading(
     copied
 }
 
-pub(super) fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) -> bool {
+pub(in crate::app) fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     response.widget_info(|| {
@@ -89,7 +89,7 @@ pub(super) fn copy_icon_button(ui: &mut egui::Ui, value: &str, label: &str) -> b
     response.clicked()
 }
 
-pub(super) fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
+pub(in crate::app) fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::hover());
     let center = rect.center();
     let color = if response.hovered() {
@@ -111,7 +111,7 @@ pub(super) fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
     });
 }
 
-pub(super) fn form_option_card(
+pub(in crate::app) fn form_option_card(
     ui: &mut egui::Ui,
     label: &str,
     tooltip: &str,
@@ -128,7 +128,7 @@ pub(super) fn form_option_card(
     });
 }
 
-pub(super) fn editable_form_card(
+pub(in crate::app) fn editable_form_card(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut String,
@@ -157,7 +157,7 @@ pub(super) fn editable_form_card(
     });
 }
 
-pub(super) fn menu_submit_pressed(ui: &egui::Ui) -> bool {
+pub(in crate::app) fn menu_submit_pressed(ui: &egui::Ui) -> bool {
     ui.input_mut(|input| {
         let mut pressed = false;
         input.events.retain(|event| {
@@ -180,11 +180,11 @@ pub(super) fn menu_submit_pressed(ui: &egui::Ui) -> bool {
     })
 }
 
-pub(super) fn menu_paste_target_id() -> egui::Id {
+pub(in crate::app) fn menu_paste_target_id() -> egui::Id {
     egui::Id::new("augustus_menu_paste_target")
 }
 
-pub(super) fn request_menu_paste(ui: &egui::Ui, target: egui::Id) {
+pub(in crate::app) fn request_menu_paste(ui: &egui::Ui, target: egui::Id) {
     #[cfg(target_arch = "wasm32")]
     if !call_browser_clipboard_function("augustusRequestPaste", None)
         .and_then(|result| result.as_bool())
@@ -195,7 +195,10 @@ pub(super) fn request_menu_paste(ui: &egui::Ui, target: egui::Id) {
     ui.ctx().data_mut(|data| data.insert_temp(menu_paste_target_id(), target));
 }
 
-pub(super) fn apply_pending_menu_paste(context: &egui::Context, _clipboard: &mut EguiClipboard) {
+pub(in crate::app) fn apply_pending_menu_paste(
+    context: &egui::Context,
+    _clipboard: &mut EguiClipboard,
+) {
     let Some(target) = context.data(|data| data.get_temp::<egui::Id>(menu_paste_target_id()))
     else {
         return;
@@ -218,7 +221,7 @@ pub(super) fn apply_pending_menu_paste(context: &egui::Context, _clipboard: &mut
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn take_browser_paste_result() -> Option<Result<String, ()>> {
+pub(in crate::app) fn take_browser_paste_result() -> Option<Result<String, ()>> {
     let result = call_browser_clipboard_function("augustusTakePaste", None)?;
     if let Some(text) = result.as_string() {
         Some(Ok(text))
@@ -230,7 +233,7 @@ pub(super) fn take_browser_paste_result() -> Option<Result<String, ()>> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn call_browser_clipboard_function(
+pub(in crate::app) fn call_browser_clipboard_function(
     name: &str,
     argument: Option<&str>,
 ) -> Option<wasm_bindgen::JsValue> {

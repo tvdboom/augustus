@@ -1,6 +1,26 @@
 //! Tests for application state and UI integration.
 
 use super::*;
+
+#[test]
+fn selected_local_house_color_reaches_players_and_province_headers() {
+    let mut practice = LocalPractice {
+        color_index: 4,
+        player_count: 4,
+        ..Default::default()
+    };
+    let mut ownership = ProvinceOwnership::default();
+    practice.start_new_game(&mut ownership);
+    assert_eq!(practice.players.iter().map(|p| p.color_index).collect::<Vec<_>>(), [4, 5, 0, 1]);
+    for (id, province) in ownership.campaign_seeds().iter().enumerate() {
+        if let Some(owner) = province.owner {
+            assert_eq!(
+                ownership.province_overview(id).unwrap().owner_color,
+                Some(PLAYER_COLORS[practice.players[owner].color_index])
+            );
+        }
+    }
+}
 use bevy::ecs::system::{IntoSystem, System};
 
 #[test]
@@ -209,7 +229,7 @@ fn left_menu_stays_clickable_after_the_rail_is_clicked() {
     frame(vec![egui::Event::PointerMoved(rail), pointer(rail, true)]);
     frame(vec![pointer(rail, false)]);
     frame(vec![egui::Event::PointerMoved(governance), pointer(governance, true)]);
-    assert!(frame(vec![pointer(governance, false)]));
+    assert_eq!(frame(vec![pointer(governance, false)]), Some(0));
 }
 
 #[test]

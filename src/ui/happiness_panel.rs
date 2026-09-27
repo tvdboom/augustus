@@ -21,7 +21,7 @@ fn happiness_color(value: f64) -> egui::Color32 {
     }
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     screen: egui::Rect,
     scale: f32,

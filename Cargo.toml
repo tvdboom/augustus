@@ -65,6 +65,9 @@ web-sys = { version = "0.3.105", features = ["Window"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 winit = "0.30.13"
 
+[build-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
 # Keep moderate optimization in local Bevy development builds.
 [profile.dev]
 opt-level = 1

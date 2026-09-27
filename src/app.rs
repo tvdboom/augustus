@@ -1,52 +1,20 @@
 //! Augustus application state, shared resources, and system registration.
 
-#[path = "ui/city_panel.rs"]
-mod city_panel;
-#[path = "ui/coin_panel.rs"]
-mod coin_panel;
-#[path = "ui/flow_panel.rs"]
-mod flow_panel;
-#[path = "ui/governance_panel.rs"]
-mod governance_panel;
-#[path = "ui/happiness_panel.rs"]
-mod happiness_panel;
-#[path = "ui/influence_panel.rs"]
-mod influence_panel;
-#[path = "ui/population_panel.rs"]
-mod population_panel;
-#[path = "ui/province_panel.rs"]
-mod province_panel;
-#[path = "ui/resource_panel.rs"]
-mod resource_panel;
-#[path = "ui/toasts.rs"]
-mod toasts;
+#[path = "menu/mod.rs"]
+mod menu;
+#[path = "ui/mod.rs"]
+mod ui;
+use menu::*;
+use ui::*;
 
-#[path = "ui/audio_controls.rs"]
-mod audio_controls;
+#[path = "game/campaign.rs"]
+pub(crate) mod campaign;
+#[path = "game/campaign_espionage.rs"]
+mod campaign_espionage;
+#[path = "game/campaign_notifications.rs"]
+mod campaign_notifications;
 #[path = "game/controls.rs"]
 mod game_controls;
-#[path = "ui/hud.rs"]
-mod hud;
-#[path = "ui/map_edge.rs"]
-mod map_edge;
-#[path = "ui/map_menu.rs"]
-mod map_menu;
-#[path = "menu/audio.rs"]
-mod menu_audio;
-#[path = "menu/background.rs"]
-mod menu_background;
-#[path = "menu/controls.rs"]
-mod menu_controls;
-#[path = "menu/forms.rs"]
-mod menu_forms;
-#[path = "menu/render.rs"]
-mod menu_render;
-#[path = "menu/screens.rs"]
-mod menu_screens;
-#[path = "ui/rank_hud.rs"]
-mod rank_hud;
-#[path = "ui/resource_hud.rs"]
-mod resource_hud;
 #[path = "game/resources.rs"]
 mod resource_simulation;
 
@@ -311,6 +279,7 @@ struct MapPanelParams<'w> {
     governance: ResMut<'w, GovernancePanelOpen>,
     province: ResMut<'w, ProvincePanelOpen>,
     close_click: ResMut<'w, MapPanelCloseClick>,
+    campaign_ui: ResMut<'w, campaign_panel::CampaignUi>,
 }
 
 const SECONDS_PER_MONTH: f32 = 3.0;
@@ -440,6 +409,8 @@ impl Plugin for AugustusPlugin {
             .init_resource::<GamePaused>()
             .init_resource::<GameClock>()
             .init_resource::<HudResources>()
+            .init_resource::<campaign::Campaign>()
+            .init_resource::<campaign_panel::CampaignUi>()
             .init_resource::<GovernancePanelOpen>()
             .init_resource::<ProvincePanelOpen>()
             .init_resource::<MapPanelCloseClick>()
@@ -464,11 +435,19 @@ impl Plugin for AugustusPlugin {
                 Update,
                 (
                     advance_game_time,
+                    campaign::sync_campaign,
                     toasts::watch_warnings,
                     toasts::play_pending_sounds,
                     toasts::advance,
                 )
                     .chain(),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                campaign_widgets::configure_style
+                    .before(draw_menu)
+                    .before(draw_map_hud)
+                    .before(draw_audio_controls),
             )
             .add_systems(
                 EguiPrimaryContextPass,
@@ -478,7 +457,13 @@ impl Plugin for AugustusPlugin {
             .add_systems(EguiPrimaryContextPass, draw_audio_controls.run_if(audio_controls_visible))
             .add_systems(
                 EguiPrimaryContextPass,
-                (draw_map_hud, draw_governance_panel, draw_province_panel, draw_map_resources)
+                (
+                    draw_map_hud,
+                    draw_governance_panel,
+                    draw_province_panel,
+                    campaign_panel::draw,
+                    draw_map_resources,
+                )
                     .chain()
                     .run_if(game_ui_visible),
             )
@@ -574,5 +559,5 @@ pub fn window_resolution() -> WindowResolution {
 }
 
 #[cfg(test)]
-#[path = "app_tests.rs"]
+#[path = "../tests/unit/app.rs"]
 mod tests;

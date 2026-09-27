@@ -2,15 +2,15 @@
 
 use super::*;
 
-pub(super) const RANKS: [&str; 6] =
+pub(in crate::app) const RANKS: [&str; 6] =
     ["Quaestor", "Aedile", "Praetor", "Censor", "Consul", "Augustus"];
-pub(super) const RANK_LADDER_TOP_FRACTION: f32 = 0.13;
+pub(in crate::app) const RANK_LADDER_TOP_FRACTION: f32 = 0.13;
 // Centers of the six crossbars in rank-scepter-v2.png, from top to bottom.
-pub(super) const RANK_SLOT_CENTERS: [f32; 6] = [0.222, 0.330, 0.439, 0.548, 0.657, 0.766];
+pub(in crate::app) const RANK_SLOT_CENTERS: [f32; 6] = [0.222, 0.330, 0.439, 0.548, 0.657, 0.766];
 // Each promotion illuminates the next crossbar and the shaft below it.
-pub(super) const RANK_LIGHT_START: [f32; 6] = [0.711, 0.602, 0.493, 0.384, 0.276, 0.0];
+pub(in crate::app) const RANK_LIGHT_START: [f32; 6] = [0.711, 0.602, 0.493, 0.384, 0.276, 0.0];
 
-pub(super) fn draw_rank_ladder(
+pub(in crate::app) fn draw_rank_ladder(
     ctx: &egui::Context,
     scale: f32,
     active_rank: usize,
@@ -98,7 +98,7 @@ pub(super) fn draw_rank_ladder(
         });
 }
 
-pub(super) fn load_rank_scepter(ctx: &egui::Context) -> egui::TextureHandle {
+pub(in crate::app) fn load_rank_scepter(ctx: &egui::Context) -> egui::TextureHandle {
     let image = image::load_from_memory(RANK_SCEPTER)
         .expect("rank scepter PNG must be valid")
         .resize_exact(512, 768, image::imageops::FilterType::Lanczos3)
@@ -113,7 +113,7 @@ pub(super) fn load_rank_scepter(ctx: &egui::Context) -> egui::TextureHandle {
     )
 }
 
-pub(super) fn draw_practice_players(
+pub(in crate::app) fn draw_practice_players(
     ctx: &egui::Context,
     scale: f32,
     practice: &mut LocalPractice,
@@ -218,7 +218,7 @@ pub(super) fn draw_practice_players(
         });
 }
 
-pub(super) fn rank_texture(
+pub(in crate::app) fn rank_texture(
     ctx: &egui::Context,
     textures: &mut [Option<egui::TextureHandle>; 6],
     index: usize,

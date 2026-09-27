@@ -1,4 +1,4 @@
-//! Short-lived map notices, following Stellarion's stacked and actionable toast pattern.
+//! Short-lived, stacked and actionable Augustus map notices.
 
 use std::collections::VecDeque;
 
@@ -19,19 +19,23 @@ const LOW_FOOD: f64 = 10.0;
 const LOW_COIN: f64 = 25.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ToastLevel {
+pub(in crate::app) enum ToastLevel {
     Info,
     Warning,
     Error,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ToastAction {
+pub(in crate::app) enum ToastAction {
     OpenGovernance,
+    OpenProvince(usize),
+    FocusWonder(usize),
+    /// Navigate to a province's evidence controls or the global Senate inventory.
+    OpenEvidence(Option<usize>),
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Toast {
+pub(in crate::app) struct Toast {
     text: String,
     level: ToastLevel,
     action: Option<ToastAction>,
@@ -39,16 +43,16 @@ pub(super) struct Toast {
 }
 
 impl Toast {
-    pub(super) fn info(text: impl Into<String>) -> Self {
+    pub(in crate::app) fn info(text: impl Into<String>) -> Self {
         Self::new(text, ToastLevel::Info)
     }
 
-    pub(super) fn warning(text: impl Into<String>) -> Self {
+    pub(in crate::app) fn warning(text: impl Into<String>) -> Self {
         Self::new(text, ToastLevel::Warning)
     }
 
     #[allow(dead_code)]
-    pub(super) fn error(text: impl Into<String>) -> Self {
+    pub(in crate::app) fn error(text: impl Into<String>) -> Self {
         Self::new(text, ToastLevel::Error)
     }
 
@@ -61,17 +65,19 @@ impl Toast {
         }
     }
 
-    pub(super) fn with_action(mut self, action: ToastAction) -> Self {
+    pub(in crate::app) fn with_action(mut self, action: ToastAction) -> Self {
         self.action = Some(action);
         self
     }
 }
 
 #[derive(Resource, Default)]
-pub(super) struct ToastQueue(VecDeque<Toast>, [bool; 3]);
+pub(in crate::app) struct ToastQueue(VecDeque<Toast>, [bool; 3]);
 
 impl ToastQueue {
-    pub(super) fn push(&mut self, toast: Toast) {
+    pub(in crate::app) fn push(&mut self, toast: Toast) {
+        // Domain notification IDs and WarningWatch own deduplication. Text alone
+        // cannot distinguish a fresh relapse after recovery from the old warning.
         self.1[toast.level as usize] = true;
         self.0.push_back(toast);
         while self.0.len() > MAX_TOASTS {
@@ -79,14 +85,14 @@ impl ToastQueue {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(in crate::app) fn clear(&mut self) {
         self.0.clear();
         self.1 = [false; 3];
     }
 }
 
-/// Plays at most one Stellarion cue of each severity for each update.
-pub(super) fn play_pending_sounds(
+/// Plays at most one shared audio cue of each severity for each update.
+pub(in crate::app) fn play_pending_sounds(
     mut toasts: ResMut<ToastQueue>,
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
@@ -108,7 +114,7 @@ pub(super) fn play_pending_sounds(
 
 /// Tracks active warnings so a prolonged shortage produces one toast until it recovers.
 #[derive(Resource, Default)]
-pub(super) struct WarningWatch {
+pub(in crate::app) struct WarningWatch {
     player: Option<usize>,
     active: [bool; 6],
     announced_game: bool,
@@ -162,7 +168,7 @@ fn warning_conditions(resources: [HudResource; 7], happiness: [HudResource; 4]) 
     warnings
 }
 
-pub(super) fn watch_warnings(
+pub(in crate::app) fn watch_warnings(
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
     practice: Res<LocalPractice>,
@@ -184,7 +190,7 @@ pub(super) fn watch_warnings(
     watch.observe(player, current, resources.happiness_for(player), &mut toasts);
 }
 
-pub(super) fn advance(
+pub(in crate::app) fn advance(
     time: Res<Time>,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
@@ -199,12 +205,15 @@ pub(super) fn advance(
     toasts.0.retain(|toast| toast.seconds_left > 0.0);
 }
 
-pub(super) fn draw(
+pub(in crate::app) fn draw(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
     mut toasts: ResMut<ToastQueue>,
     mut governance_open: ResMut<GovernancePanelOpen>,
+    mut province_open: ResMut<super::ProvincePanelOpen>,
+    mut campaign_ui: ResMut<super::campaign_panel::CampaignUi>,
+    mut map_view: ResMut<crate::map::MapView>,
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
@@ -272,80 +281,27 @@ pub(super) fn draw(
     if let Some((index, action)) = clicked {
         toasts.0.remove(index);
         match action {
-            ToastAction::OpenGovernance => governance_open.0 = true,
+            ToastAction::OpenGovernance => {
+                governance_open.0 = true;
+                campaign_ui.open = Some(super::campaign_panel::CampaignTab::Governance);
+            },
+            ToastAction::OpenProvince(id) => {
+                province_open.0 = Some(super::MapDetail::Province(id));
+                map_view.focus_province(id);
+            },
+            ToastAction::FocusWonder(id) => map_view.focus_wonder(id),
+            ToastAction::OpenEvidence(province) => {
+                campaign_ui.open_evidence(province);
+                if let Some(province) = province {
+                    province_open.0 = Some(super::MapDetail::Province(province));
+                    map_view.focus_province(province);
+                }
+            },
         }
         play_click(&sound, &audio, &assets);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn resource(amount: f64, monthly_delta: f64) -> HudResource {
-        HudResource {
-            amount,
-            monthly_delta,
-        }
-    }
-
-    #[test]
-    fn happiness_warnings_use_strict_class_thresholds() {
-        let mut happiness = [resource(50.0, 0.0); 4];
-        let resources = [resource(100.0, 1.0); 7];
-        happiness[0].amount = 40.0;
-        happiness[1].amount = 30.0;
-        happiness[2].amount = 20.0;
-        happiness[3].amount = 10.0;
-        assert_eq!(warning_conditions(resources, happiness), [false; 6]);
-        for class in 0..4 {
-            happiness[class].amount -= 0.1;
-        }
-        assert_eq!(
-            warning_conditions(resources, happiness),
-            [true, true, true, true, false, false]
-        );
-    }
-
-    #[test]
-    fn shortages_use_three_month_forecast_and_require_nonpositive_net() {
-        let happiness = [resource(50.0, 0.0); 4];
-        let mut resources = [resource(100.0, 1.0); 7];
-        resources[0] = resource(30.0, -10.0);
-        resources[3] = resource(24.0, 0.0);
-        assert_eq!(warning_conditions(resources, happiness)[4..], [true, true]);
-        resources[0].amount = 30.1;
-        resources[3].monthly_delta = 1.0;
-        assert_eq!(warning_conditions(resources, happiness)[4..], [false, false]);
-    }
-
-    #[test]
-    fn warning_only_repeats_after_recovery() {
-        let mut watch = WarningWatch::default();
-        let mut toasts = ToastQueue::default();
-        let mut resources = [resource(100.0, 1.0); 7];
-        let happiness = [resource(50.0, 0.0); 4];
-        resources[0] = resource(9.0, 0.0);
-        watch.observe(0, resources, happiness, &mut toasts);
-        assert_eq!(toasts.0.len(), 2); // Welcome info and food warning.
-        watch.observe(0, resources, happiness, &mut toasts);
-        assert_eq!(toasts.0.len(), 2);
-        resources[0].amount = 20.0;
-        watch.observe(0, resources, happiness, &mut toasts);
-        resources[0].amount = 9.0;
-        watch.observe(0, resources, happiness, &mut toasts);
-        assert_eq!(toasts.0.len(), 3);
-    }
-
-    #[test]
-    fn queued_toasts_request_one_sound_per_severity() {
-        let mut toasts = ToastQueue::default();
-        toasts.push(Toast::warning("First warning"));
-        toasts.push(Toast::warning("Second warning"));
-        toasts.push(Toast::info("Information"));
-        toasts.push(Toast::error("Failure"));
-        assert_eq!(toasts.1, [true, true, true]);
-        toasts.clear();
-        assert_eq!(toasts.1, [false; 3]);
-    }
-}
+#[path = "../../tests/unit/toasts.rs"]
+mod tests;

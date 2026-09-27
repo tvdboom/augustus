@@ -37,6 +37,10 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
+# Run every Rust test target, including topic files under tests/unit.
+test:
+    cargo test --package augustus --all-targets -j{{ jobs }}
+
 lint:
     cargo clippy --package augustus --bin augustus -j{{ jobs }} -- -D warnings
 
@@ -49,7 +53,7 @@ assets-force:
 assets-check:
     cargo run --package augustus --features asset-pipeline --bin build-assets -j{{ jobs }} -- --check --jobs {{ asset_jobs }}
 
-ci: fmt-check lint assets-check check-wasm packaging-check
+ci: fmt-check lint test assets-check check-wasm packaging-check
 
 packaging-check:
     {{ packaging_check_command }}

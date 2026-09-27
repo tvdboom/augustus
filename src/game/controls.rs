@@ -12,6 +12,11 @@ pub(super) fn handle_escape(
     if !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
+    if panels.campaign_ui.open.take().is_some() {
+        panels.province.0 = None;
+        panels.governance.0 = false;
+        return;
+    }
     if dismiss_map_panel_on_escape(*state.get(), &mut panels.governance, &mut panels.province) {
         return;
     }
@@ -97,6 +102,8 @@ pub(super) fn reset_game_time(
     game: Res<ActiveGame>,
     practice: Res<LocalPractice>,
     ownership: Res<ProvinceOwnership>,
+    mut campaign: ResMut<campaign::Campaign>,
+    mut campaign_ui: ResMut<campaign_panel::CampaignUi>,
 ) {
     paused.0 = false;
     governance_open.0 = false;
@@ -105,8 +112,11 @@ pub(super) fn reset_game_time(
     *warning_watch = toasts::WarningWatch::default();
     *clock = GameClock::default();
     *resources = HudResources::default();
+    *campaign_ui = campaign_panel::CampaignUi::default();
+    *campaign = campaign::Campaign::default();
     if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
         resources.start_players(practice.players.len(), &ownership);
+        campaign.start(&ownership, practice.players.len());
     }
 }
 
@@ -118,11 +128,18 @@ pub(super) fn advance_game_time(
     mut resources: ResMut<HudResources>,
     game: Res<ActiveGame>,
     mut ownership: ResMut<ProvinceOwnership>,
+    mut campaign: ResMut<campaign::Campaign>,
 ) {
     if !paused.0 && matches!(*state.get(), AppState::Map | AppState::EmptyScreen) {
         let months = clock.advance(time.delta_secs());
         if months > 0 {
-            resources.advance(months, &mut ownership, *game == ActiveGame::LocalPractice);
+            if campaign.active {
+                for _ in 0..months {
+                    campaign.advance_month();
+                }
+            } else {
+                resources.advance(months, &mut ownership, *game == ActiveGame::LocalPractice);
+            }
         }
     }
 }

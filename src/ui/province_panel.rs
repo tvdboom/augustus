@@ -2,18 +2,18 @@
 
 use bevy_egui::egui;
 
-use super::{format_hud_number, HUD_RESOURCE_ICONS, POP_CLASS_ICONS};
+use super::format_hud_number;
 use crate::map::{paint_marker_icon, MarkerIcon, ProvinceOverview};
 
-pub(super) const WIDTH: f32 = 500.0;
-pub(super) const HEIGHT: f32 = 468.0;
-pub(super) const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
+pub(in crate::app) const WIDTH: f32 = 500.0;
+pub(in crate::app) const HEIGHT: f32 = 468.0;
+pub(in crate::app) const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
 const DISABLED_INK: egui::Color32 = egui::Color32::from_rgb(151, 142, 129);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(112, 91, 71);
-pub(super) const RULE: egui::Color32 = egui::Color32::from_rgb(191, 171, 143);
-pub(super) const PAPER: egui::Color32 = egui::Color32::from_rgb(238, 233, 219);
-pub(super) const TABLE_STRIPE: egui::Color32 = egui::Color32::from_rgb(244, 239, 225);
-pub(super) const NEUTRAL: egui::Color32 = egui::Color32::from_rgb(205, 208, 207);
+pub(in crate::app) const RULE: egui::Color32 = egui::Color32::from_rgb(191, 171, 143);
+pub(in crate::app) const PAPER: egui::Color32 = egui::Color32::from_rgb(238, 233, 219);
+pub(in crate::app) const TABLE_STRIPE: egui::Color32 = egui::Color32::from_rgb(244, 239, 225);
+pub(in crate::app) const NEUTRAL: egui::Color32 = egui::Color32::from_rgb(205, 208, 207);
 
 const TERRAIN_IMAGES: [(&str, &[u8]); 12] = [
     ("desert", include_bytes!("../../assets/images/map/terrain/desert.png")),
@@ -31,67 +31,63 @@ const TERRAIN_IMAGES: [(&str, &[u8]); 12] = [
 ];
 
 const DIPLOMACY_ICONS: [(&str, &[u8]); 4] = [
-    ("spy", include_bytes!("../../assets/images/icons/spy.png")),
-    ("trade", include_bytes!("../../assets/images/icons/trade.png")),
-    ("court-nobles", include_bytes!("../../assets/images/icons/court-nobles.png")),
-    ("attack", include_bytes!("../../assets/images/icons/attack.png")),
+    ("spy", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/spy.png"))),
+    ("trade", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/trade.png"))),
+    ("court-nobles", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/court-nobles.png"))),
+    ("attack", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/attack.png"))),
 ];
 
-pub(super) fn load_terrain_images(context: &egui::Context) -> [egui::TextureHandle; 12] {
+const POPULATION_ICONS: [&[u8]; 4] = [
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/nobles.png")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/civilians.png")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/plebeians.png")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/slaves.png")),
+];
+
+const RESOURCE_ICONS: [&[u8]; 3] = [
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/food.png")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/metal.png")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/stone.png")),
+];
+
+pub(in crate::app) fn load_terrain_images(context: &egui::Context) -> [egui::TextureHandle; 12] {
     std::array::from_fn(|index| load_image(context, TERRAIN_IMAGES[index], "province-terrain"))
 }
 
-pub(super) fn load_population_icons(context: &egui::Context) -> [egui::TextureHandle; 4] {
+pub(in crate::app) fn load_population_icons(context: &egui::Context) -> [egui::TextureHandle; 4] {
     std::array::from_fn(|index| {
         load_panel_icon(
             context,
-            ("population", POP_CLASS_ICONS[index]),
+            ("population", POPULATION_ICONS[index]),
             &format!("province-pop-{index}"),
         )
     })
 }
 
-pub(super) fn load_resource_icons(context: &egui::Context) -> [egui::TextureHandle; 3] {
+pub(in crate::app) fn load_resource_icons(context: &egui::Context) -> [egui::TextureHandle; 3] {
     std::array::from_fn(|index| {
         load_panel_icon(
             context,
-            ("resource", HUD_RESOURCE_ICONS[index]),
+            ("resource", RESOURCE_ICONS[index]),
             &format!("province-resource-{index}"),
         )
     })
 }
 
-pub(super) fn load_diplomacy_icons(context: &egui::Context) -> [egui::TextureHandle; 4] {
+pub(in crate::app) fn load_diplomacy_icons(context: &egui::Context) -> [egui::TextureHandle; 4] {
     std::array::from_fn(|index| {
         load_panel_icon(context, DIPLOMACY_ICONS[index], &format!("province-action-{index}"))
     })
 }
 
-pub(super) fn load_panel_icon(
+pub(in crate::app) fn load_panel_icon(
     context: &egui::Context,
     asset: (&str, &[u8]),
     prefix: &str,
 ) -> egui::TextureHandle {
-    let mut rgba =
-        image::load_from_memory(asset.1).expect("province icon PNG must be valid").to_rgba8();
-    // Egui uses bilinear sampling without mipmaps. Upload a filtered icon close
-    // to its on-screen size instead of minifying the 1254px source in one pass.
-    for pixel in rgba.pixels_mut() {
-        let alpha = u16::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
-        }
-    }
-    let mut small = image::imageops::resize(&rgba, 64, 64, image::imageops::FilterType::Lanczos3);
-    for pixel in small.pixels_mut() {
-        let alpha = u16::from(pixel[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = (u16::from(*channel) * 255 + alpha / 2)
-                .checked_div(alpha)
-                .unwrap_or_default()
-                .min(255) as u8;
-        }
-    }
+    let small =
+        image::load_from_memory(asset.1).expect("prepared panel icon PNG must be valid").to_rgba8();
+    debug_assert_eq!((small.width(), small.height()), (64, 64));
     context.load_texture(
         format!("{prefix}-{}", asset.0),
         egui::ColorImage::from_rgba_unmultiplied([64, 64], small.as_raw()),
@@ -99,13 +95,20 @@ pub(super) fn load_panel_icon(
     )
 }
 
-pub(super) fn load_image(
+pub(in crate::app) fn load_image(
     context: &egui::Context,
     asset: (&str, &[u8]),
     prefix: &str,
 ) -> egui::TextureHandle {
-    let rgba =
+    let mut rgba =
         image::load_from_memory(asset.1).expect("province panel PNG must be valid").to_rgba8();
+    let max_side = context.input(|input| input.max_texture_side).max(1) as u32;
+    if rgba.width() > max_side || rgba.height() > max_side {
+        let longest_side = rgba.width().max(rgba.height()) as u64;
+        let width = (rgba.width() as u64 * max_side as u64 / longest_side).max(1) as u32;
+        let height = (rgba.height() as u64 * max_side as u64 / longest_side).max(1) as u32;
+        rgba = image::imageops::resize(&rgba, width, height, image::imageops::FilterType::Lanczos3);
+    }
     context.load_texture(
         format!("{prefix}-{}", asset.0),
         egui::ColorImage::from_rgba_unmultiplied(
@@ -116,15 +119,18 @@ pub(super) fn load_image(
     )
 }
 
-pub(super) fn load_spqr_emblem(context: &egui::Context) -> egui::TextureHandle {
+pub(in crate::app) fn load_spqr_emblem(context: &egui::Context) -> egui::TextureHandle {
     load_panel_icon(
         context,
-        ("spqr-eagle-gold", include_bytes!("../../assets/images/ui/spqr-eagle-gold.png")),
+        (
+            "spqr-eagle-gold",
+            include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/spqr-eagle-gold.png")),
+        ),
         "province-owner",
     )
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     scale: f32,
     province: &ProvinceOverview,
@@ -471,12 +477,16 @@ fn section(painter: &egui::Painter, position: egui::Pos2, title: &str, scale: f3
     );
 }
 
-pub(super) enum NavigationIcon<'a> {
+pub(in crate::app) enum NavigationIcon<'a> {
     City,
     Province(&'a egui::TextureHandle),
 }
 
-pub(super) fn navigation_badge_width(painter: &egui::Painter, label: &str, scale: f32) -> f32 {
+pub(in crate::app) fn navigation_badge_width(
+    painter: &egui::Painter,
+    label: &str,
+    scale: f32,
+) -> f32 {
     let text_width = painter
         .layout_no_wrap(
             label.to_owned(),
@@ -489,7 +499,7 @@ pub(super) fn navigation_badge_width(painter: &egui::Painter, label: &str, scale
     (text_width + 35.0).clamp(105.0, 225.0)
 }
 
-pub(super) fn navigation_badge(
+pub(in crate::app) fn navigation_badge(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -556,13 +566,5 @@ pub(super) fn navigation_badge(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn land_portraits_use_original_resolution() {
-        for (name, bytes) in super::TERRAIN_IMAGES.iter().take(9) {
-            let image = image::load_from_memory(bytes).expect("terrain portrait must be valid");
-            assert_eq!(image.width(), 735, "{name}");
-            assert_eq!(image.height(), 92, "{name}");
-        }
-    }
-}
+#[path = "../../tests/unit/province_ui.rs"]
+mod tests;

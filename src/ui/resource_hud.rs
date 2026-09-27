@@ -2,7 +2,10 @@
 
 use super::*;
 
-pub(super) fn load_hud_resource_icon(ctx: &egui::Context, index: usize) -> egui::TextureHandle {
+pub(in crate::app) fn load_hud_resource_icon(
+    ctx: &egui::Context,
+    index: usize,
+) -> egui::TextureHandle {
     let image = image::load_from_memory(HUD_RESOURCE_ICONS[index])
         .expect("HUD resource PNG must be valid")
         .resize_exact(128, 128, image::imageops::FilterType::Lanczos3)
@@ -17,7 +20,10 @@ pub(super) fn load_hud_resource_icon(ctx: &egui::Context, index: usize) -> egui:
     )
 }
 
-pub(super) fn load_pop_class_icon(ctx: &egui::Context, index: usize) -> egui::TextureHandle {
+pub(in crate::app) fn load_pop_class_icon(
+    ctx: &egui::Context,
+    index: usize,
+) -> egui::TextureHandle {
     let image = image::load_from_memory(POP_CLASS_ICONS[index])
         .expect("Pop class PNG must be valid")
         .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
@@ -32,7 +38,7 @@ pub(super) fn load_pop_class_icon(ctx: &egui::Context, index: usize) -> egui::Te
     )
 }
 
-pub(super) fn hud_delta_color(delta: f64) -> egui::Color32 {
+pub(in crate::app) fn hud_delta_color(delta: f64) -> egui::Color32 {
     if delta > 0.0 {
         egui::Color32::from_rgb(43, 133, 67)
     } else if delta < 0.0 {
@@ -42,7 +48,7 @@ pub(super) fn hud_delta_color(delta: f64) -> egui::Color32 {
     }
 }
 
-pub(super) fn format_hud_number(value: f64) -> String {
+pub(in crate::app) fn format_hud_number(value: f64) -> String {
     let value = value.floor();
     let magnitude = value.abs();
     if magnitude < 1_000.0 {
@@ -64,7 +70,7 @@ pub(super) fn format_hud_number(value: f64) -> String {
     format!("{sign}{rounded:.1}{suffix}")
 }
 
-pub(super) fn format_hud_delta(value: f64) -> String {
+pub(in crate::app) fn format_hud_delta(value: f64) -> String {
     if value >= 0.0 {
         format!("+{}", format_hud_number(value))
     } else {
@@ -72,7 +78,7 @@ pub(super) fn format_hud_delta(value: f64) -> String {
     }
 }
 
-pub(super) fn paint_hud_resources(
+pub(in crate::app) fn paint_hud_resources(
     painter: &egui::Painter,
     origin: egui::Pos2,
     scale: f32,
@@ -157,7 +163,7 @@ pub(super) fn paint_hud_resources(
     }
 }
 
-pub(super) fn hud_resource_positions() -> [f32; 7] {
+pub(in crate::app) fn hud_resource_positions() -> [f32; 7] {
     let first = MAP_RESOURCE_STRIP_LEFT;
     let second = first + HUD_FIRST_GROUP_WIDTH;
     let third = second + HUD_SECOND_GROUP_WIDTH;
@@ -172,7 +178,7 @@ pub(super) fn hud_resource_positions() -> [f32; 7] {
     ]
 }
 
-pub(super) fn draw_map_resources(
+pub(in crate::app) fn draw_map_resources(
     mut contexts: EguiContexts,
     mut textures: Local<Option<[egui::TextureHandle; 7]>>,
     mut pop_textures: Local<Option<[egui::TextureHandle; 4]>>,
@@ -186,6 +192,7 @@ pub(super) fn draw_map_resources(
     game: Res<ActiveGame>,
     practice: Res<LocalPractice>,
     ownership: Res<ProvinceOwnership>,
+    campaign: Res<campaign::Campaign>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
         return;
@@ -214,7 +221,7 @@ pub(super) fn draw_map_resources(
         0
     };
     let mut displayed = resources.for_player(player);
-    if *game == ActiveGame::LocalPractice {
+    if *game == ActiveGame::LocalPractice && !campaign.active {
         for (resource, production) in
             displayed[..3].iter_mut().zip(ownership.net_production_for(player))
         {
@@ -230,6 +237,10 @@ pub(super) fn draw_map_resources(
         );
     }
     paint_hud_resources(&painter, screen.min, scale, date_left, &displayed, icons);
+    if campaign.active {
+        campaign_resource_details(context, screen, scale, date_left, player, &campaign);
+        return;
+    }
     if *game == ActiveGame::LocalPractice {
         resource_panel::show(
             context,
@@ -298,3 +309,138 @@ pub(super) fn draw_map_resources(
 }
 
 // The edge art stays on the foreground layer while the map uses the full viewport.
+
+/// Explain authoritative campaign values, including storage and proportional civilian/army supply.
+fn campaign_resource_details(
+    ctx: &egui::Context,
+    screen: egui::Rect,
+    scale: f32,
+    date_left: f32,
+    player: usize,
+    campaign: &campaign::Campaign,
+) {
+    let Some(wallet) = campaign.economy.players.get(player) else {
+        return;
+    };
+    for (index, x) in hud_resource_positions().into_iter().enumerate() {
+        if x + HUD_RESOURCE_WIDTH > date_left - HUD_RESOURCE_GROUP_PADDING {
+            break;
+        }
+        egui::Area::new(egui::Id::new(("campaign_resource_details", index)))
+            .fixed_pos(screen.min + egui::vec2(x, 0.0) * scale)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let (_, response) = ui.allocate_exact_size(
+                    egui::vec2(HUD_RESOURCE_WIDTH, 48.0) * scale,
+                    egui::Sense::hover(),
+                );
+                response.on_hover_ui(|ui| {
+                    campaign_resource_breakdown(ui, index, player, campaign, wallet, scale)
+                });
+            });
+    }
+}
+
+/// Bounded illustrated source ledger, shared by all seven HUD tooltips.
+pub(in crate::app) fn campaign_resource_breakdown(
+    ui: &mut egui::Ui,
+    index: usize,
+    player: usize,
+    campaign: &campaign::Campaign,
+    wallet: &crate::game::economy::PlayerEconomy,
+    scale: f32,
+) {
+    use campaign_widgets::{icon, stat, Icon};
+    *ui.style_mut() = campaign_widgets::map_style(scale);
+    let symbols = [
+        Icon::Food,
+        Icon::Metal,
+        Icon::Stone,
+        Icon::Coin,
+        Icon::Influence,
+        Icon::Population,
+        Icon::Happiness,
+    ];
+    ui.set_width(380.0 * scale);
+    ui.horizontal(|ui| {
+        icon(ui, symbols[index], 28.0 * scale);
+        ui.strong(HUD_RESOURCE_NAMES[index]);
+    });
+    if index < 3 {
+        ui.label(format!("{:.1} / {:.0} stored",wallet.resources[index],wallet.storage[index]))
+            .on_hover_text("Production, monthly trade and consumption resolve before storage overflow is discarded. Immediate exchanges and changes of ownership enforce capacity immediately.");
+        ui.add(
+            egui::ProgressBar::new(
+                (wallet.resources[index] / wallet.storage[index].max(1.0)).clamp(0.0, 1.0) as f32,
+            )
+            .desired_width(ui.available_width()),
+        );
+    }
+    if index < 5 {
+        let change =
+            campaign.economy.last_report.player_delta.get(player).map_or(0.0, |d| d[index]);
+        ui.label(egui::RichText::new(format!("Last month {change:+.2}")).color(hud_delta_color(change)))
+            .on_hover_text("Net change from the last completed month, including production, trade, consumption, political spending and storage loss. The rows below show domestic sources.");
+    }
+    if index == 0 {
+        let supplied =
+            campaign.economy.last_report.food_supply_ratio.get(player).copied().unwrap_or(1.0);
+        ui.horizontal(|ui| {
+            stat(ui,Icon::Food,&format!("{:.0}%",supplied*100.0),"Last month's proportional supply. Civilian and military requests share the same ratio.");
+            stat(ui,Icon::Attack,&format!("{:.1}/mo",campaign.military.food_demand(crate::game::military::ForceOwner::Player(player))),"Current army food demand scales with surviving manpower.");
+        });
+    }
+    if index == 4 {
+        ui.horizontal(|ui| {
+            stat(
+                ui,
+                Icon::Eagle,
+                &format!(
+                    "+{:.1}",
+                    campaign.senate_config.rank_income(campaign.actors[player].rank)
+                ),
+                "Monthly office income. Earlier ranks do not stack.",
+            );
+            let vassals: f64 = campaign
+                .politics
+                .iter()
+                .filter_map(|p| p.vassal_income(&campaign.diplomacy_config))
+                .filter(|(p, _)| *p == player)
+                .map(|(_, v)| v)
+                .sum();
+            stat(
+                ui,
+                Icon::Control,
+                &format!("+{vassals:.1}"),
+                "Current monthly vassal Influence, based on Vassal Control.",
+            );
+        });
+    }
+    ui.separator();
+    egui::ScrollArea::vertical().id_salt(("campaign-resource-ledger",index))
+        .max_height((ui.ctx().content_rect().height()*0.45).min(330.0*scale)).show(ui,|ui| {
+            egui::Grid::new(("campaign-resource-sources",index)).striped(true)
+                .min_col_width(35.0*scale).max_col_width(150.0*scale).show(ui,|ui| {
+                    ui.strong("Province");
+                    match index {
+                        0..=2=>{ui.strong("Output");if index==0 {ui.strong("Use");}},
+                        3=>{ui.strong("Tax");},4=>{ui.strong("Domestic");},
+                        5=>{ui.strong("People");ui.strong("Capacity");},
+                        _=>{for (symbol,label) in [(Icon::Nobles,"Nobles"),(Icon::Citizens,"Citizens"),(Icon::Plebeians,"Plebeians"),(Icon::Slaves,"Slaves")] {icon(ui,symbol,22.0*scale).on_hover_text(label);}},
+                    }
+                    ui.end_row();
+                    for (id,p) in campaign.economy.provinces.iter().enumerate().filter(|(_,p)|p.owner==Some(player)) {
+                        ui.add(egui::Label::new(&p.name).truncate()).on_hover_text(&p.name);
+                        let report=campaign.economy.last_report.province_reports.get(id);
+                        match index {
+                            0..=2=>{ui.label(format!("{:.1}",p.production(&campaign.economy.config).1[index]));if index==0 {ui.label(format!("{:.1}",p.food_request(&campaign.economy.config)));}},
+                            3=>{ui.label(format!("{:.1}",p.tax_income(&campaign.economy.config)));},
+                            4=>{ui.label(format!("{:.2}",report.map_or(0.0,|r|r.influence_income))).on_hover_text("Nobles, buildings and completed wonders in the last completed month.");},
+                            5=>{ui.label(format!("{:.1}",p.total_population()));ui.label(format!("{:.1}",p.capacity(&campaign.economy.config)));},
+                            _=>{for happiness in p.happiness {ui.label(egui::RichText::new(format!("{happiness:.0}")).color(hud_delta_color(happiness-50.0)));}},
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}

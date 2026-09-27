@@ -11,7 +11,7 @@ const HEADER_HEIGHT: f32 = 78.0;
 const SECTION_HEIGHT: f32 = 30.0;
 const ROW_HEIGHT: f32 = 29.0;
 
-pub(super) struct FlowPanel<'a> {
+pub(in crate::app) struct FlowPanel<'a> {
     pub resource_index: usize,
     pub id: &'static str,
     pub title: &'static str,
@@ -20,7 +20,7 @@ pub(super) struct FlowPanel<'a> {
     pub outflow: &'a [(&'static str, f64)],
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     screen: egui::Rect,
     scale: f32,

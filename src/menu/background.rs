@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn setup_background(mut commands: Commands, assets: Res<AssetServer>) {
+pub(in crate::app) fn setup_background(mut commands: Commands, assets: Res<AssetServer>) {
     #[cfg(not(target_arch = "wasm32"))]
     let wallpaper_folder = LoadingWallpaperFolder(assets.load_folder("images/bg"));
     commands.spawn((
@@ -41,7 +41,7 @@ pub(super) fn setup_background(mut commands: Commands, assets: Res<AssetServer>)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn populate_loading_wallpapers(
+pub(in crate::app) fn populate_loading_wallpapers(
     folder: Res<LoadingWallpaperFolder>,
     folders: Res<Assets<LoadedFolder>>,
     mut wallpapers: ResMut<LoadingWallpapers>,
@@ -92,7 +92,7 @@ pub(super) fn populate_loading_wallpapers(
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn discover_loading_wallpapers(
+pub(in crate::app) fn discover_loading_wallpapers(
     assets: Res<AssetServer>,
     mut discovery: ResMut<LoadingWallpaperDiscovery>,
     mut wallpapers: ResMut<LoadingWallpapers>,
@@ -135,14 +135,14 @@ pub(super) fn discover_loading_wallpapers(
     }
 }
 
-pub(super) fn shuffle_loading_wallpapers(wallpapers: &mut [Handle<Image>]) {
+pub(in crate::app) fn shuffle_loading_wallpapers(wallpapers: &mut [Handle<Image>]) {
     for index in (1..wallpapers.len()).rev() {
         wallpapers.swap(index, random_range(0..=index));
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn set_initial_loading_wallpaper(
+pub(in crate::app) fn set_initial_loading_wallpaper(
     wallpapers: &[Handle<Image>],
     backgrounds: &mut Query<(&LoadingBackground, &mut Sprite)>,
 ) {
@@ -161,7 +161,7 @@ pub(super) fn set_initial_loading_wallpaper(
     }
 }
 
-pub(super) fn fit_menu_background(
+pub(in crate::app) fn fit_menu_background(
     window: Single<&Window>,
     images: Res<Assets<Image>>,
     mut backgrounds: Query<&mut Sprite, Or<(With<MenuBackground>, With<LoadingBackground>)>>,
@@ -180,7 +180,7 @@ pub(super) fn fit_menu_background(
     }
 }
 
-pub(super) fn cover_source_rect(source: Vec2, viewport: Vec2) -> Rect {
+pub(in crate::app) fn cover_source_rect(source: Vec2, viewport: Vec2) -> Rect {
     if source.min_element() <= 0.0 || viewport.min_element() <= 0.0 {
         return Rect::from_corners(Vec2::ZERO, source.max(Vec2::ZERO));
     }
@@ -197,7 +197,7 @@ pub(super) fn cover_source_rect(source: Vec2, viewport: Vec2) -> Rect {
     }
 }
 
-pub(super) fn set_menu_background_visibility(
+pub(in crate::app) fn set_menu_background_visibility(
     state: Res<State<AppState>>,
     loading: Res<LoadingSequence>,
     mut background: Query<&mut Visibility, With<MenuBackground>>,
@@ -236,13 +236,16 @@ pub(super) fn set_menu_background_visibility(
     }
 }
 
-pub(super) fn revealing_map(state: AppState, loading: &LoadingSequence) -> bool {
+pub(in crate::app) fn revealing_map(state: AppState, loading: &LoadingSequence) -> bool {
     state == AppState::Loading
         && loading.destination == AppState::Map
         && loading.map_reveal_progress.is_some()
 }
 
-pub(super) fn game_ui_visible(state: Res<State<AppState>>, loading: Res<LoadingSequence>) -> bool {
+pub(in crate::app) fn game_ui_visible(
+    state: Res<State<AppState>>,
+    loading: Res<LoadingSequence>,
+) -> bool {
     revealing_map(*state.get(), &loading)
         || matches!(
             *state.get(),
@@ -250,7 +253,7 @@ pub(super) fn game_ui_visible(state: Res<State<AppState>>, loading: Res<LoadingS
         )
 }
 
-pub(super) fn audio_controls_visible(
+pub(in crate::app) fn audio_controls_visible(
     state: Res<State<AppState>>,
     loading: Res<LoadingSequence>,
 ) -> bool {
@@ -261,7 +264,7 @@ pub(super) fn audio_controls_visible(
         )
 }
 
-pub(super) fn map_visible(
+pub(in crate::app) fn map_visible(
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
     loading: Res<LoadingSequence>,
@@ -272,7 +275,7 @@ pub(super) fn map_visible(
             && *game == ActiveGame::LocalPractice)
 }
 
-pub(super) fn start_loading_wallpaper(
+pub(in crate::app) fn start_loading_wallpaper(
     mut sequence: ResMut<LoadingSequence>,
     mut wallpapers: ResMut<LoadingWallpapers>,
     mut backgrounds: Query<(&LoadingBackground, &mut Sprite, &mut Transform)>,
@@ -291,7 +294,7 @@ pub(super) fn start_loading_wallpaper(
     }
 }
 
-pub(super) fn advance_loading_wallpaper(
+pub(in crate::app) fn advance_loading_wallpaper(
     time: Res<Time>,
     state: Res<State<AppState>>,
     mut next: ResMut<NextState<AppState>>,

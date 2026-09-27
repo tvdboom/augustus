@@ -23,7 +23,7 @@ fn panel_width(resource: usize) -> f32 {
     }
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     screen: egui::Rect,
     scale: f32,

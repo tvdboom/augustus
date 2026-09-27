@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn settings_button_destination(state: AppState, game: ActiveGame) -> AppState {
+pub(in crate::app) fn settings_button_destination(state: AppState, game: ActiveGame) -> AppState {
     if state == AppState::GameSettings {
         game.screen()
     } else {
@@ -10,7 +10,7 @@ pub(super) fn settings_button_destination(state: AppState, game: ActiveGame) -> 
     }
 }
 
-pub(super) fn settings_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
+pub(in crate::app) fn settings_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
     let response = circular_audio_button(ui, scale);
     let center = response.rect.center();
     let stroke = egui::Stroke::new(1.8 * scale, CREAM);
@@ -27,7 +27,7 @@ pub(super) fn settings_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub(super) fn circular_audio_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
+pub(in crate::app) fn circular_audio_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(32.0, 32.0) * scale, egui::Sense::click());
     let highlighted = response.hovered() || response.has_focus();
@@ -51,7 +51,11 @@ pub(super) fn circular_audio_button(ui: &mut egui::Ui, scale: f32) -> egui::Resp
     response
 }
 
-pub(super) fn audio_mode_button(ui: &mut egui::Ui, mode: AudioMode, scale: f32) -> egui::Response {
+pub(in crate::app) fn audio_mode_button(
+    ui: &mut egui::Ui,
+    mode: AudioMode,
+    scale: f32,
+) -> egui::Response {
     let response = circular_audio_button(ui, scale);
     let center = response.rect.center();
     let point = |x, y| center + egui::vec2(x, y) * scale;
@@ -102,7 +106,7 @@ pub(super) fn audio_mode_button(ui: &mut egui::Ui, mode: AudioMode, scale: f32) 
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub(super) fn volume_slider(ui: &mut egui::Ui, sound: &mut MenuAudio) -> egui::Response {
+pub(in crate::app) fn volume_slider(ui: &mut egui::Ui, sound: &mut MenuAudio) -> egui::Response {
     let mut volume = if sound.mode == AudioMode::Mute {
         0.0
     } else {
@@ -138,7 +142,7 @@ pub(super) fn volume_slider(ui: &mut egui::Ui, sound: &mut MenuAudio) -> egui::R
     .inner
 }
 
-pub(super) fn volume_popover(button: &egui::Response, sound: &mut MenuAudio) {
+pub(in crate::app) fn volume_popover(button: &egui::Response, sound: &mut MenuAudio) {
     let id = button.id.with("volume");
     let was_open = button.ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     let popup = egui::Popup::from_response(button)

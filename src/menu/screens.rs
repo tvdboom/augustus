@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn main_menu(
+pub(in crate::app) fn main_menu(
     ui: &mut egui::Ui,
     next: &mut NextState<AppState>,
     sound: &MenuAudio,
@@ -63,7 +63,7 @@ pub(super) fn main_menu(
         });
 }
 
-pub(super) fn create_game(
+pub(in crate::app) fn create_game(
     ui: &mut egui::Ui,
     draft: &mut MenuDraft,
     lobby: &mut LobbyPreview,
@@ -101,7 +101,7 @@ pub(super) fn create_game(
     }
 }
 
-pub(super) fn practice_setup(
+pub(in crate::app) fn practice_setup(
     ui: &mut egui::Ui,
     practice: &mut LocalPractice,
     ownership: &mut ProvinceOwnership,
@@ -169,6 +169,16 @@ pub(super) fn practice_setup(
                 );
             },
         );
+        form_option_card(
+            ui,
+            "Player color",
+            "Choose Player 1's house color. Other local players use the next distinct colors.",
+            |ui| {
+                if player_color_picker(ui, &mut practice.color_index) {
+                    play_click(sound, audio, assets);
+                }
+            },
+        );
     });
     let (back, start) = menu_button_pair(ui, "Back", "Start Practice", true, sound, audio, assets);
     if back {
@@ -180,7 +190,7 @@ pub(super) fn practice_setup(
     }
 }
 
-pub(super) fn join_game(
+pub(in crate::app) fn join_game(
     ui: &mut egui::Ui,
     draft: &mut MenuDraft,
     lobby: &mut LobbyPreview,
@@ -218,7 +228,7 @@ pub(super) fn join_game(
     }
 }
 
-pub(super) fn resume_game(
+pub(in crate::app) fn resume_game(
     ui: &mut egui::Ui,
     next: &mut NextState<AppState>,
     sound: &MenuAudio,
@@ -250,7 +260,7 @@ pub(super) fn resume_game(
     }
 }
 
-pub(super) fn lobby_code_card(ui: &mut egui::Ui, code: &str) -> bool {
+pub(in crate::app) fn lobby_code_card(ui: &mut egui::Ui, code: &str) -> bool {
     let frame = card_frame();
     let inner_width = (ui.available_width() - frame.total_margin().sum().x).max(1.0);
     frame
@@ -283,7 +293,7 @@ pub(super) fn lobby_code_card(ui: &mut egui::Ui, code: &str) -> bool {
         .inner
 }
 
-pub(super) fn show_lobby(
+pub(in crate::app) fn show_lobby(
     ui: &mut egui::Ui,
     lobby: &mut LobbyPreview,
     next: &mut NextState<AppState>,
@@ -302,39 +312,9 @@ pub(super) fn show_lobby(
             "Player color",
             "Choose the color used to identify your house on the map.",
             |ui| {
-                ui.vertical_centered(|ui| {
-                    let gap = 6.0;
-                    let row_width =
-                        (PLAYER_COLORS.len() as f32 * (34.0 + gap) - gap).min(ui.available_width());
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(row_width, MENU_CONTROL_HEIGHT),
-                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-                        |ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (index, color) in PLAYER_COLORS.iter().enumerate() {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(34.0, 34.0),
-                                    egui::Sense::click(),
-                                );
-                                ui.painter().circle_filled(rect.center(), 11.0, *color);
-                                if index == lobby.color_index || response.hovered() {
-                                    ui.painter().circle_stroke(
-                                        rect.center(),
-                                        14.0,
-                                        egui::Stroke::new(1.5, CREAM),
-                                    );
-                                }
-                                if response
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    lobby.color_index = index;
-                                    play_click(sound, audio, assets);
-                                }
-                            }
-                        },
-                    );
-                });
+                if player_color_picker(ui, &mut lobby.color_index) {
+                    play_click(sound, audio, assets);
+                }
             },
         );
         editable_form_card(
@@ -364,7 +344,7 @@ pub(super) fn show_lobby(
     }
 }
 
-pub(super) fn lobby_players_card(ui: &mut egui::Ui, lobby: &LobbyPreview) {
+pub(in crate::app) fn lobby_players_card(ui: &mut egui::Ui, lobby: &LobbyPreview) {
     let frame = card_frame();
     let inner_width = (ui.available_width() - frame.total_margin().sum().x).max(1.0);
     frame.show(ui, |ui| {
@@ -454,7 +434,7 @@ pub(super) fn lobby_players_card(ui: &mut egui::Ui, lobby: &LobbyPreview) {
     });
 }
 
-pub(super) fn settings_screen(
+pub(in crate::app) fn settings_screen(
     ui: &mut egui::Ui,
     sound: &mut MenuAudio,
     next: &mut NextState<AppState>,
@@ -479,7 +459,7 @@ pub(super) fn settings_screen(
     }
 }
 
-pub(super) fn game_menu(
+pub(in crate::app) fn game_menu(
     ui: &mut egui::Ui,
     game: ActiveGame,
     next: &mut NextState<AppState>,
@@ -553,7 +533,7 @@ pub(super) fn game_menu(
 }
 
 /// Keeps the existing Augustus audio options available while a game is paused.
-pub(super) fn game_settings_screen(
+pub(in crate::app) fn game_settings_screen(
     ui: &mut egui::Ui,
     sound: &mut MenuAudio,
     next: &mut NextState<AppState>,
@@ -576,4 +556,40 @@ pub(super) fn game_settings_screen(
     ) {
         next.set(AppState::GameMenu);
     }
+}
+
+/// One shared house-color control keeps local setup aligned with the existing lobby.
+fn player_color_picker(ui: &mut egui::Ui, selected: &mut usize) -> bool {
+    let mut changed = false;
+    ui.vertical_centered(|ui| {
+        let row_width = (PLAYER_COLORS.len() as f32 * 40.0 - 6.0).min(ui.available_width());
+        ui.allocate_ui_with_layout(
+            egui::vec2(row_width, MENU_CONTROL_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (index, color) in PLAYER_COLORS.iter().enumerate() {
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
+                    ui.painter().circle_filled(rect.center(), 11.0, *color);
+                    if index == *selected || response.hovered() {
+                        ui.painter().circle_stroke(
+                            rect.center(),
+                            14.0,
+                            egui::Stroke::new(1.5, CREAM),
+                        );
+                    }
+                    if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("House color {}", index + 1))
+                        .clicked()
+                    {
+                        *selected = index;
+                        changed = true;
+                    }
+                }
+            },
+        );
+    });
+    changed
 }

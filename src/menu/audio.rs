@@ -2,7 +2,11 @@
 
 use super::*;
 
-pub(super) fn start_music(mut commands: Commands, assets: Res<AssetServer>, audio: Res<Audio>) {
+pub(in crate::app) fn start_music(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    audio: Res<Audio>,
+) {
     let music = audio.play(assets.load("audio/music.ogg")).looped().with_volume(-60.0).handle();
     commands.insert_resource(MenuAudio {
         volume: 0.55,
@@ -12,7 +16,7 @@ pub(super) fn start_music(mut commands: Commands, assets: Res<AssetServer>, audi
     });
 }
 
-pub(super) fn update_music_volume(
+pub(in crate::app) fn update_music_volume(
     menu_audio: Res<MenuAudio>,
     mut instances: ResMut<Assets<AudioInstance>>,
 ) {

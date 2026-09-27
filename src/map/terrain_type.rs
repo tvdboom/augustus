@@ -63,12 +63,5 @@ pub(crate) fn for_province(name: &str) -> TerrainType {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn every_playable_province_has_a_terrain_portrait() {
-        for (name, _) in crate::map::production::OUTPUT {
-            let terrain = super::for_province(name);
-            assert!(terrain.image_index() < 12, "{name}");
-        }
-    }
-}
+#[path = "../../tests/unit/terrain.rs"]
+mod tests;

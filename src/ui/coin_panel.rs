@@ -3,7 +3,7 @@
 use super::{flow_panel, ProvinceOwnership};
 use bevy_egui::egui;
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     screen: egui::Rect,
     scale: f32,

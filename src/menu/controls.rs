@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn audio_choice_row(
+pub(in crate::app) fn audio_choice_row(
     ui: &mut egui::Ui,
     sound: &mut MenuAudio,
     audio: &Audio,
@@ -71,7 +71,7 @@ pub(super) fn audio_choice_row(
     );
 }
 
-pub(super) fn paint_audio_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
+pub(in crate::app) fn paint_audio_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &str) {
     let painter = ui.painter();
     let color = ui.visuals().strong_text_color();
     let measured = painter.layout_no_wrap(
@@ -145,11 +145,11 @@ pub(super) fn paint_audio_choice_icon(ui: &egui::Ui, rect: egui::Rect, label: &s
     );
 }
 
-pub(super) fn menu_button_metrics(ui: &egui::Ui) -> egui::Vec2 {
+pub(in crate::app) fn menu_button_metrics(ui: &egui::Ui) -> egui::Vec2 {
     egui::vec2(MENU_ACTION_WIDTH.min(ui.available_width()), MENU_ACTION_HEIGHT)
 }
 
-pub(super) fn menu_button_pair(
+pub(in crate::app) fn menu_button_pair(
     ui: &mut egui::Ui,
     left_label: &str,
     right_label: &str,
@@ -193,7 +193,7 @@ pub(super) fn menu_button_pair(
     .inner
 }
 
-pub(super) fn menu_action_button(
+pub(in crate::app) fn menu_action_button(
     ui: &mut egui::Ui,
     label: &str,
     enabled: bool,
@@ -258,7 +258,7 @@ pub(super) fn menu_action_button(
     }
 }
 
-pub(super) fn apply_menu_style(ui: &mut egui::Ui) {
+pub(in crate::app) fn apply_menu_style(ui: &mut egui::Ui) {
     let visuals = &mut ui.style_mut().visuals;
     visuals.button_frame = true;
     visuals.disabled_alpha = 0.65;
@@ -283,7 +283,7 @@ pub(super) fn apply_menu_style(ui: &mut egui::Ui) {
     }
 }
 
-pub(super) fn play_click(sound: &MenuAudio, audio: &Audio, assets: &AssetServer) {
+pub(in crate::app) fn play_click(sound: &MenuAudio, audio: &Audio, assets: &AssetServer) {
     if sound.mode == AudioMode::Mute || sound.volume <= 0.001 {
         return;
     }
@@ -291,7 +291,7 @@ pub(super) fn play_click(sound: &MenuAudio, audio: &Audio, assets: &AssetServer)
     audio.play(assets.load("audio/ui-click.ogg")).with_volume(decibels);
 }
 
-pub(super) fn draw_audio_controls(
+pub(in crate::app) fn draw_audio_controls(
     mut contexts: EguiContexts,
     mut sound: ResMut<MenuAudio>,
     audio: Res<Audio>,

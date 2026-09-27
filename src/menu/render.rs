@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn draw_menu(
+pub(in crate::app) fn draw_menu(
     mut contexts: EguiContexts,
     mut clipboard: ResMut<EguiClipboard>,
     mut style_initialized: Local<bool>,
@@ -190,7 +190,7 @@ pub(super) fn draw_menu(
         });
 }
 
-pub(super) fn draw_loading_reveal(
+pub(in crate::app) fn draw_loading_reveal(
     mut contexts: EguiContexts,
     sequence: Res<LoadingSequence>,
     wallpapers: Res<LoadingWallpapers>,
@@ -227,7 +227,7 @@ pub(super) fn draw_loading_reveal(
         });
 }
 
-pub(super) fn draw_loading_progress(
+pub(in crate::app) fn draw_loading_progress(
     context: &egui::Context,
     viewport_origin: egui::Pos2,
     menu_size: egui::Vec2,
@@ -269,7 +269,7 @@ pub(super) fn draw_loading_progress(
         });
 }
 
-pub(super) fn augustus_ui_style() -> egui::Style {
+pub(in crate::app) fn augustus_ui_style() -> egui::Style {
     let mut style = egui::Style {
         text_styles: [
             (egui::TextStyle::Small, egui::FontId::proportional(18.0)),
@@ -327,13 +327,13 @@ pub(super) fn augustus_ui_style() -> egui::Style {
     style
 }
 
-pub(super) fn viewport_ui_scale(viewport: egui::Vec2) -> f32 {
+pub(in crate::app) fn viewport_ui_scale(viewport: egui::Vec2) -> f32 {
     let relative =
         (viewport.x / WINDOW_WIDTH as f32).min(viewport.y / WINDOW_HEIGHT as f32).max(0.0);
     relative.sqrt().clamp(0.5, 1.25)
 }
 
-pub(super) fn map_corner_panel_rect(
+pub(in crate::app) fn map_corner_panel_rect(
     screen: egui::Rect,
     scale: f32,
     size: egui::Vec2,
@@ -347,7 +347,7 @@ pub(super) fn map_corner_panel_rect(
     )
 }
 
-pub(super) fn set_menu_layer_scale(
+pub(in crate::app) fn set_menu_layer_scale(
     context: &egui::Context,
     id: egui::Id,
     order: egui::Order,
@@ -361,7 +361,7 @@ pub(super) fn set_menu_layer_scale(
     );
 }
 
-pub(super) fn logical_content_rect(ui: &egui::Ui) -> egui::Rect {
+pub(in crate::app) fn logical_content_rect(ui: &egui::Ui) -> egui::Rect {
     let transform = ui
         .ctx()
         .layer_transform_to_global(ui.layer_id())
@@ -369,7 +369,7 @@ pub(super) fn logical_content_rect(ui: &egui::Ui) -> egui::Rect {
     transform.inverse().mul_rect(ui.ctx().content_rect())
 }
 
-pub(super) fn main_menu_title(
+pub(in crate::app) fn main_menu_title(
     context: &egui::Context,
     viewport: egui::Vec2,
 ) -> std::sync::Arc<egui::Galley> {
@@ -390,7 +390,7 @@ pub(super) fn main_menu_title(
     })
 }
 
-pub(super) fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f32 {
+pub(in crate::app) fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f32 {
     let title_height = main_menu_title(context, viewport).size().y;
     let title_bottom = viewport.y * 0.17 + title_height * 0.5;
     let count = MAIN_MENU_ACTION_COUNT as f32;
@@ -398,7 +398,7 @@ pub(super) fn main_menu_top(context: &egui::Context, viewport: egui::Vec2) -> f3
     (viewport.y * 0.365).min(viewport.y - 96.0 - actions_height).max(title_bottom + 24.0)
 }
 
-pub(super) fn connection_status_badge(ui: &mut egui::Ui) {
+pub(in crate::app) fn connection_status_badge(ui: &mut egui::Ui) {
     let label = ui.painter().layout_no_wrap(
         "Offline · local preview".to_string(),
         egui::FontId::proportional(14.0),

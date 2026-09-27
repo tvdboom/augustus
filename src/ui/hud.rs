@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn draw_map_hud(
+pub(in crate::app) fn draw_map_hud(
     mut contexts: EguiContexts,
     mut standard_textures: Local<Option<[Option<egui::TextureHandle>; 6]>>,
     mut menu_icon_textures: Local<Option<[Option<egui::TextureHandle>; 4]>>,
@@ -83,8 +83,19 @@ pub(super) fn draw_map_hud(
         icons,
         matches!(*state.get(), AppState::Map | AppState::EmptyScreen),
     );
-    if governance_clicked && *state.get() == AppState::Map {
-        panels.governance.0 = !panels.governance.0;
+    if let Some(index) = governance_clicked.filter(|_| *state.get() == AppState::Map) {
+        let tab = [
+            campaign_panel::CampaignTab::Governance,
+            campaign_panel::CampaignTab::Military,
+            campaign_panel::CampaignTab::Trade,
+            campaign_panel::CampaignTab::Senate,
+        ][index];
+        panels.campaign_ui.open = if panels.campaign_ui.open == Some(tab) {
+            None
+        } else {
+            Some(tab)
+        };
+        panels.governance.0 = false;
         panels.province.0 = None;
         play_click(&sound, &audio, &assets);
     }
@@ -124,7 +135,7 @@ pub(super) fn draw_map_hud(
     }
 }
 
-pub(super) fn draw_governance_panel(
+pub(in crate::app) fn draw_governance_panel(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
@@ -139,7 +150,11 @@ pub(super) fn draw_governance_panel(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    campaign: Res<campaign::Campaign>,
 ) {
+    if campaign.active {
+        return;
+    }
     if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice || !open.0 {
         *close_deadline = None;
         return;
@@ -197,7 +212,7 @@ pub(super) fn draw_governance_panel(
 }
 
 #[derive(Default)]
-pub(super) struct DetailTextures {
+pub(in crate::app) struct DetailTextures {
     terrain: Option<[egui::TextureHandle; 12]>,
     population: Option<[egui::TextureHandle; 4]>,
     resources: Option<[egui::TextureHandle; 3]>,
@@ -207,7 +222,7 @@ pub(super) struct DetailTextures {
     province_icon: Option<egui::TextureHandle>,
 }
 
-pub(super) fn draw_province_panel(
+pub(in crate::app) fn draw_province_panel(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
@@ -221,7 +236,11 @@ pub(super) fn draw_province_panel(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    campaign: Res<campaign::Campaign>,
 ) {
+    if campaign.active {
+        return;
+    }
     if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice {
         *close_deadline = None;
         return;

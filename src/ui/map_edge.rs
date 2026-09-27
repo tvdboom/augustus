@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn paint_map_edge_frame(
+pub(in crate::app) fn paint_map_edge_frame(
     ctx: &egui::Context,
     scale: f32,
     standard: &egui::TextureHandle,

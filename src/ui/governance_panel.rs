@@ -19,7 +19,7 @@ const SESTERTIUS: usize = 3;
 const POPULATION: usize = 4;
 const FOOD_TINTABLE: usize = 5;
 const MORALE: usize = 6;
-pub(super) const EFFECT_ICON_COUNT: usize = 7;
+pub(in crate::app) const EFFECT_ICON_COUNT: usize = 7;
 const EFFECT_ICON_ASSETS: [(&str, &[u8]); EFFECT_ICON_COUNT] = [
     ("food", include_bytes!("../../assets/images/icons/food.png")),
     ("happiness", include_bytes!("../../assets/images/icons/happiness.png")),
@@ -57,7 +57,7 @@ const fn tinted_badge(
     })
 }
 
-pub(super) fn load_effect_icons(
+pub(in crate::app) fn load_effect_icons(
     context: &egui::Context,
 ) -> [egui::TextureHandle; EFFECT_ICON_COUNT] {
     std::array::from_fn(|index| {
@@ -85,7 +85,7 @@ pub(super) fn load_effect_icons(
     })
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     scale: f32,
     icon: &egui::TextureHandle,

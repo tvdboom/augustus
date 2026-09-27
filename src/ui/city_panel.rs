@@ -11,35 +11,39 @@ use crate::map::ProvinceOverview;
 const CITY_BANNER: (&str, &[u8]) =
     ("roman-city", include_bytes!("../../assets/images/cities/city-panel-banner.png"));
 const PROVINCE_ICON: (&str, &[u8]) =
-    ("province", include_bytes!("../../assets/images/icons/province.png"));
+    ("province", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/province.png")));
 const BUILDINGS: [(&str, &str, &[u8]); 8] = [
-    ("Aqueduct", "aqueduct", include_bytes!("../../assets/images/buildings/aqueduct.png")),
-    ("Granary", "granary", include_bytes!("../../assets/images/buildings/granary.png")),
-    ("Forum", "forum", include_bytes!("../../assets/images/buildings/forum.png")),
-    ("Marketplace", "marketplace", include_bytes!("../../assets/images/buildings/marketplace.png")),
-    ("Foundry", "foundry", include_bytes!("../../assets/images/buildings/foundry.png")),
-    ("Academy", "academy", include_bytes!("../../assets/images/buildings/academy.png")),
+    ("Aqueduct", "aqueduct", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/aqueduct.png"))),
+    ("Granary", "granary", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/granary.png"))),
+    ("Forum", "forum", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/forum.png"))),
+    (
+        "Marketplace",
+        "marketplace",
+        include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/marketplace.png")),
+    ),
+    ("Foundry", "foundry", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/foundry.png"))),
+    ("Academy", "academy", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/academy.png"))),
     (
         "Great Temple",
         "great-temple",
-        include_bytes!("../../assets/images/buildings/great-temple.png"),
+        include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/great-temple.png")),
     ),
     (
         "Grand Theater",
         "grand-theater",
-        include_bytes!("../../assets/images/buildings/grand-theater.png"),
+        include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/grand-theater.png")),
     ),
 ];
 
-pub(super) fn load_banner(context: &egui::Context) -> egui::TextureHandle {
+pub(in crate::app) fn load_banner(context: &egui::Context) -> egui::TextureHandle {
     province_panel::load_image(context, CITY_BANNER, "city-banner")
 }
 
-pub(super) fn load_province_icon(context: &egui::Context) -> egui::TextureHandle {
+pub(in crate::app) fn load_province_icon(context: &egui::Context) -> egui::TextureHandle {
     province_panel::load_panel_icon(context, PROVINCE_ICON, "city-navigation")
 }
 
-pub(super) fn load_buildings(context: &egui::Context) -> [egui::TextureHandle; 8] {
+pub(in crate::app) fn load_buildings(context: &egui::Context) -> [egui::TextureHandle; 8] {
     std::array::from_fn(|index| {
         province_panel::load_panel_icon(
             context,
@@ -49,7 +53,7 @@ pub(super) fn load_buildings(context: &egui::Context) -> [egui::TextureHandle; 8
     })
 }
 
-pub(super) fn show(
+pub(in crate::app) fn show(
     context: &egui::Context,
     scale: f32,
     province: &ProvinceOverview,
