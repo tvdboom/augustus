@@ -10,19 +10,23 @@ fn land_portraits_use_original_resolution() {
 }
 
 #[test]
-fn city_banner_respects_egui_texture_limits() {
-    let banner = include_bytes!("../../assets/images/cities/city-panel-banner.png");
-    for limit in [2048, 1024] {
-        let context = egui::Context::default();
-        context.begin_pass(egui::RawInput {
-            max_texture_side: Some(limit),
-            ..Default::default()
-        });
-        let texture = super::load_image(&context, ("city", banner), "test-banner");
-        assert!(texture.size()[0] <= limit);
-        assert!(texture.size()[1] <= limit);
-        assert_eq!(texture.size()[0], limit);
-        let mut output = context.end_pass();
-        output.textures_delta.clear();
+fn settlement_banners_respect_egui_texture_limits() {
+    for (name, banner) in [
+        ("city", include_bytes!("../../assets/images/cities/city-panel-banner.png") as &[u8]),
+        ("village", include_bytes!("../../assets/images/cities/village-panel-banner.png") as &[u8]),
+    ] {
+        for limit in [2048, 1024] {
+            let context = egui::Context::default();
+            context.begin_pass(egui::RawInput {
+                max_texture_side: Some(limit),
+                ..Default::default()
+            });
+            let texture = super::load_image(&context, (name, banner), "test-banner");
+            assert!(texture.size()[0] <= limit);
+            assert!(texture.size()[1] <= limit);
+            assert_eq!(texture.size()[0], limit);
+            let mut output = context.end_pass();
+            output.textures_delta.clear();
+        }
     }
 }

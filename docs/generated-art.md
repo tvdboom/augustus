@@ -2,7 +2,7 @@
 
 These new sprite sheets were generated with the built-in imagegen tool, preserving the repository's existing completed-wonder images. Output PNG alpha is retained. Source prompts are recorded for reproducibility; generated outputs can vary between runs.
 
-This index links the complete prompt records: the four wonders below; [the three central wonders](generated-art-central.md); [Colossus of Rhodes, Segovia and Pont du Gard](generated-art-military.md); and [all eleven military unit sheets](generated-art-units.md). Ay Khanum and its construction sheet were removed at the user's request. Runtime verification is recorded separately in the implementation audits.
+This index links the complete prompt records: the four wonders below; [the three central wonders](generated-art-central.md); [Colossus of Rhodes, Segovia and Pont du Gard](generated-art-military.md); [all eleven military unit sheets](generated-art-units.md); [the twelve campaign UI icons](generated-art-icons.md); and [Granary, Road, Baths, Walls and the village banner](generated-art-buildings.md). Ay Khanum and its construction sheet were removed at the user's request. Runtime verification is recorded separately in the implementation audits.
 
 ## Wonders: Pyramid, Dodona, Stonehenge, Pergamon
 

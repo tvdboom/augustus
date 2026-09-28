@@ -1,231 +1,343 @@
 use super::*;
+use crate::game::politics::espionage::{
+    EspionageState, Scandal, ScandalKind, ScandalTarget, Severity,
+};
 
-/// Wealthy actors for focused political invariants.
-fn actors() -> Vec<PoliticalPlayer> {
+fn actors(count: usize) -> Vec<PoliticalPlayer> {
     vec![
         PoliticalPlayer {
-            rank: PoliticalRank::Aedile,
-            influence: 1000.0,
-            coin: 1000.0,
-            consul_until: None
+            coin: 10_000.0,
+            influence: 5000.0,
+            ..Default::default()
         };
-        3
+        count
     ]
 }
-
-#[test]
-fn sealed_tie_requires_additional_month_and_spends_losing_bids() {
-    let mut state = SenateState::new(1);
-    let mut players = actors();
-    let config = SenateConfig::default();
-    state.submit_bid(0, Ballot::Praetor, 100.0, &mut players, false, &config).unwrap();
-    state.submit_bid(1, Ballot::Praetor, 100.0, &mut players, false, &config).unwrap();
-    assert!(state.nominations.is_empty());
-    for _ in 0..12 {
-        state.advance_month(&mut players, &[], &config);
-    }
-    assert!(state.campaign.is_none());
-    assert_eq!(state.sudden_death.len(), 2);
-    assert!(state.submit_bid(2, Ballot::Praetor, 200.0, &mut players, false, &config).is_err());
-    state.submit_bid(1, Ballot::Praetor, 1.0, &mut players, false, &config).unwrap();
-    state.advance_month(&mut players, &[], &config);
-    assert_eq!(state.campaign.unwrap().candidate, 1);
-    assert_eq!(players[0].influence, 900.0);
-    assert_eq!(players[1].influence, 899.0);
-}
-
-#[test]
-fn censor_is_required_and_elected_through_shared_ballot() {
-    let state = SenateState::new(1);
-    let mut players = actors();
-    let config = SenateConfig::default();
-    players[0].rank = PoliticalRank::Praetor;
-    assert!(state.eligibility(0, Ballot::Censor, &players, false, &config).is_ok());
-    assert!(state.eligibility(0, Ballot::Consul, &players, false, &config).is_err());
-    players[0].rank = PoliticalRank::Censor;
-    assert!(state.eligibility(0, Ballot::Consul, &players, false, &config).is_ok());
-    assert_eq!(config.rank_income(PoliticalRank::Censor), 3.0);
-}
-
-#[test]
-fn projection_and_recorded_votes_always_have_one_hundred_seats() {
-    let mut state = SenateState::new(4);
-    let mut players = actors();
-    let config = SenateConfig::default();
-    state.submit_bid(0, Ballot::Praetor, 100.0, &mut players, false, &config).unwrap();
-    for _ in 0..12 {
-        state.advance_month(&mut players, &[], &config);
-    }
-    let projection = state.projection(&players, &[], &config);
-    assert_eq!(
-        projection
-            .iter()
-            .map(|p| p.yes as usize + p.no as usize + p.undecided as usize)
-            .sum::<usize>(),
-        100
-    );
-    for _ in 0..12 {
-        state.advance_month(&mut players, &[], &config);
-    }
-    let result = state.last_result.unwrap();
-    assert_eq!(result.votes.len(), 100);
-    assert_eq!(result.yes + result.no, 100);
-    let mut offset = 0;
-    for bloc in projection {
-        assert!(result.votes[offset..offset + bloc.yes as usize].iter().all(|v| *v));
-        offset += bloc.yes as usize;
-        assert!(result.votes[offset..offset + bloc.no as usize].iter().all(|v| !v));
-        offset += bloc.no as usize + bloc.undecided as usize;
+fn pledge(state: &mut SenateState, player: usize, count: usize) {
+    for s in state.senators.iter_mut().take(count) {
+        s.allegiance = Some(player);
     }
 }
-
-#[test]
-fn no_third_consul_and_proconsul_cannot_seek_augustus() {
-    let state = SenateState::new(1);
-    let mut players = actors();
-    let config = SenateConfig::default();
-    players[0].rank = PoliticalRank::Censor;
-    for player in &mut players[1..] {
-        player.rank = PoliticalRank::Consul;
-        player.consul_until = Some(48);
+fn evidence(target: usize, kind: ScandalKind) -> EspionageState {
+    let mut e = EspionageState::new(4);
+    e.scandals.push(Scandal {
+        id: 1,
+        source_id: 1,
+        holder: 0,
+        target: ScandalTarget::Player(target),
+        province: None,
+        kind,
+        severity: Severity::Major,
+        acquired: 0,
+        expires: 24,
+        reserved_for_motion: false,
+    });
+    e
+}
+fn excellent() -> PoliticalProfile {
+    PoliticalProfile {
+        nobles: 500.0,
+        noble_happiness: 95.0,
+        citizen_happiness: 95.0,
+        plebeian_happiness: 95.0,
+        coin_income: 500.0,
+        trade_volume: 500.0,
+        political_buildings: 10.0,
+        markets: 10.0,
+        wonders: 3.0,
+        provincial_happiness: 95.0,
+        provincial_trade: 200.0,
+        food_policy: 1.0,
+        military_strength: 10_000.0,
+        military_rank: 3.0,
+        recent_victories: 4.0,
+        ..Default::default()
     }
-    assert_eq!(
-        state.eligibility(0, Ballot::Consul, &players, false, &config),
-        Err(PoliticalError::NoConsulSeat)
-    );
-    players[0].rank = PoliticalRank::Proconsul;
-    assert!(state.eligibility(0, Ballot::Augustus, &players, false, &config).is_err());
-    players[1].consul_until = Some(24);
-    assert!(state.eligibility(0, Ballot::Consul, &players, false, &config).is_ok());
 }
-
-#[test]
-fn bid_preview_enforces_sealed_motion_funds_and_tie_participation() {
-    let mut state = SenateState::new(7);
-    let mut players = actors();
-    let config = SenateConfig::default();
-    players[1].rank = PoliticalRank::Consul;
-    players[1].consul_until = Some(48);
-    let removal = Ballot::NoConfidence {
-        target: 1,
-        scandal_id: 9,
-    };
-    state.submit_bid(0, Ballot::Praetor, 100.0, &mut players, false, &config).unwrap();
-    let balance = players[0].influence;
-    assert_eq!(state.chosen_ballot(0), Some(Ballot::Praetor));
-    assert_eq!(
-        state.bid_eligibility(0, removal, 100.0, &players, true, &config),
-        Err(PoliticalError::Ineligible)
-    );
-    assert_eq!(
-        state.bid_eligibility(0, Ballot::Praetor, balance + 1.0, &players, false, &config),
-        Err(PoliticalError::InsufficientFunds)
-    );
-    state.sudden_death.insert(2);
-    assert_eq!(
-        state.bid_eligibility(0, Ballot::Praetor, 1.0, &players, false, &config),
-        Err(PoliticalError::Ineligible)
-    );
-    assert_eq!(players[0].influence, balance);
-    assert_eq!(state.private_bid(0), 100.0);
+fn terrible() -> PoliticalProfile {
+    PoliticalProfile {
+        noble_happiness: 0.0,
+        citizen_happiness: 0.0,
+        plebeian_happiness: 0.0,
+        provincial_happiness: 0.0,
+        food_security: 0.0,
+        resource_security: 0.0,
+        trade_reliability: 0.0,
+        famine: 1.0,
+        recent_victories: -4.0,
+        ..Default::default()
+    }
 }
-
 #[test]
-fn nomination_outlook_uses_real_profile_without_starting_a_campaign() {
-    let state = SenateState::new(7);
-    let players = actors();
-    let config = SenateConfig::default();
-    let weak = PoliticalProfile {
-        noble_happiness: 10.0,
+fn new_match_has_one_hundred_neutral_stable_senators() {
+    let s = SenateState::new(1);
+    assert_eq!(s.senators.len(), 100);
+    for (id, senator) in s.senators.iter().enumerate() {
+        assert_eq!(senator.id, id);
+        assert_eq!(senator.allegiance, None);
+        assert_eq!(senator.bloc, Bloc::ALL[id / 20]);
+    }
+}
+#[test]
+fn costs_and_support_scale_without_lowering_victory_below_majority() {
+    let c = SenateConfig::default();
+    let ranks = [
+        PoliticalRank::Quaestor,
+        PoliticalRank::Aedile,
+        PoliticalRank::Praetor,
+        PoliticalRank::Censor,
+        PoliticalRank::Consul,
+    ];
+    assert_eq!(ranks.map(|rank| c.requirements(rank, 2).unwrap().senators), [5, 12, 22, 40, 60]);
+    assert_eq!(ranks.map(|rank| c.requirements(rank, 4).unwrap().senators), [4, 8, 16, 28, 51]);
+    assert_eq!(
+        ranks.map(|rank| c.requirements(rank, 2).unwrap().influence),
+        [100.0, 180.0, 280.0, 400.0, 800.0]
+    );
+    assert_eq!(c.requirements(PoliticalRank::Consul, 8).unwrap().senators, 51);
+}
+#[test]
+fn promotion_is_immediate_atomic_and_never_consumes_senators() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    let before = p[0].influence;
+    assert_eq!(s.promote(0, &mut p, &c).unwrap_err(), PoliticalError::InsufficientSupport);
+    assert_eq!(p[0].influence, before);
+    pledge(&mut s, 0, 5);
+    s.promote(0, &mut p, &c).unwrap();
+    assert_eq!(p[0].rank, PoliticalRank::Aedile);
+    assert_eq!(p[0].influence, before - 100.0);
+    assert_eq!(s.support(0), 5);
+    pledge(&mut s, 0, 12);
+    assert_eq!(s.promote(0, &mut p, &c).unwrap_err(), PoliticalError::AlreadyUsed);
+    s.month += 1;
+    p[0].influence = 179.0;
+    assert_eq!(s.promote(0, &mut p, &c).unwrap_err(), PoliticalError::InsufficientFunds);
+    assert_eq!(p[0].influence, 179.0);
+    p[0].influence = 180.0;
+    s.promote(0, &mut p, &c).unwrap();
+    assert_eq!(p[0].rank, PoliticalRank::Praetor);
+}
+#[test]
+fn all_loyalties_recalculate_monthly_and_can_switch_or_return_to_gray() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(4);
+    let mut p = actors(2);
+    s.advance_month(&mut p, &[excellent(), terrible()], &c);
+    assert!(s.support(0) > 80);
+    let first = s.support(0);
+    s.advance_month(&mut p, &[terrible(), excellent()], &c);
+    assert!(s.support(1) > 80);
+    assert!(s.support(0) < first);
+    s.advance_month(&mut p, &[terrible(), terrible()], &c);
+    assert_eq!(s.senators.iter().filter(|s| s.allegiance.is_none()).count(), 100);
+}
+#[test]
+fn identical_players_do_not_gain_support_by_player_order() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(4);
+    let mut p = actors(2);
+    s.advance_month(&mut p, &[excellent(), excellent()], &c);
+    assert_eq!(s.support(0), 0);
+    assert_eq!(s.support(1), 0);
+}
+#[test]
+fn faction_preferences_differ_and_keep_seeded_individuality() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(21);
+    let mut p = actors(2);
+    let welfare = PoliticalProfile {
+        citizen_happiness: 100.0,
+        plebeian_happiness: 100.0,
+        provincial_happiness: 100.0,
         ..Default::default()
     };
-    let strong = PoliticalProfile {
-        noble_happiness: 90.0,
+    let soldiers = PoliticalProfile {
+        military_rank: 3.0,
+        military_strength: 10000.0,
+        recent_victories: 4.0,
         ..Default::default()
     };
-    let a = state.preview_projection(0, Ballot::Praetor, &players, &[weak], &config);
-    let b = state.preview_projection(0, Ballot::Praetor, &players, &[strong], &config);
-    assert!(b[0].support_probability > a[0].support_probability);
-    assert!(!b[0].reasons.is_empty());
-    assert!(state.campaign.is_none());
-    assert_eq!(state.month, 0);
-    assert!(state.nominations.is_empty());
+    s.advance_month(&mut p, &[welfare, soldiers], &c);
+    assert_eq!(s.bloc_support(0, Bloc::Populares), 20);
+    assert_eq!(s.bloc_support(1, Bloc::Military), 20);
+    assert_ne!(s.senators[0].preferences, s.senators[1].preferences);
 }
-
 #[test]
-fn seeded_results_are_reproducible() {
-    let config = SenateConfig::default();
+fn same_seed_and_actions_produce_identical_monthly_allegiances() {
+    let c = SenateConfig::default();
     let play = || {
-        let mut state = SenateState::new(19);
-        let mut players = actors();
-        state.submit_bid(0, Ballot::Praetor, 100.0, &mut players, false, &config).unwrap();
-        for _ in 0..24 {
-            state.advance_month(&mut players, &[], &config);
+        let mut s = SenateState::new(31);
+        let mut p = actors(2);
+        s.court(0, Bloc::Aristocrats, &mut p, &c).unwrap();
+        for _ in 0..12 {
+            s.advance_month(&mut p, &[excellent(), terrible()], &c);
         }
-        state.last_result.unwrap().votes
+        s.senators.iter().map(|s| s.allegiance).collect::<Vec<_>>()
     };
     assert_eq!(play(), play());
 }
-
 #[test]
-fn augustus_ballot_resolves_before_same_month_consul_expiry() {
-    let config = SenateConfig {
-        probability_bounds: [1.0, 1.0],
-        ..Default::default()
+fn outreach_is_nonstacking_fades_and_respects_monthly_action_limits() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(5);
+    let mut p = actors(2);
+    s.court(0, Bloc::Military, &mut p, &c).unwrap();
+    assert_eq!(s.court(0, Bloc::Military, &mut p, &c), Err(PoliticalError::AlreadyUsed));
+    let bonus = |s: &SenateState, p: &[PoliticalPlayer]| {
+        s.reasons(0, Bloc::Military, &p[0], &PoliticalProfile::default(), &c)
+            .iter()
+            .find(|r| r.label == "Faction outreach (fades)")
+            .unwrap()
+            .points
     };
-    let mut state = SenateState::new(1);
-    let mut players = actors();
-    players[0].rank = PoliticalRank::Consul;
-    players[0].consul_until = Some(24);
-    state.submit_bid(0, Ballot::Augustus, 400.0, &mut players, false, &config).unwrap();
-    for _ in 0..24 {
-        state.advance_month(&mut players, &[], &config);
+    assert_eq!(bonus(&s, &p), 8.0);
+    s.advance_month(&mut p, &[], &c);
+    assert!(bonus(&s, &p) < 8.0);
+    s.court(0, Bloc::Military, &mut p, &c).unwrap();
+    assert_eq!(bonus(&s, &p), 8.0);
+    for _ in 0..6 {
+        s.advance_month(&mut p, &[], &c);
     }
-    assert_eq!(state.winner, Some(0));
-    assert_eq!(players[0].rank, PoliticalRank::Augustus);
+    assert_eq!(bonus(&s, &p), 0.0);
 }
-
 #[test]
-fn failed_augustus_becomes_proconsul_on_term_expiry() {
-    let config = SenateConfig {
-        probability_bounds: [0.0, 0.0],
-        ..Default::default()
-    };
-    let mut state = SenateState::new(1);
-    let mut players = actors();
-    players[0].rank = PoliticalRank::Consul;
-    players[0].consul_until = Some(24);
-    state.submit_bid(0, Ballot::Augustus, 400.0, &mut players, false, &config).unwrap();
-    for _ in 0..24 {
-        state.advance_month(&mut players, &[], &config);
+fn bribe_is_temporary_cannot_be_overwritten_and_price_increases() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(3);
+    let mut p = actors(2);
+    let id = s.bribe(0, Bloc::Military, &mut p, &c).unwrap();
+    assert_eq!(s.support(0), 1);
+    assert_eq!(p[0].coin, 9920.0);
+    assert_eq!(s.bribe(0, Bloc::Military, &mut p, &c), Err(PoliticalError::AlreadyUsed));
+    assert_eq!(s.bribe_quote(0, Bloc::Populares, &p, &c), Ok(100.0));
+    s.bribe(1, Bloc::Military, &mut p, &c).unwrap();
+    assert_eq!(s.senators[id].allegiance, Some(0));
+    for _ in 0..5 {
+        s.advance_month(&mut p, &[terrible(), excellent()], &c);
     }
-    assert_eq!(state.winner, None);
-    assert_eq!(players[0].rank, PoliticalRank::Proconsul);
+    assert_eq!(s.senators[id].allegiance, Some(0));
+    s.advance_month(&mut p, &[terrible(), excellent()], &c);
+    assert!(s.senators[id].bribe.is_none());
+    assert_eq!(s.senators[id].allegiance, Some(1));
 }
-
 #[test]
-fn no_confidence_needs_real_evidence_and_removes_on_majority() {
-    let config = SenateConfig {
-        probability_bounds: [1.0, 1.0],
-        ..Default::default()
-    };
-    let mut state = SenateState::new(1);
-    let mut players = actors();
-    players[1].rank = PoliticalRank::Consul;
-    players[1].consul_until = Some(48);
-    let ballot = Ballot::NoConfidence {
-        target: 1,
-        scandal_id: 7,
-    };
-    assert_eq!(
-        state.submit_bid(0, ballot, 200.0, &mut players, false, &config),
-        Err(PoliticalError::ScandalRequired)
-    );
-    state.submit_bid(0, ballot, 200.0, &mut players, true, &config).unwrap();
-    let mut events = Vec::new();
-    for _ in 0..24 {
-        events = state.advance_month(&mut players, &[], &config);
+fn bribery_cap_cannot_be_bypassed_by_switching_factions() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(3);
+    let mut p = actors(2);
+    for _ in 0..2 {
+        for bloc in Bloc::ALL {
+            s.bribe(0, bloc, &mut p, &c).unwrap();
+        }
+        s.advance_month(&mut p, &[], &c);
     }
-    assert_eq!(players[1].rank, PoliticalRank::Proconsul);
-    assert!(events.iter().any(|e| matches!(e, SenateEvent::ConsumeScandal(7))));
+    assert_eq!(s.active_bribes(0), 10);
+    assert_eq!(s.bribe_quote(0, Bloc::Military, &p, &c), Err(PoliticalError::Ineligible));
+}
+#[test]
+fn scandal_consumes_real_evidence_cancels_bribes_and_applies_relevant_penalties() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(8);
+    let mut p = actors(2);
+    let id = s.bribe(1, Bloc::Aristocrats, &mut p, &c).unwrap();
+    let mut e = evidence(1, ScandalKind::PoliticalBribery);
+    s.expose_scandal(0, 1, &p, &mut e, &c).unwrap();
+    assert!(e.scandals.is_empty());
+    assert!(s.senators[id].bribe.is_none());
+    assert!(s.accusations[0].penalties[0] > s.accusations[0].penalties[4]);
+    assert_eq!(s.expose_scandal(0, 1, &p, &mut e, &c), Err(PoliticalError::ScandalRequired));
+    for _ in 0..12 {
+        s.advance_month(&mut p, &[], &c);
+    }
+    assert!(s.accusations.is_empty());
+}
+#[test]
+fn invalid_scandals_cannot_mutate_the_chamber_or_consume_evidence() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(8);
+    let p = actors(2);
+    let mut e = evidence(0, ScandalKind::Famine);
+    assert_eq!(s.expose_scandal(0, 1, &p, &mut e, &c), Err(PoliticalError::Ineligible));
+    e.scandals[0].target = ScandalTarget::Player(1);
+    e.scandals[0].expires = 0;
+    assert_eq!(s.expose_scandal(0, 1, &p, &mut e, &c), Err(PoliticalError::ScandalRequired));
+    assert_eq!(e.scandals.len(), 1);
+    assert!(s.accusations.is_empty());
+}
+#[test]
+fn consul_slots_term_and_one_year_return_cooldown_are_authoritative() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(7);
+    let mut p = actors(3);
+    p[0].rank = PoliticalRank::Censor;
+    for actor in &mut p[1..] {
+        actor.rank = PoliticalRank::Consul;
+        actor.consul_until = Some(1);
+    }
+    pledge(&mut s, 0, 40);
+    assert_eq!(s.promote(0, &mut p, &c).unwrap_err(), PoliticalError::NoConsulSeat);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(p[1].rank, PoliticalRank::Proconsul);
+    assert_eq!(p[1].consul_again_at, 13);
+    pledge(&mut s, 0, 40);
+    s.promote(0, &mut p, &c).unwrap();
+    assert_eq!(p[0].consul_until, Some(25));
+    pledge(&mut s, 1, 40);
+    assert_eq!(s.promote(1, &mut p, &c).unwrap_err(), PoliticalError::ConsulCooldown);
+    s.month = 13;
+    s.promote(1, &mut p, &c).unwrap();
+    assert_eq!(p[1].rank, PoliticalRank::Consul);
+    assert_eq!(p[1].consul_until, Some(37));
+}
+#[test]
+fn large_support_loss_has_grace_and_recovery_resets_it() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    p[0].rank = PoliticalRank::Consul;
+    p[0].consul_until = Some(24);
+    for _ in 0..2 {
+        assert!(s.advance_month(&mut p, &[terrible(), excellent()], &c).is_empty());
+    }
+    s.advance_month(&mut p, &[excellent(), terrible()], &c);
+    assert_eq!(p[0].rank, PoliticalRank::Consul);
+    for _ in 0..2 {
+        s.advance_month(&mut p, &[terrible(), excellent()], &c);
+    }
+    assert_eq!(p[0].rank, PoliticalRank::Consul);
+    let events = s.advance_month(&mut p, &[terrible(), excellent()], &c);
+    assert!(events.iter().any(|e| matches!(e, SenateEvent::ConsulRemoved(0))));
+    assert_eq!(p[0].rank, PoliticalRank::Proconsul);
+    assert_eq!(p[0].consul_again_at, s.month + 12);
+}
+#[test]
+fn scandal_forces_early_demotion_when_support_collapses() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    p[1].rank = PoliticalRank::Consul;
+    p[1].consul_until = Some(24);
+    let mut e = evidence(1, ScandalKind::Famine);
+    s.expose_scandal(0, 1, &p, &mut e, &c).unwrap();
+    let events = s.advance_month(&mut p, &[excellent(), terrible()], &c);
+    assert!(events.iter().any(|e| matches!(e, SenateEvent::ConsulRemoved(1))));
+    assert_eq!(p[1].rank, PoliticalRank::Proconsul);
+}
+#[test]
+fn proconsul_cannot_win_until_reappointed_and_victory_stops_ticks() {
+    let c = SenateConfig::default();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    p[0].rank = PoliticalRank::Proconsul;
+    pledge(&mut s, 0, 100);
+    assert_eq!(s.promotion_eligibility(0, &p, &c).unwrap().rank, PoliticalRank::Consul);
+    s.promote(0, &mut p, &c).unwrap();
+    s.month += 1;
+    s.promote(0, &mut p, &c).unwrap();
+    assert_eq!(s.winner, Some(0));
+    assert_eq!(p[0].rank, PoliticalRank::Augustus);
+    assert!(s.advance_month(&mut p, &[], &c).is_empty());
+    assert_eq!(s.month, 1);
 }

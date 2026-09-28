@@ -48,6 +48,7 @@ const DEEP_SEA: egui::Color32 = egui::Color32::from_rgb(37, 76, 112);
 const CLOSE_SEA: egui::Color32 = egui::Color32::from_rgb(49, 105, 139);
 const LAND: egui::Color32 = egui::Color32::from_rgb(189, 192, 171);
 const BORDER: egui::Color32 = egui::Color32::from_rgb(145, 106, 82);
+const OWNERSHIP_FILL_ALPHA: u8 = 132;
 const INK: egui::Color32 = egui::Color32::from_rgb(51, 40, 33);
 const LABEL_HORIZONTAL_MARGIN: f32 = 0.18;
 const MIN_START_DISTANCE_KM: f32 = 1_000.0;
@@ -65,7 +66,7 @@ const URBAN_PROVINCES: [&str; 8] = [
     "Syria",
 ];
 
-fn city_name_for_province(name: &str) -> Option<&'static str> {
+pub(crate) fn city_name_for_province(name: &str) -> Option<&'static str> {
     match name {
         "Latium" => Some("Rome"),
         "Lugdunensis" => Some("Lutetia"),
@@ -365,6 +366,10 @@ impl ProvinceOwnership {
                 target_score,
             );
         }
+    }
+
+    pub(crate) fn first_owned_province(&self, player: usize) -> Option<usize> {
+        self.owners.iter().position(|owner| *owner == Some(player))
     }
 
     pub(crate) fn governance_for(&self, player: usize) -> Governance {
@@ -933,7 +938,8 @@ const TERRAIN_TILE_BOUNDS: [[f32; 4]; 4] = [
     [20.0, 22.0, 52.0, 40.5],
 ];
 
-const WONDERS: [WonderAsset; 10] = [
+// Each province has at most one site: Olympia in Achaia and Rhodes in Asia.
+const WONDERS: [WonderAsset; 7] = [
     WonderAsset {
         name: "Great Pyramid of Giza",
         position: [31.13, 29.98],
@@ -944,30 +950,12 @@ const WONDERS: [WonderAsset; 10] = [
         )),
     },
     WonderAsset {
-        name: "Oracle of Dodona",
-        position: [20.78, 39.55],
-        png: include_bytes!("../../assets/images/wonders/oracle_dodona.png"),
-        construction: include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/animations/wonders/construction/oracle_dodona.png"
-        )),
-    },
-    WonderAsset {
         name: "Stonehenge",
         position: [-1.83, 51.18],
         png: include_bytes!("../../assets/images/wonders/stonehenge.png"),
         construction: include_bytes!(concat!(
             env!("OUT_DIR"),
             "/animations/wonders/construction/stonehenge.png"
-        )),
-    },
-    WonderAsset {
-        name: "Acropolis of Pergamon",
-        position: [27.18, 39.13],
-        png: include_bytes!("../../assets/images/wonders/pergamon_acropolis.png"),
-        construction: include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/animations/wonders/construction/pergamon_acropolis.png"
         )),
     },
     WonderAsset {
@@ -986,15 +974,6 @@ const WONDERS: [WonderAsset; 10] = [
         construction: include_bytes!(concat!(
             env!("OUT_DIR"),
             "/animations/wonders/construction/argeads_palace.png"
-        )),
-    },
-    WonderAsset {
-        name: "Mausoleum at Halicarnassus",
-        position: [27.42, 37.04],
-        png: include_bytes!("../../assets/images/wonders/mausoleum_halicar.png"),
-        construction: include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/animations/wonders/construction/mausoleum_halicar.png"
         )),
     },
     WonderAsset {
@@ -1027,6 +1006,9 @@ const WONDERS: [WonderAsset; 10] = [
         )),
     },
 ];
+
+/// Canonical site count shared with the construction configuration.
+pub(crate) const WONDER_COUNT: usize = WONDERS.len();
 
 /// The atlas owns monument names and coordinates; rules reference only these stable IDs.
 pub(crate) fn wonder_name(id: usize) -> Option<&'static str> {
@@ -1259,7 +1241,7 @@ fn province_adjacency(provinces: &[Province]) -> Vec<Vec<usize>> {
 }
 
 /// Paints the same explicit sea edges that routing uses, with readable coast terminals.
-fn paint_sea_crossings(painter: &egui::Painter, projection: &Projection, zoom: f32) {
+fn paint_sea_crossings(painter: &egui::Painter, projection: &Projection) {
     let gold = egui::Color32::from_rgb(239, 220, 172);
     for crossing in &SEA_CROSSINGS {
         let [a, b] = crossing.shores.map(|point| projection.point(point));
@@ -1282,23 +1264,6 @@ fn paint_sea_crossings(painter: &egui::Painter, projection: &Projection, zoom: f
         for point in [a, b] {
             painter.circle_filled(point, 3.4, egui::Color32::from_rgb(68, 62, 49));
             painter.circle_stroke(point, 3.4, egui::Stroke::new(1.4, gold));
-        }
-        if zoom >= 2.0 {
-            let center = a.lerp(b, 0.5);
-            let hovered = painter.ctx().input(|input| {
-                input.pointer.hover_pos().is_some_and(|p| p.distance(center) < 16.0)
-            });
-            if hovered {
-                let text =
-                    format!("{} ↔ {} · sea crossing", crossing.provinces[0], crossing.provinces[1]);
-                painter.text(
-                    center + egui::vec2(0.0, -13.0),
-                    egui::Align2::CENTER_BOTTOM,
-                    text,
-                    egui::FontId::proportional(14.0),
-                    gold,
-                );
-            }
         }
     }
 }
@@ -1417,6 +1382,7 @@ pub(crate) fn draw_map(
     mut view: ResMut<MapView>,
     ownership: Res<ProvinceOwnership>,
     campaign: Res<crate::app::campaign::Campaign>,
+    practice: Res<crate::app::LocalPractice>,
     mut governance_open: ResMut<GovernancePanelOpen>,
     mut province_open: ResMut<ProvincePanelOpen>,
     panel_close_click: Res<MapPanelCloseClick>,
@@ -1468,6 +1434,7 @@ pub(crate) fn draw_map(
                 &mut view,
                 &ownership,
                 campaign.active.then_some(&*campaign),
+                practice.active_player,
                 icons,
                 &response,
                 &keyboard,
@@ -1489,6 +1456,7 @@ fn paint_map(
     view: &mut MapView,
     ownership: &ProvinceOwnership,
     campaign: Option<&crate::app::campaign::Campaign>,
+    player: usize,
     production_icons: &[egui::TextureHandle; 3],
     response: &egui::Response,
     keyboard: &ButtonInput<KeyCode>,
@@ -1544,16 +1512,17 @@ fn paint_map(
         view.pan += Vec2::new(delta.x, delta.y);
     }
     let speed = 600.0 * dt.clamp(0.0, 0.1);
-    if interactions_enabled && keyboard.pressed(KeyCode::KeyA) {
+    let keyboard_pan_enabled = interactions_enabled && !painter.ctx().egui_wants_keyboard_input();
+    if keyboard_pan_enabled && keyboard.pressed(KeyCode::KeyA) {
         view.pan.x += speed;
     }
-    if interactions_enabled && keyboard.pressed(KeyCode::KeyD) {
+    if keyboard_pan_enabled && keyboard.pressed(KeyCode::KeyD) {
         view.pan.x -= speed;
     }
-    if interactions_enabled && keyboard.pressed(KeyCode::KeyW) {
+    if keyboard_pan_enabled && keyboard.pressed(KeyCode::KeyW) {
         view.pan.y += speed;
     }
-    if interactions_enabled && keyboard.pressed(KeyCode::KeyS) {
+    if keyboard_pan_enabled && keyboard.pressed(KeyCode::KeyS) {
         view.pan.y -= speed;
     }
     if let Some(target) = view.focus_target.take() {
@@ -1597,7 +1566,9 @@ fn paint_map(
     }
     advance_texture_offset(&mut view.cloud_offset, [4.5, 0.7], [84.0, 32.0], scale, dt);
     let city_markers = layout_cities(&projection, rect, view.zoom);
-    let wonder_markers = layout_wonders(&projection, rect, view.zoom);
+    let mut wonder_markers = layout_wonders(&projection, rect, view.zoom);
+    wonder_markers
+        .retain(|marker| wonder_state(campaign.map(|c| &c.economy), marker.index).is_some());
 
     let close = smoothstep((view.zoom - 1.0) / 2.5);
     let sea_color = blend_color(DEEP_SEA, CLOSE_SEA, close);
@@ -1706,30 +1677,29 @@ fn paint_map(
                     painter.add(egui::Shape::mesh(mesh));
                 }
             }
-            if let Some(color) = owned_color {
-                paint_meshes(
-                    painter,
-                    &province.parts,
-                    &projection,
-                    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 168),
-                );
-            }
-            if hovered {
-                paint_meshes(
-                    painter,
-                    &province.parts,
-                    &projection,
-                    egui::Color32::from_white_alpha(48),
-                );
-            }
         } else {
-            let color = match (owned_color, hovered) {
-                (Some(color), true) => blend_color(color, egui::Color32::WHITE, 0.28),
-                (Some(color), false) => color,
-                (None, true) => blend_color(province_color(index), egui::Color32::WHITE, 0.28),
-                (None, false) => province_color(index),
-            };
-            paint_meshes(painter, &province.parts, &projection, color);
+            paint_meshes(painter, &province.parts, &projection, province_color(index));
+        }
+        if let Some(color) = owned_color {
+            paint_meshes(
+                painter,
+                &province.parts,
+                &projection,
+                egui::Color32::from_rgba_unmultiplied(
+                    color.r(),
+                    color.g(),
+                    color.b(),
+                    OWNERSHIP_FILL_ALPHA,
+                ),
+            );
+        }
+        if hovered {
+            paint_meshes(
+                painter,
+                &province.parts,
+                &projection,
+                egui::Color32::from_white_alpha(48),
+            );
         }
     }
 
@@ -1745,9 +1715,9 @@ fn paint_map(
                 &projection,
                 egui::Stroke::new(
                     if hovered {
-                        1.3
+                        1.0
                     } else {
-                        0.55
+                        0.45
                     },
                     BORDER,
                 ),
@@ -1757,7 +1727,7 @@ fn paint_map(
 
     paint_dead_sea(painter, view, &projection, sea_color);
     paint_rivers(painter, |point| projection.point(point), view.zoom, sea_color);
-    paint_sea_crossings(painter, &projection, view.zoom);
+    paint_sea_crossings(painter, &projection);
 
     paint_wildlife(painter, &view.wildlife, &view.environment_textures, &projection);
 
@@ -1784,16 +1754,16 @@ fn paint_map(
             continue;
         }
         let width = if view.hovered == Some(index) {
-            2.0
+            1.5
         } else {
-            1.4
+            1.0
         };
         for part in &province.parts {
             paint_rings(
                 painter,
                 part,
                 &projection,
-                egui::Stroke::new(width + 0.9, egui::Color32::from_rgb(47, 39, 31)),
+                egui::Stroke::new(width + 0.5, egui::Color32::from_rgb(47, 39, 31)),
             );
             paint_rings(painter, part, &projection, egui::Stroke::new(width, color));
         }
@@ -1812,10 +1782,11 @@ fn paint_map(
         Vec::with_capacity(wonder_markers.len() + city_markers.len() + atlas.provinces.len());
     occupied.extend(wonder_markers.iter().map(|marker| marker.bounds(view.zoom).expand(1.0)));
     occupied.extend(city_markers.iter().map(|marker| marker.bounds));
-    if let Some(world) = campaign.map(|c| &c.military) {
+    if let Some(campaign) = campaign {
+        let world = campaign.military_view(player, false);
         let military_markers = military_visuals::paint(
             painter,
-            world,
+            &world,
             ownership,
             &projection,
             view.zoom,
@@ -2383,6 +2354,28 @@ struct WonderMarker {
     image: Option<egui::Rect>,
 }
 
+enum WonderState<'a> {
+    Building(&'a crate::game::economy::WonderProject),
+    Completed,
+}
+
+fn wonder_state(
+    economy: Option<&crate::game::economy::EconomyWorld>,
+    index: usize,
+) -> Option<WonderState<'_>> {
+    use crate::game::economy::ConstructionProject;
+    let province = economy?.provinces.iter().find(|p| p.wonder_sites.contains(&index))?;
+    if province.completed_wonder == Some(index) {
+        return Some(WonderState::Completed);
+    }
+    match &province.construction {
+        Some(ConstructionProject::Wonder(project)) if project.wonder_id == index => {
+            Some(WonderState::Building(project))
+        },
+        _ => None,
+    }
+}
+
 struct WonderArt {
     uv: egui::Rect,
     width_to_height: f32,
@@ -2424,9 +2417,6 @@ impl WonderMarker {
     fn bounds(&self, zoom: f32) -> egui::Rect {
         let blend = city_blend(zoom);
         if let Some(image) = self.image {
-            if blend >= 1.0 {
-                return image;
-            }
             if blend > 0.0 {
                 return self.icon.union(image);
             }
@@ -2442,9 +2432,7 @@ fn layout_wonders(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> V
         if !map_rect.contains(anchor) {
             continue;
         }
-        // The overview symbol and detailed art share the exact map coordinate.
         let icon_size = 22.0 + (zoom - MIN_ZOOM).clamp(0.0, 2.0);
-        let icon = egui::Rect::from_center_size(anchor, egui::vec2(icon_size, icon_size));
         // Size the visible artwork, not the padded PNG canvas. Land and nearby
         // markers do not shrink a wonder; coastal art may extend over water.
         let art = &wonder_art()[index];
@@ -2459,6 +2447,17 @@ fn layout_wonders(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> V
             .chain(&atlas().land)
             .any(|part| part.contains(wonder.position));
         let image = on_land.then_some(image_rect);
+        // Keep the icon visible above the artwork as it fades in, leaving
+        // the illustration anchored to the historical site.
+        let icon_offset = if image.is_some() {
+            ((height + icon_size) * 0.5 + 4.0) * city_blend(zoom)
+        } else {
+            0.0
+        };
+        let icon = egui::Rect::from_center_size(
+            anchor - egui::vec2(0.0, icon_offset),
+            egui::vec2(icon_size, icon_size),
+        );
         markers.push(WonderMarker {
             index,
             icon,
@@ -2476,34 +2475,20 @@ fn paint_wonders(
     economy: Option<&crate::game::economy::EconomyWorld>,
     clock: f32,
 ) {
-    use crate::game::economy::ConstructionProject;
     for marker in markers {
-        let province = economy.and_then(|world| {
-            world.provinces.iter().find(|p| p.wonder_sites.contains(&marker.index))
-        });
-        let complete =
-            economy.is_none() || province.is_some_and(|p| p.completed_wonder == Some(marker.index));
-        let project = province.and_then(|p| match &p.construction {
-            Some(ConstructionProject::Wonder(w)) if w.wonder_id == marker.index => Some(w),
-            _ => None,
-        });
-        let blend = if marker.image.is_some() && (complete || project.is_some()) {
+        let Some(state) = wonder_state(economy, marker.index) else {
+            continue;
+        };
+        let blend = if marker.image.is_some() {
             city_blend(zoom)
         } else {
             0.0
         };
-        if blend < 1.0 {
-            paint_marker_icon(
-                painter,
-                marker.icon,
-                MarkerIcon::Wonder,
-                egui::Color32::from_white_alpha(((1.0 - blend) * 255.0).round() as u8),
-            );
-        }
+        paint_marker_icon(painter, marker.icon, MarkerIcon::Wonder, egui::Color32::WHITE);
         if let (Some(image), Some(texture)) = (marker.image, textures.get(marker.index)) {
             if blend > 0.0 {
                 let tint = egui::Color32::from_white_alpha((blend * 255.0).round() as u8);
-                if let Some(project) = project {
+                if let WonderState::Building(project) = state {
                     let texture = wonder_construction_texture(painter.ctx(), marker.index);
                     let fraction = (project.progress / project.required_progress.max(1.0))
                         .clamp(0.0, 0.999) as f32;

@@ -133,7 +133,13 @@ pub(super) fn paint(
             continue;
         }
         for (direction, side) in [(-1., &battle.attackers), (1., &battle.defenders)] {
-            let mut owners: Vec<_> = side.plans.keys().copied().collect();
+            let mut owners: Vec<_> = side
+                .units
+                .iter()
+                .map(|unit| unit.owner)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             owners.sort_unstable();
             for (cluster, owner) in owners.iter().enumerate() {
                 let active: Vec<_> = side

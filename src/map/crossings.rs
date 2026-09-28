@@ -1,4 +1,4 @@
-//! Explicit sea crossings shared by routefinding and the map legend.
+//! Explicit sea crossings shared by routefinding and the map lines.
 
 /// A traversable strait or sea lane, with geographic shore anchors.
 pub(super) struct SeaCrossing {
@@ -9,10 +9,19 @@ pub(super) struct SeaCrossing {
 }
 
 /// User-specified bidirectional links; these are ordinary graph edges, not naval combat.
-pub(super) const SEA_CROSSINGS: [SeaCrossing; 6] = [
+pub(super) const SEA_CROSSINGS: [SeaCrossing; 8] = [
     SeaCrossing {
         provinces: ["Asia", "Achaia"],
         shores: [[26.7, 38.4], [24.0, 38.0]],
+    },
+    SeaCrossing {
+        provinces: ["Creta", "Achaia"],
+        shores: [[23.58, 35.54], [23.01, 36.55]],
+    },
+    SeaCrossing {
+        provinces: ["Creta", "Asia"],
+        // Connect eastern Crete to the southwest coast of Rhodos, within Asia.
+        shores: [[26.26, 35.21], [27.76, 35.95]],
     },
     SeaCrossing {
         provinces: ["Sicilia", "Africa Proconsularis"],

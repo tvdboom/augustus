@@ -11,8 +11,14 @@ use ui::*;
 pub(crate) mod campaign;
 #[path = "game/campaign_espionage.rs"]
 mod campaign_espionage;
+#[path = "game/campaign_governance.rs"]
+mod campaign_governance;
+#[path = "game/campaign_intelligence.rs"]
+pub(crate) mod campaign_intelligence;
 #[path = "game/campaign_notifications.rs"]
 mod campaign_notifications;
+#[path = "game/campaign_trade.rs"]
+mod campaign_trade;
 #[path = "game/controls.rs"]
 mod game_controls;
 #[path = "game/resources.rs"]
@@ -127,10 +133,10 @@ impl ActiveGame {
 }
 
 #[derive(Resource)]
-struct LocalPractice {
+pub(crate) struct LocalPractice {
     color_index: usize,
     player_count: usize,
-    active_player: usize,
+    pub(crate) active_player: usize,
     players: Vec<PracticePlayer>,
 }
 
@@ -155,6 +161,7 @@ impl Default for LocalPractice {
 struct PracticePlayer {
     color_index: usize,
     rank: usize,
+    main_province: Option<usize>,
 }
 
 impl LocalPractice {
@@ -166,11 +173,15 @@ impl LocalPractice {
             .map(|index| PracticePlayer {
                 color_index: (self.color_index + index) % PLAYER_COLORS.len(),
                 rank: 0,
+                main_province: None,
             })
             .collect();
         let colors: Vec<_> =
             self.players.iter().map(|player| PLAYER_COLORS[player.color_index]).collect();
         ownership.start_game(&colors);
+        for (index, player) in self.players.iter_mut().enumerate() {
+            player.main_province = ownership.first_owned_province(index);
+        }
         let map_colors: Vec<_> =
             self.players.iter().map(|player| MAP_PLAYER_COLORS[player.color_index]).collect();
         ownership.set_map_colors(&map_colors);
@@ -343,13 +354,13 @@ impl GameClock {
 }
 
 const HUD_RESOURCE_NAMES: [&str; 7] =
-    ["Food", "Metal", "Stone", "Sestertius", "Influence", "Population", "Happiness"];
+    ["Food", "Metal", "Stone", "Coin", "Influence", "Civilians", "Happiness"];
 const POP_CLASS_NAMES: [&str; 4] = ["Nobles", "Citizens", "Plebeians", "Slaves"];
 const HUD_RESOURCE_WIDTH: f32 = 104.0;
 const HUD_RESOURCE_GROUP_PADDING: f32 = 12.0;
-const HUD_FIRST_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 3.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
-const HUD_SECOND_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 2.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
-const HUD_THIRD_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 2.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
+const HUD_FIRST_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 2.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
+const HUD_SECOND_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 3.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
+const HUD_THIRD_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH + HUD_RESOURCE_GROUP_PADDING * 2.0;
 
 #[derive(Clone, Copy)]
 struct HudResource {
@@ -490,14 +501,9 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-const PLAYER_STANDARDS: [(&str, &[u8]); 6] = [
-    ("player-standard-red", include_bytes!("../assets/images/ui/player-standard-red.png")),
-    ("player-standard-rose", include_bytes!("../assets/images/ui/player-standard-rose.png")),
-    ("player-standard-green", include_bytes!("../assets/images/ui/player-standard-green.png")),
-    ("player-standard-gold", include_bytes!("../assets/images/ui/player-standard-gold.png")),
-    ("player-standard-purple", include_bytes!("../assets/images/ui/player-standard-purple.png")),
-    ("player-standard-orange", include_bytes!("../assets/images/ui/player-standard-orange.png")),
-];
+const PLAYER_STANDARD_PNG: &[u8] = include_bytes!("../assets/images/ui/player-standard-red.png");
+const PLAYER_COLOR_NAMES: [&str; PLAYER_COLORS.len()] =
+    ["Red", "Blue", "Emerald", "Violet", "Orange"];
 
 const RANK_ICONS: [&[u8]; 6] = [
     include_bytes!("../assets/images/ui/ranks/rank-quaestor.png"),
@@ -530,28 +536,16 @@ const POP_CLASS_ICONS: [&[u8]; 4] = [
 const RANK_NAMES_ASSET: [&str; 6] =
     ["rank-quaestor", "rank-aedile", "rank-praetor", "rank-censor", "rank-consul", "rank-augustus"];
 
-const PLAYER_COLORS: [egui::Color32; 6] = [
-    // Sampled from plain cloth at (80, 700) in the standards above. These
-    // values drive the banner bar, province header, and player markers.
-    egui::Color32::from_rgb(112, 18, 17),
-    egui::Color32::from_rgb(109, 36, 55),
-    egui::Color32::from_rgb(79, 113, 66),
-    egui::Color32::from_rgb(107, 77, 24),
-    egui::Color32::from_rgb(105, 72, 126),
-    egui::Color32::from_rgb(175, 90, 43),
+const PLAYER_COLORS: [egui::Color32; 5] = [
+    // Distinct, brighter hues stay recognizable in both the menu and terrain wash.
+    egui::Color32::from_rgb(196, 57, 63),
+    egui::Color32::from_rgb(48, 132, 204),
+    egui::Color32::from_rgb(39, 150, 109),
+    egui::Color32::from_rgb(143, 87, 190),
+    egui::Color32::from_rgb(229, 118, 40),
 ];
 
-// The rose banner cloth is too close to red under the map's translucent
-// ownership wash. Only its map tint is brighter; its panel and marker colors
-// still use the exact cloth sample above.
-const MAP_PLAYER_COLORS: [egui::Color32; 6] = [
-    PLAYER_COLORS[0],
-    egui::Color32::from_rgb(225, 76, 158),
-    PLAYER_COLORS[2],
-    PLAYER_COLORS[3],
-    PLAYER_COLORS[4],
-    PLAYER_COLORS[5],
-];
+const MAP_PLAYER_COLORS: [egui::Color32; PLAYER_COLORS.len()] = PLAYER_COLORS;
 
 /// Screen-size dependent menu window resolution.
 pub fn window_resolution() -> WindowResolution {

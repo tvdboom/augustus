@@ -21,3 +21,22 @@ fn notices_are_private_deduplicated_and_kept_in_history() {
     assert_eq!(notices.history_for(1).count(), 1);
     assert!(notices.drain_for(1).is_empty());
 }
+
+#[test]
+fn province_history_retains_notices_beyond_the_transient_queue_limit() {
+    let mut notices = CampaignNotifications::default();
+    for month in 1..=250 {
+        notices.province_notice(
+            0,
+            2,
+            month,
+            NoticeSeverity::Info,
+            NoticeKind::RecruitmentCompleted,
+            "Recruitment complete",
+            "A new cohort is ready.",
+        );
+    }
+    assert_eq!(notices.history_for(0).count(), 250);
+    assert_eq!(notices.history_for(1).count(), 0);
+    assert_eq!(notices.history_for(0).last().unwrap().month, 1);
+}

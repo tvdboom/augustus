@@ -4,7 +4,7 @@ use super::*;
 
 pub(in crate::app) fn draw_map_hud(
     mut contexts: EguiContexts,
-    mut standard_textures: Local<Option<[Option<egui::TextureHandle>; 6]>>,
+    mut standard_textures: Local<Option<[Option<egui::TextureHandle>; PLAYER_COLORS.len()]>>,
     mut menu_icon_textures: Local<Option<[Option<egui::TextureHandle>; 4]>>,
     mut panels: MapPanelParams,
     mut rank_textures: Local<Option<[Option<egui::TextureHandle>; 6]>>,
@@ -26,9 +26,9 @@ pub(in crate::app) fn draw_map_hud(
     };
     let scale = viewport_ui_scale(context.content_rect().size());
     let mut color_index = if *game == ActiveGame::LobbyPreview {
-        lobby.color_index.min(PLAYER_STANDARDS.len() - 1)
+        lobby.color_index.min(PLAYER_COLORS.len() - 1)
     } else {
-        practice.color_index.min(PLAYER_STANDARDS.len() - 1)
+        practice.color_index.min(PLAYER_COLORS.len() - 1)
     };
     if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
         practice.active_player = practice.active_player.min(practice.players.len() - 1);
@@ -39,7 +39,18 @@ pub(in crate::app) fn draw_map_hud(
         standards[color_index].get_or_insert_with(|| load_player_standard(context, color_index));
     let mut speed_button_state = [(false, false); 2];
     if matches!(*state.get(), AppState::Map | AppState::EmptyScreen) {
-        draw_map_menu_hitboxes(context, scale);
+        if draw_map_menu_hitboxes(context, scale)
+            && *state.get() == AppState::Map
+            && open_main_province(
+                &practice,
+                &mut panels.campaign_ui,
+                &mut panels.province,
+                &mut panels.governance,
+            )
+        {
+            panels.close_click.0 = true;
+            play_click(&sound, &audio, &assets);
+        }
         if map_resource_strip_visible(context.content_rect(), scale) {
             let minus_available = clock.speed_step > MIN_SPEED_STEP;
             let minus = map_date_hitbox(context, scale, "minus", 24.0, 24.0, minus_available);
@@ -84,18 +95,26 @@ pub(in crate::app) fn draw_map_hud(
         matches!(*state.get(), AppState::Map | AppState::EmptyScreen),
     );
     if let Some(index) = governance_clicked.filter(|_| *state.get() == AppState::Map) {
-        let tab = [
-            campaign_panel::CampaignTab::Governance,
-            campaign_panel::CampaignTab::Military,
-            campaign_panel::CampaignTab::Trade,
-            campaign_panel::CampaignTab::Senate,
-        ][index];
-        panels.campaign_ui.open = if panels.campaign_ui.open == Some(tab) {
-            None
+        panels.campaign_ui.close_province_selector();
+        if index == 0 {
+            panels.governance.0 = !panels.governance.0;
+            panels.campaign_ui.open = None;
         } else {
-            Some(tab)
-        };
-        panels.governance.0 = false;
+            let tab = [
+                campaign_panel::CampaignTab::Military,
+                campaign_panel::CampaignTab::Trade,
+                campaign_panel::CampaignTab::Senate,
+            ][index - 1];
+            panels.campaign_ui.open = if panels.campaign_ui.open == Some(tab) {
+                None
+            } else {
+                Some(tab)
+            };
+            panels.governance.0 = false;
+            if tab == campaign_panel::CampaignTab::Trade && panels.campaign_ui.open == Some(tab) {
+                campaign_trade::open_routes(context, practice.active_player);
+            }
+        }
         panels.province.0 = None;
         play_click(&sound, &audio, &assets);
     }
@@ -135,6 +154,23 @@ pub(in crate::app) fn draw_map_hud(
     }
 }
 
+/// The player standard always returns to the founding province's overview.
+pub(in crate::app) fn open_main_province(
+    practice: &LocalPractice,
+    view: &mut campaign_panel::CampaignUi,
+    detail: &mut ProvincePanelOpen,
+    governance: &mut GovernancePanelOpen,
+) -> bool {
+    let Some(province) = practice.players.get(practice.active_player).and_then(|p| p.main_province)
+    else {
+        return false;
+    };
+    view.open_province_section(province, 0);
+    detail.0 = Some(MapDetail::Province(province));
+    governance.0 = false;
+    true
+}
+
 pub(in crate::app) fn draw_governance_panel(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
@@ -150,11 +186,8 @@ pub(in crate::app) fn draw_governance_panel(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
-    campaign: Res<campaign::Campaign>,
+    mut campaign: ResMut<campaign::Campaign>,
 ) {
-    if campaign.active {
-        return;
-    }
     if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice || !open.0 {
         *close_deadline = None;
         return;
@@ -183,7 +216,11 @@ pub(in crate::app) fn draw_governance_panel(
         )
     });
     let player = practice.active_player;
-    let mut governance = ownership.governance_for(player);
+    let mut governance = if campaign.active {
+        campaign.governance_for(player)
+    } else {
+        ownership.governance_for(player)
+    };
     let scale = viewport_ui_scale(context.content_rect().size());
     let color_index = practice.players[player].color_index;
     let banner_color = PLAYER_COLORS[color_index];
@@ -206,7 +243,11 @@ pub(in crate::app) fn draw_governance_panel(
     }
     if changed {
         ownership.set_governance_for(player, governance);
-        resources.refresh_player_rates(player, &ownership);
+        if campaign.active {
+            campaign.set_governance(player, governance);
+        } else {
+            resources.refresh_player_rates(player, &ownership);
+        }
         play_click(&sound, &audio, &assets);
     }
 }

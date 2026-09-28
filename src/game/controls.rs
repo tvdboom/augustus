@@ -12,6 +12,9 @@ pub(super) fn handle_escape(
     if !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
+    if panels.campaign_ui.close_province_selector() {
+        return;
+    }
     if panels.campaign_ui.open.take().is_some() {
         panels.province.0 = None;
         panels.governance.0 = false;
@@ -50,6 +53,7 @@ pub(super) fn escape_destination(state: AppState, game: ActiveGame) -> Option<Ap
 }
 
 pub(super) fn handle_game_shortcuts(
+    mut contexts: EguiContexts,
     keyboard: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
@@ -57,6 +61,9 @@ pub(super) fn handle_game_shortcuts(
     mut clock: ResMut<GameClock>,
     mut next: ResMut<NextState<AppState>>,
 ) {
+    if contexts.ctx_mut().is_ok_and(|ctx| ctx.egui_wants_keyboard_input()) {
+        return;
+    }
     if *state.get() == AppState::GameMenu
         && (keyboard.just_pressed(KeyCode::Enter) || keyboard.just_pressed(KeyCode::NumpadEnter))
     {

@@ -18,15 +18,13 @@ pub(crate) enum NoticeSeverity {
 /// Domain event identity used for aggregation, auditing and future networking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    /// A Senate nomination produced a candidate.
-    SenateCampaignStarted,
-    /// Tied nominees must submit another sealed round.
-    SenateSuddenDeath,
-    /// The stored Senate vote completed.
-    SenateVoteResolved,
+    /// A player paid Influence with sufficient loyal senators to gain an office.
+    SenateOfficeAppointed,
     /// An active Consul's term expired.
     ConsulTermExpired,
-    /// The Augustus ballot produced a campaign victor.
+    /// Loss of Senate confidence forced an incumbent to resign.
+    ConsulRemoved,
+    /// Senate support or conquest of Rome produced a campaign victor.
     AugustusVictory,
     /// A paid cohort completed recruitment.
     RecruitmentCompleted,
@@ -54,6 +52,8 @@ pub(crate) enum NoticeKind {
     MilitaryRankIncreased,
     /// A directly owned ordinary building completed.
     BuildingCompleted,
+    /// The direct owner began a building upgrade or a wonder project.
+    ConstructionStarted,
     /// Civilian and military demand exceeded the owner's global Food supply.
     FoodShortage,
     /// One or more recurring agreements failed or were cancelled.
@@ -87,7 +87,7 @@ pub(crate) enum NoticeKind {
 /// A reusable navigation intention; the renderer resolves canonical map coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NoticeAction {
-    /// Open the Senate chamber and its saved vote-result animation.
+    /// Open the persistent Senate chamber and current office requirements.
     OpenSenate,
     /// Select the province and open its existing contextual panel.
     OpenProvince(usize),
@@ -137,6 +137,7 @@ pub(crate) struct CampaignNotifications {
     next_id: u64,
     foreign_happiness: Vec<(usize, usize, usize, f64)>,
     last_final: Option<NotificationSnapshot>,
+    food_shortage_active: Vec<bool>,
     /// Material total loss across affected classes required for an unrest warning.
     pub happiness_warning_threshold: f64,
     /// Minimum loss of monthly military Control before reporting weakened garrisons.
@@ -154,6 +155,7 @@ impl Default for CampaignNotifications {
             next_id: 0,
             foreign_happiness: Vec::new(),
             last_final: None,
+            food_shortage_active: Vec::new(),
             happiness_warning_threshold: 5.0,
             garrison_warning_minimum: 0.5,
             garrison_warning_fraction: 0.25,
@@ -162,6 +164,15 @@ impl Default for CampaignNotifications {
 }
 
 impl CampaignNotifications {
+    /// Announce a shortage episode once per player, rearming only when supply recovers.
+    pub fn food_shortage_started(&mut self, player: usize, supplied: f64) -> bool {
+        self.food_shortage_active.resize(self.food_shortage_active.len().max(player + 1), false);
+        let active = supplied < 0.9;
+        let started = active && !self.food_shortage_active[player];
+        self.food_shortage_active[player] = active;
+        started
+    }
+
     /// Deliver only the active player's pending notices; other players retain privacy.
     pub fn drain_for(&mut self, player: usize) -> Vec<CampaignNotice> {
         let mut result = Vec::new();
@@ -195,10 +206,11 @@ impl CampaignNotifications {
         }
     }
 
-    /// Insert one event per recipient/kind/target/month, updating its aggregated body.
+    /// Aggregate monthly events; each explicit construction start remains a fresh notice.
     pub fn push(&mut self, mut notice: CampaignNotice) {
         let same = |old: &CampaignNotice| {
-            old.recipient == notice.recipient
+            notice.kind != NoticeKind::ConstructionStarted
+                && old.recipient == notice.recipient
                 && old.kind == notice.kind
                 && old.province == notice.province
                 && old.wonder == notice.wonder
@@ -216,9 +228,6 @@ impl CampaignNotifications {
         notice.id = self.next_id;
         self.pending.push(notice.clone());
         self.history.push(notice);
-        if self.history.len() > 200 {
-            self.history.remove(0);
-        }
         if self.pending.len() > 200 {
             self.pending.remove(0);
         }
@@ -263,15 +272,46 @@ pub(crate) struct NotificationSnapshot {
 }
 
 impl Campaign {
+    /// The UI calls once after a successful start, including same-month restarts.
+    pub fn notify_construction_started(&mut self, player: usize, province: usize) {
+        let state = &self.economy.provinces[province];
+        if state.owner != Some(player) {
+            return;
+        }
+        let Some(project) = &state.construction else {
+            return;
+        };
+        let (name, level) = match project {
+            ConstructionProject::Building(project) => {
+                (project.building.name(), format!("Level {}", project.target_level))
+            },
+            ConstructionProject::Wonder(project) => (
+                crate::map::wonder_name(project.wonder_id).unwrap_or("Wonder"),
+                "Wonder construction".to_owned(),
+            ),
+        };
+        self.notifications.province_notice(
+            player,
+            province,
+            self.economy.month,
+            NoticeSeverity::Info,
+            NoticeKind::ConstructionStarted,
+            format!("{name} started"),
+            format!(
+                "{level} in {} · {} months to complete.",
+                state.name,
+                project.months_remaining(&self.economy.config, state.policies.construction)
+            ),
+        );
+    }
+
     /// Senate events target the chamber explicitly rather than an unrelated province.
     pub fn record_senate_event(&mut self, event: &SenateEvent) {
-        let (kind,title,body)=match event {
-            SenateEvent::Victory(player)=>(NoticeKind::AugustusVictory,"Augustus elected".to_owned(),format!("Player {} has won the campaign. Open the Senate to review the decisive vote.",player+1)),
-            SenateEvent::CampaignStarted(player,ballot)=>(NoticeKind::SenateCampaignStarted,"Campaign Year begins".to_owned(),format!("Player {} is campaigning for {}. Open the Senate to support, oppose or inspect the blocs.",player+1,ballot.label())),
-            SenateEvent::SuddenDeath(_)=>(NoticeKind::SenateSuddenDeath,"Nomination tie".to_owned(),"The leading nominees are tied. Open the Senate for another sealed nomination round.".to_owned()),
-            SenateEvent::ConsulExpired(player)=>(NoticeKind::ConsulTermExpired,"Consular term expired".to_owned(),format!("Player {} is now a Proconsul and must regain an active Consul seat before seeking Augustus.",player+1)),
-            SenateEvent::VoteResolved(vote)=>(NoticeKind::SenateVoteResolved,format!("Senate motion {}",if vote.passed{"passed"}else{"failed"}),format!("{} YES · {} NO. Open the Senate to view the saved vote and its animation.",vote.yes,vote.no)),
-            SenateEvent::ConsumeScandal(_)=>return,
+        let (kind, title, body) = match event {
+            SenateEvent::Victory(player) => (NoticeKind::AugustusVictory, "Augustus proclaimed".to_owned(), format!("Player {} has won the campaign.", player + 1)),
+            SenateEvent::RankAdvanced(player, rank) => (NoticeKind::SenateOfficeAppointed, "Office appointed".to_owned(), format!("Player {} became {} by paying Influence with sufficient loyal senators.", player + 1, rank.label())),
+            SenateEvent::ConsulExpired(player) => (NoticeKind::ConsulTermExpired, "Consular term expired".to_owned(), format!("Player {} is now a Proconsul. They may seek a Consul seat again after 12 months.", player + 1)),
+            SenateEvent::ConsulRemoved(player) => (NoticeKind::ConsulRemoved, "Consul forced to resign".to_owned(), format!("Player {} lost Senate confidence and became Proconsul. They must wait 12 months to seek office again.", player + 1)),
         };
         for recipient in 0..self.actors.len() {
             self.notifications.push(CampaignNotice {

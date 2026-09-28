@@ -1,6 +1,6 @@
 //! Aggregate sestertius income and outflow for the local map HUD.
 
-use super::{flow_panel, ProvinceOwnership};
+use super::{campaign::Campaign, flow_panel, ProvinceOwnership};
 use bevy_egui::egui;
 
 pub(in crate::app) fn show(
@@ -10,12 +10,54 @@ pub(in crate::app) fn show(
     date_left: f32,
     player: usize,
     ownership: &ProvinceOwnership,
+    campaign: Option<&Campaign>,
     icon: &egui::TextureHandle,
     open: &mut bool,
 ) {
-    let income = [("Taxes", ownership.coin_taxes_for(player)), ("Tributes", 0.0)];
+    let taxes = campaign.map_or_else(
+        || ownership.coin_taxes_for(player),
+        |campaign| {
+            campaign
+                .economy
+                .provinces
+                .iter()
+                .filter(|p| p.owner == Some(player))
+                .map(|p| p.tax_income(&campaign.economy.config))
+                .sum()
+        },
+    );
+    let tribute = campaign.map_or(0.0, |campaign| {
+        campaign
+            .politics
+            .iter()
+            .enumerate()
+            .map(|(id, p)| {
+                let market = &campaign.economy.provinces[id].market;
+                p.tribute_due(market.monthly_coin_income.min(market.coin_treasury))
+                    .filter(|(overlord, _)| *overlord == player)
+                    .map_or(0.0, |(_, amount)| amount)
+            })
+            .sum()
+    });
+    let wages = campaign.map_or_else(
+        || ownership.military_wages_for(player),
+        |campaign| campaign.army_wages(player),
+    );
+    let income = [("Taxes", taxes), ("Tributes", tribute)];
+    let civic = campaign.map_or(0.0, |campaign| {
+        campaign
+            .economy
+            .provinces
+            .iter()
+            .filter(|p| p.owner == Some(player))
+            .map(|p| p.civic_spending_cost(&campaign.economy.config))
+            .sum()
+    });
+    let recruitment = campaign.map_or(0.0, |campaign| campaign.recruitment_effort_cost(player));
     let outflow = [
-        ("Wages", ownership.military_wages_for(player)),
+        ("Wages", wages),
+        ("Civic spending", civic),
+        ("Recruitment effort", recruitment),
         ("Army maintenance", 0.0),
         ("Deals", 0.0),
     ];

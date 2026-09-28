@@ -76,6 +76,22 @@ pub struct EconomyConfig {
     pub production_scale: [f64; 3],
     /// Resource focus weights, ordered Balanced, Food, Metal, Stone.
     pub focus_weights: [[f64; 3]; 4],
+    /// Slow, Normal, Urgent construction speed multipliers.
+    pub construction_speed: [f64; 3],
+    /// Fraction of productive labor diverted while a project is active.
+    pub construction_labor: [f64; 3],
+    /// Frugal, Normal, Generous monthly Coin per resident.
+    pub civic_coin_per_resident: [f64; 3],
+    /// Happiness support at full civic funding, recomposed every month.
+    pub civic_happiness: [f64; 3],
+    /// Low, Normal, High recruitment progress per month at full funding.
+    pub recruitment_speed: [f64; 3],
+    /// Extra monthly Coin per recruit, charged only for active projects.
+    pub recruitment_coin_per_recruit: [f64; 3],
+    /// Local class happiness effect while recruitment is active.
+    pub recruitment_happiness: [f64; 3],
+    /// Restricted, Normal, Encouraged slave-to-plebeian rate multipliers.
+    pub manumission_multiplier: [f64; 3],
     /// Global physical storage without buildings.
     pub base_storage: [f64; 3],
     /// New player starting stocks; preserves a food buffer for specialization.
@@ -117,6 +133,14 @@ pub struct TradeConfig {
     pub required_value_ratios: [f64; 5],
     /// Additional one-time transaction margin.
     pub one_time_margin: f64,
+    /// Relation lost when an accepted NPC route is ended without notice.
+    pub cancellation_relation_penalty: f64,
+    /// Monthly deliveries retained after giving notice to an NPC.
+    pub cancellation_notice_months: u32,
+    /// Open-market spread above/below base resource values.
+    pub open_market_spread: f64,
+    /// Quantity at which transaction size adds one full base-value margin.
+    pub open_market_depth: [f64; 3],
     /// Coin value of one influence when exchanges are enabled.
     pub influence_value: f64,
     /// NPC resource needs without military or development modifiers.
@@ -225,12 +249,20 @@ impl Default for EconomyConfig {
             productivity: [1.0, 1.5],
             production_scale: [1.1, 0.65, 0.8],
             focus_weights: [[1.0; 3], [3.0, 1.0, 1.0], [1.0, 3.0, 1.0], [1.0, 1.0, 3.0]],
+            construction_speed: [0.75, 1.0, 1.5],
+            construction_labor: [0.05, 0.10, 0.20],
+            civic_coin_per_resident: [0.0, 0.03, 0.08],
+            civic_happiness: [0.0, 1.0, 3.0],
+            recruitment_speed: [0.75, 1.0, 1.5],
+            recruitment_coin_per_recruit: [0.0, 0.0, 0.10],
+            recruitment_happiness: [1.0, 0.0, -2.0],
+            manumission_multiplier: [0.25, 1.0, 4.0],
             base_storage: [2400.0, 1600.0, 4000.0],
             starting_stock: [450.0, 120.0, 200.0],
             tax_rates: [1.0, 0.5, 0.2, 0.0],
             influence_per_noble: 0.25,
             buildings: BuildingType::ALL.into_iter().map(BuildingDefinition::for_type).collect(),
-            wonders: (0..10).map(WonderDefinition::for_site).collect(),
+            wonders: (0..crate::map::WONDER_COUNT).map(WonderDefinition::for_site).collect(),
             wonder_slave_speeds: vec![
                 (0.0, 1.0),
                 (25.0, 1.25),
@@ -257,6 +289,10 @@ impl Default for TradeConfig {
             demand_band_thresholds: [0.1, 0.5],
             required_value_ratios: [1.5, 1.25, 1.1, 1.05, 1.0],
             one_time_margin: 1.1,
+            cancellation_relation_penalty: 10.0,
+            cancellation_notice_months: 6,
+            open_market_spread: 0.1,
+            open_market_depth: [1000.0, 400.0, 600.0],
             influence_value: 8.0,
             npc_base_need: [0.0, 2.0, 2.0],
             npc_military_metal_need: 0.1,

@@ -53,7 +53,7 @@ Illustrative opening provinces, before buildings or recruitment:
 | Aegyptus | 68.3 | +125.9 | +210.3 | 3.2 | 62.8 |
 | Asia | 57.0 | +31.0 | +82.8 | 3.3 | 64.0 |
 
-Achaia's grain deficit is soluble with Food focus plus one Farm: +15% output, costing 80 Stone and 15 Metal, completed in three monthly ticks. Its 450 opening Food provides about 16 months at the Balanced opening deficit before military demand, and far longer under Food focus. Mineral-poor provinces deliberately need trade/expansion for equipment; a 40-Metal heavy-infantry cohort costs around ten months of Achaia's unmodified Metal output but less than one month of Tarraconensis's. Recruitment time, finite class manpower, lost civilian production, and recurring military Food remain the other costs, so mineral abundance alone does not allow instant unlimited forces.
+Achaia's grain deficit is managed with Food focus and trade; Farms are no longer in the building catalog. Its 450 opening Food provides about 16 months at the Balanced opening deficit before military demand, and far longer under Food focus. Granaries raise Food storage without increasing output. Mineral-poor provinces deliberately need trade/expansion for equipment; a 40-Metal heavy-infantry cohort costs around ten months of Achaia's unmodified Metal output but less than one month of Tarraconensis's. Recruitment time, finite class manpower, lost civilian production, and recurring military Food remain the other costs, so mineral abundance alone does not allow instant unlimited forces.
 
 An isolated, unmanaged, player-owned province with zero Food and no imports will eventually starve; this is expected and is not evidence of a stable playable strategy. The 300-month all-province stress check tests finite/nonnegative state and storage limits. It does **not** claim that ignoring every deficit, policy, building, and trade opportunity is viable. A separate 480-month connected-world test checks demographic/migration numerical stability. Long-campaign multiplayer balance remains a playtesting task, not something proven by invariant tests.
 
@@ -66,7 +66,7 @@ The README was traced through the reachable application paths, rather than only 
 | Four population classes, capacity, happiness, births/deaths/class changes | Province → Overview; global HUD hover | `Campaign::advance_month` → `EconomyWorld::finish_month` → `advance_demographics`; `sync_campaign` projects actual balances and population-weighted class happiness changes |
 | Food, focus, slave labor and migration policies | Province → Policies, direct-owner segmented choices | `campaign_economy::policies` edits the selected province's policies; `production`, `food_request`, `advance_demographics`, `migrate` consume them |
 | Production/storage/taxes/domestic Influence | Overview resource rows and HUD ledgers | `begin_month` credits output and runs trade; `finish_month` consumes food, credits income and clamps shared storage; ownership reconciliation and one-time trade clamp immediately |
-| All sixteen standard/city buildings | Buildings illustrated rows; city-only rows require a canonical city | Build calls `start_building` with the displayed rounded quote; monthly completion updates the real level; effects feed capacity/output/storage/happiness/tax/Influence, trade and military adapters |
+| Four countryside and eight city buildings | Compact illustrated cards; city cards require a canonical city | Granary stores Food; Warehouse stores Metal/Stone; Aqueduct adds population capacity; Road levels feed military travel and trade. Academy adds Influence/Citizen happiness; Foundry adds Metal output. Build calls `start_building` with the displayed rounded quote; monthly completion updates the real level |
 | Ten reachable canonical wonders | Buildings at the actual site province | `campaign_seeds` polygon containment → `wonder_sites` → illustrated Build action → `start_wonder`; monthly rewards and map construction state use the same project |
 | Wonder slave assignment/cancellation/capture | Active project slider and Cancel | `assign_wonder_slaves` validates local Slaves; configured tier tooltip exposes actual speed; diverted labor still consumes food; cancel preserves the spent cost; ownership change resets assignment |
 | Explicit player trade consent | Select a foreign province → Trade → Propose; switch player → Trade → Accept | The same agreement appears in both participants' ledgers; `accept_trade` verifies the invited player; immediate quote and execution share bilateral supply validation |
@@ -86,3 +86,31 @@ Tests live under `tests/unit`, outside production source. See the shared
 [verification record](verification.md) for the final build/tooling results. Native visual review
 remains pending; numerical invariants and headless widget bounds do not prove strategic balance
 or final on-screen appearance.
+
+## Reduced building catalog verification (2026-09-28)
+
+The catalog now contains four countryside improvements and eight additional city buildings.
+The compact cards retain whole-card clicks, hover costs/effects and construction progress.
+The no-wonder layout check verifies every card is visible and wheel input leaves the grid
+stationary at 100%, 85% and 70% UI scales, including an active building and its status footer.
+Wonders remain reachable by scrolling and unusually small panels retain bounded scrolling.
+
+`cargo test --package augustus --all-targets -j12 -- --test-threads=12` passed all 234 tests.
+New checks cover exact category counts, atomic rejection of all eight city buildings in
+countryside provinces, Warehouse's Metal/Stone-only storage, Aqueduct capacity, Academy and
+Foundry effects, and completed Roads reaching the military graph and reducing travel time.
+`just fmt-check` and `git diff --check` passed. All four new PNGs have transparent RGBA alpha;
+their source prompts and saved paths are recorded in [the building art record](generated-art-buildings.md).
+`just assets` completed, and `just assets-check` verified all 20 runtime assets.
+
+The follow-up layout distributes the entire available width among exactly four equal
+columns with even gaps, retaining 120-pixel height at 100% scale and shrinking card contents
+at narrower widths. Owned and foreign province views share the same layout. Buildings use
+the city panorama only when `has_city` is true; other provinces use the new village panorama.
+Overview terrain portraits remain selected by province terrain. Layout checks compare the
+first and fourth card edges with each category's underline, and the header check switches
+city status repeatedly in one egui context to verify the actual painted texture changes.
+
+Follow-up verification: all 62 `app::ui` tests passed, including four-column edge alignment,
+city/village switching, retained no-wonder fit, and both banners under 2048/1024 texture limits.
+`just fmt-check`, `git diff --check`, `just assets` and `just assets-check` also passed.

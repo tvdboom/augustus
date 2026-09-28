@@ -76,7 +76,55 @@ pub enum ResourceFocus {
     Stone,
 }
 
-/// Province-local policies shown and changed by the province panel.
+/// Local construction speed versus productive workforce allocation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConstructionPace {
+    /// Fewer workers and slower completion.
+    Slow,
+    /// Ordinary public works.
+    #[default]
+    Normal,
+    /// Divert more productive labor to finish sooner.
+    Urgent,
+}
+
+/// Monthly local Coin budget for civilian wellbeing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CivicSpending {
+    /// No discretionary spending or happiness bonus.
+    #[default]
+    Frugal,
+    /// Modest spending and happiness support.
+    Normal,
+    /// Greater spending and happiness support.
+    Generous,
+}
+
+/// Recruitment speed, expense and local happiness while a cohort is being raised.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecruitmentEffort {
+    /// Slower recruitment with less pressure on residents.
+    Low,
+    /// Ordinary recruitment without an extra Coin budget.
+    #[default]
+    Normal,
+    /// Pay for faster recruitment at a local happiness cost.
+    High,
+}
+
+/// Gradual slave-to-plebeian conversion; total population is conserved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ManumissionPolicy {
+    /// Reduce the ordinary emancipation rate.
+    Restricted,
+    /// Ordinary emancipation rate.
+    #[default]
+    Normal,
+    /// Encourage emancipation into the free workforce.
+    Encouraged,
+}
+
+/// Nationwide rations/labor and six province-local policy values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvincePolicies {
     /// Civilian food rations.
@@ -87,6 +135,14 @@ pub struct ProvincePolicies {
     pub migration: MigrationPolicy,
     /// Physical resource labor allocation.
     pub focus: ResourceFocus,
+    /// Local building and wonder pace.
+    pub construction: ConstructionPace,
+    /// Optional local wellbeing budget.
+    pub civic_spending: CivicSpending,
+    /// Effort applied only to an active recruitment project.
+    pub recruitment: RecruitmentEffort,
+    /// Rate at which slaves become plebeians.
+    pub manumission: ManumissionPolicy,
 }
 
 /// Global player balances. Physical storage is never attached to owned provinces.
@@ -166,6 +222,14 @@ pub struct EconomicProvince {
     pub completed_wonder: Option<usize>,
     /// Persistent externally managed class happiness modifiers, e.g. unrest.
     pub happiness_modifiers: [f64; 4],
+    /// Nationwide noble-tax rate multiplier, projected by the owning campaign.
+    pub noble_tax_multiplier: f64,
+    /// Nationwide noble-tax happiness effect, recomposed each month.
+    pub noble_tax_happiness: f64,
+    /// Happiness support actually funded in the latest economic month.
+    pub civic_happiness: f64,
+    /// Non-accumulating recruitment-effort effect for the current month.
+    pub recruitment_happiness: f64,
     /// Additional per-class happiness effect that decays monthly.
     pub temporary_happiness: [f64; 4],
     /// Local market with persistent NPC coin treasury.
@@ -201,6 +265,10 @@ impl EconomicProvince {
             wonder_sites: Vec::new(),
             completed_wonder: None,
             happiness_modifiers: [0.0; 4],
+            noble_tax_multiplier: 1.0,
+            noble_tax_happiness: 0.0,
+            civic_happiness: 0.0,
+            recruitment_happiness: 0.0,
             temporary_happiness: [0.0; 4],
             market: NpcTradeEconomy::default(),
         }
@@ -219,6 +287,8 @@ impl EconomicProvince {
     /// Preserve buildings/projects on capture while resetting forced labor assignment.
     pub fn change_owner(&mut self, owner: Option<usize>, overlord: Option<usize>) {
         if self.owner != owner || self.overlord != overlord {
+            self.civic_happiness = 0.0;
+            self.recruitment_happiness = 0.0;
             if let Some(ConstructionProject::Wonder(project)) = &mut self.construction {
                 project.assigned_slaves = 0.0;
             }
@@ -297,6 +367,8 @@ pub struct ProvinceMonth {
     pub migration: [f64; 4],
     /// Tax income paid to the direct owner.
     pub tax_income: f64,
+    /// Coin actually paid for local civic spending before taxes arrive.
+    pub civic_spending: f64,
     /// Domestic/building/wonder passive influence, excluding political rank/vassals.
     pub influence_income: f64,
     /// Total population change, all demographic effects included.
@@ -333,6 +405,11 @@ pub enum EconomyEvent {
     },
     /// A recurring agreement hit its consecutive-failure limit.
     TradeCancelled {
+        /// Stable agreement identifier.
+        agreement: u64,
+    },
+    /// Voluntary NPC notice elapsed after its last scheduled delivery.
+    TradeNoticeCompleted {
         /// Stable agreement identifier.
         agreement: u64,
     },

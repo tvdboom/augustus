@@ -1,6 +1,6 @@
 //! Province construction slots, unlimited upgrades, and canonical wonder projects.
 
-use super::{EconomicProvince, EconomyConfig, EconomyEvent, EconomyWorld};
+use super::{ConstructionPace, EconomicProvince, EconomyConfig, EconomyEvent, EconomyWorld};
 
 /// Standard improvements, with explicit stable indexes for save/UI arrays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -8,59 +8,47 @@ use super::{EconomicProvince, EconomyConfig, EconomyEvent, EconomyWorld};
 pub enum BuildingType {
     /// Food storage.
     Granary,
-    /// Storage for every physical resource.
+    /// Metal and stone storage.
     Warehouse,
+    /// Faster army travel and more efficient trade routes.
+    Road,
     /// Comfortable population capacity.
     Aqueduct,
-    /// Local food production and rural capacity.
-    Farm,
-    /// Local metal production.
-    Mine,
-    /// Local stone production.
-    Quarry,
-    /// Trade and military movement infrastructure.
-    Road,
-    /// Defensive fortification.
-    Fort,
     /// City influence source.
     Forum,
     /// City capacity and happiness.
     Baths,
+    /// City taxes and trade.
+    UrbanMarket,
     /// City happiness and influence.
     Temple,
     /// City happiness.
     Arena,
-    /// City taxes and trade.
-    UrbanMarket,
     /// City defenses.
     CityWalls,
-    /// Dedicated metal storage.
-    Armory,
-    /// Dedicated stone storage.
-    StoneYard,
+    /// City influence and citizen happiness.
+    Academy,
+    /// City metal production.
+    Foundry,
 }
 
 impl BuildingType {
     /// Number of supported normal buildings.
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 12;
     /// Stable UI order, with city improvements grouped together.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Granary,
         Self::Warehouse,
-        Self::Aqueduct,
-        Self::Farm,
-        Self::Mine,
-        Self::Quarry,
         Self::Road,
-        Self::Fort,
+        Self::Aqueduct,
         Self::Forum,
         Self::Baths,
+        Self::UrbanMarket,
         Self::Temple,
         Self::Arena,
-        Self::UrbanMarket,
         Self::CityWalls,
-        Self::Armory,
-        Self::StoneYard,
+        Self::Academy,
+        Self::Foundry,
     ];
 
     /// Player-facing building name.
@@ -69,19 +57,15 @@ impl BuildingType {
             Self::Granary => "Granary",
             Self::Warehouse => "Warehouse",
             Self::Aqueduct => "Aqueduct",
-            Self::Farm => "Farm / Irrigation",
-            Self::Mine => "Mine",
-            Self::Quarry => "Quarry",
             Self::Road => "Road",
-            Self::Fort => "Fort",
             Self::Forum => "Forum",
             Self::Baths => "Baths",
             Self::Temple => "Temple",
             Self::Arena => "Arena",
-            Self::UrbanMarket => "Urban Market",
-            Self::CityWalls => "City Walls",
-            Self::Armory => "Armory",
-            Self::StoneYard => "Stone Yard",
+            Self::UrbanMarket => "Market",
+            Self::CityWalls => "Walls",
+            Self::Academy => "Academy",
+            Self::Foundry => "Foundry",
         }
     }
 }
@@ -141,34 +125,14 @@ impl BuildingDefinition {
                 (100.0, 10.0, 3.0, false)
             },
             Warehouse => {
-                effects.storage = [300.0, 300.0, 600.0];
+                effects.storage = [0.0, 600.0, 1000.0];
                 (140.0, 20.0, 4.0, false)
             },
             Aqueduct => {
                 effects.capacity = 20.0;
                 (160.0, 20.0, 4.0, false)
             },
-            Farm => {
-                effects.production[0] = 0.15;
-                effects.capacity = 5.0;
-                (80.0, 15.0, 3.0, false)
-            },
-            Mine => {
-                effects.production[1] = 0.15;
-                (100.0, 25.0, 3.0, false)
-            },
-            Quarry => {
-                effects.production[2] = 0.15;
-                (80.0, 20.0, 3.0, false)
-            },
-            Road => {
-                effects.migration = 0.1;
-                (100.0, 10.0, 3.0, false)
-            },
-            Fort => {
-                effects.defense = 0.1;
-                (200.0, 60.0, 5.0, false)
-            },
+            Road => (100.0, 10.0, 3.0, false),
             Forum => {
                 effects.influence = 0.5;
                 (180.0, 20.0, 4.0, true)
@@ -196,13 +160,14 @@ impl BuildingDefinition {
                 effects.defense = 0.1;
                 (260.0, 60.0, 6.0, true)
             },
-            Armory => {
-                effects.storage[1] = 600.0;
-                (130.0, 40.0, 4.0, false)
+            Academy => {
+                effects.influence = 0.25;
+                effects.happiness[1] = 3.0;
+                (200.0, 20.0, 5.0, true)
             },
-            StoneYard => {
-                effects.storage[2] = 1000.0;
-                (120.0, 10.0, 3.0, false)
+            Foundry => {
+                effects.production[1] = 0.15;
+                (150.0, 40.0, 4.0, true)
             },
         };
         Self {
@@ -315,8 +280,8 @@ impl ConstructionProject {
     }
 
     /// Work rate using current assignment, so changing workers updates estimates.
-    pub fn speed(&self, config: &EconomyConfig) -> f64 {
-        match self {
+    pub fn speed(&self, config: &EconomyConfig, pace: ConstructionPace) -> f64 {
+        let base = match self {
             Self::Building(_) => 1.0,
             Self::Wonder(p) => config
                 .wonder_slave_speeds
@@ -325,13 +290,14 @@ impl ConstructionProject {
                 .map(|(_, speed)| *speed)
                 .next_back()
                 .unwrap_or(1.0),
-        }
+        };
+        base * config.construction_speed[pace as usize].max(0.0)
     }
 
     /// Whole monthly ticks remaining at current speed, recalculated for the UI.
-    pub fn months_remaining(&self, config: &EconomyConfig) -> u32 {
+    pub fn months_remaining(&self, config: &EconomyConfig, pace: ConstructionPace) -> u32 {
         let (progress, required) = self.progress();
-        ((required - progress).max(0.0) / self.speed(config).max(0.001)).ceil() as u32
+        ((required - progress).max(0.0) / self.speed(config, pace).max(0.001)).ceil() as u32
     }
 }
 
@@ -509,7 +475,7 @@ impl EconomyWorld {
             let Some(mut project) = state.construction.take() else {
                 continue;
             };
-            let speed = project.speed(&self.config);
+            let speed = project.speed(&self.config, state.policies.construction);
             match &mut project {
                 ConstructionProject::Building(p) => p.progress += speed,
                 ConstructionProject::Wonder(p) => p.progress += speed,

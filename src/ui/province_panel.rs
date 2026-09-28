@@ -15,6 +15,41 @@ pub(in crate::app) const PAPER: egui::Color32 = egui::Color32::from_rgb(238, 233
 pub(in crate::app) const TABLE_STRIPE: egui::Color32 = egui::Color32::from_rgb(244, 239, 225);
 pub(in crate::app) const NEUTRAL: egui::Color32 = egui::Color32::from_rgb(205, 208, 207);
 
+/// Close feedback follows the owning player's banner and keeps contrasting ink.
+pub(in crate::app) fn header_close_colors(
+    header: egui::Color32,
+    hovered: bool,
+    pressed: bool,
+) -> (egui::Color32, egui::Color32) {
+    let bright = f32::from(header.r()) * 0.299
+        + f32::from(header.g()) * 0.587
+        + f32::from(header.b()) * 0.114
+        > 150.0;
+    let ink = if bright {
+        INK
+    } else {
+        egui::Color32::from_rgb(255, 238, 210)
+    };
+    let strength = if pressed {
+        0.3
+    } else if hovered {
+        0.16
+    } else {
+        0.0
+    };
+    let fill = if strength == 0.0 {
+        egui::Color32::TRANSPARENT
+    } else {
+        let blend = |base, target| egui::lerp(f32::from(base)..=f32::from(target), strength) as u8;
+        egui::Color32::from_rgb(
+            blend(header.r(), ink.r()),
+            blend(header.g(), ink.g()),
+            blend(header.b(), ink.b()),
+        )
+    };
+    (fill, ink)
+}
+
 const TERRAIN_IMAGES: [(&str, &[u8]); 12] = [
     ("desert", include_bytes!("../../assets/images/map/terrain/desert.png")),
     ("farmland", include_bytes!("../../assets/images/map/terrain/farmland.png")),
@@ -221,22 +256,9 @@ pub(in crate::app) fn show(
             }
             let close_pressed =
                 closing || response.is_pointer_button_down_on() || response.clicked();
-            let close_ink = if close_pressed {
-                egui::Color32::from_rgb(255, 239, 209)
-            } else {
-                header_ink
-            };
-            painter.circle_filled(
-                close.center(),
-                14.0 * draw_scale,
-                if close_pressed {
-                    egui::Color32::from_rgb(112, 48, 43)
-                } else if response.hovered() {
-                    egui::Color32::from_white_alpha(55)
-                } else {
-                    egui::Color32::TRANSPARENT
-                },
-            );
+            let (close_fill, close_ink) =
+                header_close_colors(header, response.hovered(), close_pressed);
+            painter.circle_filled(close.center(), 14.0 * draw_scale, close_fill);
             painter.circle_stroke(
                 close.center(),
                 13.0 * draw_scale,

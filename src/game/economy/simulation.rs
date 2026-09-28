@@ -46,6 +46,7 @@ impl EconomyWorld {
         inputs: &MonthlyInputs,
         mut report: MonthlyReport,
     ) -> MonthlyReport {
+        self.pay_civic_spending(&mut report.province_reports);
         let mut food_requested: Vec<f64> = (0..self.players.len())
             .map(|player| inputs.army_food.get(player).copied().unwrap_or(0.0).max(0.0))
             .collect();
@@ -125,6 +126,47 @@ impl EconomyWorld {
         self.month = report.month;
         self.last_report = report.clone();
         report
+    }
+
+    /// Fund all provinces of one owner proportionally from the same pre-tax Coin pool.
+    fn pay_civic_spending(&mut self, reports: &mut [ProvinceMonth]) {
+        let requests: Vec<_> =
+            self.provinces.iter().map(|p| p.civic_spending_cost(&self.config)).collect();
+        let mut totals = vec![0.0; self.players.len()];
+        for (province, &requested) in self.provinces.iter().zip(&requests) {
+            if let Some(total) = province.owner.and_then(|owner| totals.get_mut(owner)) {
+                *total += requested;
+            }
+        }
+        let coverage: Vec<_> = self
+            .players
+            .iter_mut()
+            .zip(totals)
+            .map(|(wallet, requested)| {
+                let paid = wallet.coin.max(0.0).min(requested);
+                wallet.coin -= paid;
+                if requested > 0.0 {
+                    paid / requested
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+        for ((province, summary), requested) in self.provinces.iter_mut().zip(reports).zip(requests)
+        {
+            let funded = if let Some(owner) = province.owner {
+                coverage.get(owner).copied().unwrap_or(0.0)
+            } else if requested > 0.0 {
+                let paid = province.market.coin_treasury.max(0.0).min(requested);
+                province.market.coin_treasury -= paid;
+                paid / requested
+            } else {
+                1.0
+            };
+            summary.civic_spending = requested * funded;
+            province.civic_happiness =
+                self.config.civic_happiness[province.policies.civic_spending as usize] * funded;
+        }
     }
 
     /// Run a complete economic month when no external diplomacy stage is needed.

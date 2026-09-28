@@ -14,6 +14,8 @@ This audit maps specification v10 sections 244–368 to the implemented military
 
 ## Implemented requirements
 
+The left-menu Military panel is a national army overview. Rows group forces by province and owner, with your own force first and other currently visible forces in that location on separate player-colored rows. Unit-type icons always show cohort counts, alongside the selected tactic, manpower-weighted morale, and average training. Engaged cohorts remain in their province force; each marching order has a separate row using its current origin, next destination, and captured tactic. Foreign tactics remain hidden, and dated spy reports are excluded from this current-army ledger. Clicking any row focuses that province and opens Military → Army; recruitment remains exclusively in the province's Recruit units tab.
+
 | Specification | Implementation and verification |
 | --- | --- |
 | 244–247, 294 | Province/owner forces, 11 individually identified unit types, no persistent Army model. `MilitaryWorld::all_units` visits province, movement, and battle ownership exactly once. |

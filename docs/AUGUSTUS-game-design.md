@@ -3,9 +3,114 @@
 > Implementation specification.  
 > This document is intended to be sufficient for another coding agent to implement the mechanics described here without needing the design conversation.
 
+> User override, 2026-09-28: province visibility is exact or hidden, with no estimated
+> populations or qualitative substitutes. Direct owners and a vassal's own overlord
+> see current local information. Foreign independent NPCs, foreign vassals and
+> player-owned provinces use the same rules: geography, resource potential,
+> completed building levels, Relation and Control are public. Population and class
+> happiness require one surviving spy month; production, consumption and policies
+> require two; construction progress, stationed troops, Training, Morale and
+> recruitment require three. Deployment reveals no private information. Paid
+> maintenance and detection resolve before a report; scandal discovery remains
+> separate. Reports contain exact observations dated by game month, refresh monthly,
+> and remain historical when a spy is withdrawn or caught. Redeployment starts at
+> access zero; older tiers retain their original dates until unlocked again.
+> Spies reveal only their assigned province, never nationwide player stockpiles,
+> treasury, tactics or movement destinations. Own stationed troops observe their
+> province and immediately adjacent provinces; battle participants observe their
+> battlefield. Military observation does not reveal recruitment queues. Foreign
+> movement routes are private. Historical spy troops are shown in dated inspector
+> reports, not as current map sprites. Wonder starts and completions remain public;
+> their detailed progress requires administration or a third-month report. NPC trade
+> export/import offers and prices remain public negotiation terms; foreign NPC Coin
+> treasuries and demand-band descriptions are hidden. These rules override earlier
+> requirements to display foreign construction or exact spy risk before intelligence.
+> Display unknown values as `?`, without explanatory hidden-information text. Omit
+> unavailable construction details from the overview and building panel; keep dates
+> on reports that are available and public wonder announcements.
+> Foreign ledgers use the same columns as domestic ledgers: population amount,
+> monthly change and happiness; resource stock/storage and provincial production.
+> Shared foreign stockpiles remain `? / ?`; public resource potential remains
+> available in the resource tooltip. Population changes are dated first-month
+> observations, calculated from births, deaths and migration as in domestic ledgers.
+
 > User override, 2026-09-27: remove Ay Khanum because its coordinate lies outside the playable atlas.
-> The live wonder catalog contains the remaining ten sites at their existing coordinates. This overrides
-> the original attachment's eleven-site list in sections 124 and 142.
+> User override, 2026-09-28: keep at most one wonder site per province. Asia retains the Colossus
+> of Rhodes, removing Pergamon and Halicarnassus; Achaia retains the Temple of Zeus at Olympia,
+> removing Dodona. The live catalog contains seven sites at their existing coordinates.
+> Unbuilt wonders show neither icon nor artwork. Started wonders retain their icon at all zoom
+> levels, alongside construction animation or completed artwork at close zoom. This overrides
+> the earlier site lists and unbuilt rendering options.
+
+> User override, 2026-09-28: Food Rations, Slave Labor, Noble Taxes, and Army Wages are
+> nationwide policies. Resource Focus and Migration Focus remain province-local.
+
+> User override, 2026-09-28: add province-local Construction Pace, Civic Spending,
+> Recruitment Effort, and Manumission. All six local policies use at most three
+> sections: Economy & Works (Resource Focus, Construction Pace), Population & Welfare
+> (Migration Focus, Civic Spending, Manumission), and Military (Recruitment Effort).
+> Resource Focus's neutral option is named Balanced. Policy cards scroll vertically
+> at their normal width-based size and remain editable only by the direct owner.
+
+Province policy implementation defaults and monthly rules:
+
+- **Construction Pace:** Slow / Normal / Urgent multiply building and wonder progress
+  by `0.75 / 1.0 / 1.5`. While a project is active, divert `5% / 10% / 20%` of the
+  province's remaining productive labor from resource production. Wonder-assigned
+  slaves are excluded before this diversion, so no worker is counted twice. Idle
+  provinces have no diversion. Default: Normal. Estimates, notifications, and dated
+  construction reports use the applicable pace; capture preserves project progress.
+- **Civic Spending:** Frugal / Normal / Generous request `0 / 0.03 / 0.08` Coin per
+  resident each month, granting `0 / +1 / +3` happiness to every class at full funding.
+  Default: Frugal. Payment occurs after recurring trade and diplomatic support, before
+  demographics and tax income. All provinces of the same owner receive proportional
+  funding from that owner's available Coin, independent of province iteration order.
+  The happiness bonus scales with funding and is recomposed each month, not accumulated.
+  NPC policies, if changed, use the local treasury; overlords do not fund NPC policies.
+- **Recruitment Effort:** Low / Normal / High give `0.75 / 1.0 / 1.5` recruitment
+  progress per month and `+1 / 0 / -2` local class happiness while a project is active.
+  Extra monthly cost is `0 / 0 / 0.10` Coin per drafted recruit in the active project.
+  Default: Normal. Pay before recruitment progresses, so completing cohorts still
+  receive that month's food. Each owner's active projects share available Coin
+  proportionally. Partial High funding scales extra speed and happiness pressure
+  toward Normal; no funding gives Normal speed and no extra happiness pressure.
+  Inactive and ownership-invalidated projects incur no effort expense or happiness
+  effect. Completion months include the effect; the next inactive month clears it.
+  Existing upfront population and Metal costs, draft penalties and cancellation rules
+  remain in force. Effort does not start recruitment automatically.
+- **Manumission:** Restricted / Normal / Encouraged multiply the existing monthly
+  slave-to-plebeian rate by `0.25 / 1.0 / 4.0`. Default: Normal. At the existing base
+  rate, this frees `0.0125% / 0.05% / 0.2%` of surviving slaves per month. Conversion
+  preserves total population, uses the same pre-conversion class snapshot as other
+  promotions, and never promotes a newly freed plebeian again in that month. Clamp
+  wonder assignments to the slaves remaining after demographics and conversion.
+
+All rates, costs, labor fractions and happiness modifiers live in `EconomyConfig`.
+The Coin outflow panel includes Civic Spending and active Recruitment Effort budgets.
+New policy values are included in the existing second-month economic spy report;
+construction pace is also captured with third-month operations to keep dated estimates
+independent of later policy changes.
+
+> Implementation baseline for the restored nationwide controls:
+> Nationwide rations/labor apply to directly owned provinces, including newly acquired ones;
+> independent provinces and vassals keep their own policies. Noble Taxes use the configured
+> noble rate multiplied by 0.5/1.0/1.5 and add +1/0/-1 noble happiness. Restored Army Wages
+> use the retained 0.75/1.0/1.25 wage factors and -2/0/+1 peaceful morale-target modifiers.
+> The initial configurable normal wage is 0.05 Coin per surviving soldier per month;
+> partial payment reduces morale support. Wages cover stationed, moving, and fighting troops.
+
+> User override, 2026-09-28: Trade is nationwide and accessed from the left menu, with no
+> province Trade tab. NPC routes can be cancelled immediately with a relation penalty, or
+> after six months' notice without a penalty. Player agreements end immediately without
+> political effects. New agreements may be monthly or single-time; NPC single-time offers
+> retain the existing worse terms. The open market provides immediate goods/Coin exchange,
+> with worse unit prices for larger transactions, so several smaller exchanges are better.
+>
+> Initial configurable balance: immediate NPC cancellation loses 10 relation; notice retains
+> six deliveries and ends after the sixth. Open-market prices use base values and a margin
+> of `0.10 + quantity / depth`, with Food/Metal/Stone depth `1000/400/600`. Buy cost is
+> `quantity × base × (1 + margin)`; sale proceeds are `quantity × base / (1 + margin)`.
+> Each exchange has its own size impact; no diplomatic relation or Control is awarded.
 
 ---
 
@@ -892,12 +997,7 @@ Granary:
     +global food storage
 
 Warehouse:
-    +global food/metal/stone storage
-
-Armory:
     +global metal storage
-
-Stone Yard:
     +global stone storage
 ```
 
@@ -2672,14 +2772,6 @@ Examples:
 +province population capacity
 ```
 
-## Irrigation / Farms
-
-```text
-+food production
-and/or
-+population capacity
-```
-
 ## Granary
 
 ```text
@@ -2689,38 +2781,21 @@ and/or
 ## Warehouse
 
 ```text
-+global storage
-```
-
-## Armory
-
-```text
 +global metal storage
-```
-
-## Stone Yard
-
-```text
 +global stone storage
 ```
 
-## Mine
+## Foundry (city)
 
 ```text
 +province metal production
-```
-
-## Quarry
-
-```text
-+province stone production
 ```
 
 ## Roads
 
 ```text
 +trade-route efficiency
-+possibly migration attractiveness
++army travel speed
 ```
 
 ## City improvements
@@ -4565,20 +4640,16 @@ Construction advances once per monthly tick.
 
 Standard buildings are repeatable province improvements.
 
-Examples include:
+The countryside catalog contains exactly four improvements:
 
 ```text
 Granary
 Warehouse
-Aqueduct
-Farm / Irrigation
-Mine
-Quarry
 Road
-Fort
+Aqueduct
 ```
 
-City provinces additionally unlock city-only buildings defined in section 122.
+City provinces additionally unlock the eight city-only buildings defined in section 123.
 
 Each building has:
 
@@ -4816,7 +4887,6 @@ each level:
 
 ```text
 each level:
-    +global Food storage
     +global Metal storage
     +global Stone storage
 ```
@@ -4828,42 +4898,12 @@ each level:
     +province population capacity
 ```
 
-## Farm / Irrigation
-
-```text
-each level:
-    +province Food production
-and/or
-    +province population capacity
-```
-
-## Mine
-
-```text
-each level:
-    +province Metal production
-```
-
-## Quarry
-
-```text
-each level:
-    +province Stone production
-```
-
 ## Road
 
 ```text
 each level:
     +trade-route efficiency for routes passing through province
-    +migration attractiveness if configured
-```
-
-## Fort
-
-```text
-each level:
-    +province military defense
+    +army travel speed across this province
 ```
 
 Exact numerical effects belong in centralized balance configuration.
@@ -4899,15 +4939,17 @@ City-only buildings require:
 province.has_city == true
 ```
 
-Initial categories may include:
+The city catalog contains exactly eight buildings:
 
 ```text
 Forum
 Baths
+Market
 Temple
 Arena
-Urban Market
-City Walls
+Walls
+Academy
+Foundry
 ```
 
 Suggested roles:
@@ -4938,20 +4980,37 @@ Suggested roles:
 +happiness
 ```
 
-## Urban Market
+## Market
 
 ```text
 +province tax / Coin generation
 +trade-related modifier
 ```
 
-## City Walls
+## Walls
 
 ```text
 +province military defense
 ```
 
-These are examples of the standard city building set. Exact numeric values belong in balance configuration.
+## Academy
+
+```text
++passive Influence generation
++Citizen happiness
+```
+
+## Foundry
+
+```text
++province Metal production
+```
+
+These eight buildings form the city building set. Exact numeric values belong in balance configuration.
+
+The City and Countryside sections use compact illustrated cards. All eight city cards and
+four countryside cards fit the usual province panel without scrolling when no wonder is present.
+Wonders and unusually small viewports may still require scrolling.
 
 City-only buildings use the **same single construction slot** as normal buildings.
 
@@ -4967,19 +5026,16 @@ The canonical wonder set is the existing `WONDERS` array in:
 src/map/map.rs
 ```
 
-The current repository defines exactly these 10 wonder sites:
+The current repository defines exactly these 7 wonder sites:
 
 ```text
 1. Great Pyramid of Giza
-2. Oracle of Dodona
-3. Stonehenge
-4. Acropolis of Pergamon
-5. Temple of Zeus at Olympia
-6. Palace of the Argeads
-7. Mausoleum at Halicarnassus
-8. Colossus of Rhodes
-9. Aqueduct of Segovia
-10. Pont du Gard
+2. Stonehenge
+3. Temple of Zeus at Olympia
+4. Palace of the Argeads
+5. Colossus of Rhodes
+6. Aqueduct of Segovia
+7. Pont du Gard
 ```
 
 Their existing:
@@ -5501,15 +5557,8 @@ The construction system should extend or associate gameplay data with these same
 
 A completed wonder should continue using the existing wonder marker/art system.
 
-Before construction completes, the UI may:
-
-```text
-show the site marker differently
-or
-show the existing marker with an "unbuilt" state
-```
-
-but do not create duplicate geographic positions.
+Unbuilt wonders show neither marker nor artwork. During construction, show the marker and
+the wonder's construction animation. Do not create duplicate geographic positions.
 
 ---
 
@@ -5519,18 +5568,17 @@ The exact currently-defined wonder set is:
 
 ```text
 Great Pyramid of Giza
-Oracle of Dodona
 Stonehenge
-Acropolis of Pergamon
 Temple of Zeus at Olympia
 Palace of the Argeads
-Mausoleum at Halicarnassus
 Colossus of Rhodes
 Aqueduct of Segovia
 Pont du Gard
 ```
 
 This list comes from the current repository's `WONDERS` constant and is authoritative for implementation.
+Each province has at most one canonical site. Asia retains the Colossus of Rhodes, and Achaia
+retains the Temple of Zeus at Olympia. The Palace of the Argeads is in the separate Macedonia province.
 
 If that constant changes later, gameplay should use the updated repository list rather than keeping this document's list as a divergent source of truth.
 
@@ -6326,34 +6374,29 @@ Completed
 
 ## Not started
 
-The site may:
-
-```text
-show no wonder
-or
-show a subtle site marker
-```
-
-depending on existing map UI.
+Show neither the wonder icon nor its artwork. Hidden sites do not reserve space for map labels
+or military markers.
 
 ## Under construction
 
 Render:
 
 ```text
-the wonder-specific animated construction sprite
+the wonder icon and the wonder-specific animated construction sprite
 ```
 
-The animation must remain visible while the wonder project is active.
+The icon remains visible at every zoom level. The animation fades in at close zoom while the
+wonder project is active, alongside the icon.
 
 ## Completed
 
 Render:
 
 ```text
-the existing completed-wonder artwork
+the wonder icon and the existing completed-wonder artwork
 ```
 
+The icon remains visible at every zoom level, alongside the completed artwork at close zoom.
 Do not show the construction sprite after completion.
 
 ---
@@ -7289,1466 +7332,147 @@ notification generation must not affect simulation outcome
 
 ---
 
-# 188. Rome political system
+# 188. Rome and the persistent Senate
 
-Clicking Rome opens a special political panel instead of only the normal province view.
+This revision replaces the former nomination auction, 24-month ballot calendar,
+YES/NO forecasts and random vote resolution. The Senate is a persistent competitive
+political system, recalculated from all players' current choices and statistics each month.
 
-```text
-ROME
-├─ Senate
-└─ Cursus Honorum
-```
+Rome (Latium) is a protected capital. Clicking its province or city opens the Senate,
+never the normal province inspector. Rome permits **no trade, espionage, diplomatic
+Control, Relation, vassalization, integration, policies or other provincial actions**.
+Its only territorial route is military conquest. Declare a march on Rome from the
+Senate, then send armies using the ordinary military movement system. Defeating the
+capital's defenders and conquering Rome immediately awards Augustus and victory,
+without needing a rank, Influence or senator threshold. Peaceful military entry is closed.
 
-The Rome panel is the central UI for:
+The capital begins with 50 cohorts: 32 Heavy Infantry, 10 Archers and 8 Heavy Cavalry.
+The Roman state funds their full military supply separately; waiting for civilian
+shortages cannot starve the capital's army. Battle casualties remain permanent.
 
-- political rank;
-- nomination for the next Senate ballot;
-- Senate blocs;
-- campaigning;
-- scandals;
-- current Consuls;
-- Proconsuls;
-- Augustus candidacy;
-- recent Senate results;
-- victory.
+# 189. Offices, costs and supporters
 
----
+The ladder remains Quaestor → Aedile → Praetor → Censor → Consul → Augustus.
+A former Consul is a Proconsul and may seek Consul again after the return cooldown.
 
-# 189. Cursus Honorum
+| Next office | Influence | Senators: 2 players | 3 players | 4 players | 6 players | 8 players |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Aedile | 100 | 5 | 4 | 4 | 3 | 3 |
+| Praetor | 180 | 12 | 10 | 8 | 7 | 6 |
+| Censor | 280 | 22 | 18 | 16 | 13 | 11 |
+| Consul | 400 | 40 | 33 | 28 | 23 | 20 |
+| Augustus | 800 | 60 | 51 | 51 | 51 | 51 |
 
-The political ladder is:
+Requirements use the two-player base multiplied by sqrt(2 / player count), rounded
+to the nearest integer, with a minimum of 3 supporters and at least 51 for Augustus.
+Player count is clamped to 2–8 for this formula. Costs remain fixed because each
+player's own Influence economy is independent of lobby size.
 
-```text
-No Office
-    ↓
-Aedile
-    ↓
-Praetor
-    ↓
-Consul
-    ↓
-Augustus
-```
+A player requests their next office whenever both resources and support are present.
+Appointment is immediate, costs Influence once and does not consume supporters.
+There are no nomination rounds, bids, campaign-year locks, vote rolls or election dates.
+Only one promotion per player per month prevents purchasing the entire ladder in one frame.
+Augustus requires a currently serving Consul and ends the match immediately.
 
-A former Consul becomes:
+Monthly office Influence does not stack: Quaestor 0, Aedile 1, Praetor 2, Censor 3,
+Consul/Proconsul 4, Augustus 0 because the match has ended.
 
-```text
-Proconsul
-```
+# 190. Monthly loyalties and faction preferences
 
-A Proconsul may later become Consul again, but cannot become Augustus unless first reelected Consul.
+There are exactly 100 individually simulated senators, initially neutral gray.
+Five factions have 20 senators each and occupy contiguous angular chamber sections.
+Every senator displays the actual supporting player's assigned color; all players'
+loyalty colors and totals are public. Gray means the senator supports nobody.
 
----
+Each senator has seeded, stable personal preferences: each structural contribution
+is weighted by 0.65–1.35, with a personal attraction threshold of 3–13 points.
+Every month they compare every player's score simultaneously from one snapshot.
+The highest score above the personal threshold attracts the senator. An exact tie
+stays neutral, without a player-index tiebreak. Current supporters tolerate scores
+up to two points below their threshold and switch only when another player leads
+by more than two points. This small loyalty margin limits oscillation.
 
-# 190. Rank Influence income
+Senators can switch player, remain loyal or return to gray. Their preferences are:
 
-Recommended initial monthly Influence:
+- Aristocrats: Noble population and happiness, current political office, Influence
+  prestige, completed wonders and political buildings such as Forums.
+- Merchants: profitable recurring Coin income, delivered recurring trade, fulfilled
+  contracts, Markets and resource security.
+- Provincials: happy free populations, friendly stable vassals and provincial trade;
+  high tribute weakens support.
+- Populares: Citizen and Plebeian happiness, generous Food policy and actual Food
+  security; famine, tax pressure and harsh labor weaken support.
+- Military: effective army strength, military career rank and recent victories;
+  defeats weaken support.
 
-```text
-Aedile       +1
-Praetor      +2
-Consul       +4
-Proconsul    +4
-Augustus     victory
-```
+Population, income, buildings, trade and army contributions have diminishing returns.
+Military victories and defeats fade in the campaign's monthly profile. Political rank
+adds only a small Aristocrat bonus; military rank affects Military senators.
+Senator thresholds vary so a small score improvement can attract a few supporters
+without automatically converting an entire faction.
 
-Only the current office/status grants its bonus.
+# 191. Outreach, temporary bribery and scandals
 
-Do not stack old offices.
+Legitimate faction outreach costs 20 Influence and supplies +8 attraction points,
+fading linearly over six months. It is allowed once per faction per player per month.
+Refreshing outreach replaces the bonus and duration; it cannot stack. Loyalty changes
+take effect at the next monthly review, making sustainable performance the primary
+source of support.
 
-Exact values are configuration.
+A bribe buys exactly one unleased senator in a chosen faction, immediately switching
+their loyalty for six months. The cost is 80 Coin plus 20 Coin per currently active bribe.
+A player can have at most ten active bribes and buy one per faction per month.
+Another player cannot overwrite an active lease. After expiry the senator immediately
+returns to normal monthly preference comparison; bribery alone cannot meet the
+Consul or Augustus threshold. Each successful payment creates actual discoverable
+Political Bribery evidence through the existing espionage system.
 
----
+Exposing real, unexpired evidence consumes it once, penalizes the target's relevant
+factions for 12 months and cancels all their bribery leases. Scandal severity scales
+the faction-specific effects: corruption chiefly damages Aristocrats and Merchants;
+famine and abuse chiefly damage Populares and Provincials; military incompetence
+chiefly damages Military. Multiple accusations stack up to a 30-point penalty per
+faction and fade linearly. Released senators compare all players at the next review:
+they may join the accuser, another rival or become neutral. Exposure grants no
+automatic supporter transfer. Players cannot fabricate, reuse or expose their own evidence.
 
-# 191. Aedile
+# 192. Consular seats, terms and forced resignation
 
-Aedile is bought directly with Influence.
+Exactly two Consuls may serve at once. A third appointment is refused even if the
+player has enough Influence and senators. A Consul serves 24 months, then automatically
+becomes Proconsul and vacates the seat.
 
-Recommended initial cost:
+Every departure, including natural expiry and forced resignation, imposes a minimum
+12-month wait before returning. Reappointment requires the full current Consul
+support threshold and another payment of 400 Influence. A Proconsul cannot seek
+Augustus until they regain an active Consul seat.
 
-```text
-100 Influence
-```
+Retention requires ceil(60% of the lobby's Consul appointment threshold):
+24 supporters in a two-player match, 20 with three players, 17 with four.
+Falling below retention for three consecutive monthly reviews forces resignation.
+Recovering enough supporters resets the grace counter. If the player is under an
+active exposed scandal and below retention, resignation occurs at the next monthly
+review without the three-month grace. A scandal alone cannot remove a popular Consul.
 
-No Senate vote is required.
+# 193. Senate UI and simulation invariants
 
-Buying Aedile does not consume the global Senate schedule.
+The chamber uses larger circles in five clearly divided, labeled sections.
+Hovering a section, including the gaps between senators, explains the faction's
+preferences and signed contributions from the viewing player's profile, outreach
+and exposed scandals. Hovering a senator also shows their identity, allegiance
+and any remaining bribery term. A gold ring marks temporary bribery.
 
----
+The Senate shows all player colors and supporter totals, the next office's exact
+Influence and senator requirements, both Consul seats, term and return cooldowns,
+the retention rule, faction outreach and bribe controls, and evidence exposure.
 
-# 192. Praetor
-
-To become Praetor:
-
-```text
-current rank = Aedile
-```
-
-The player must:
-
-1. win nomination for the next Senate ballot;
-2. campaign for one year;
-3. win the Senate YES/NO vote.
-
-There may be multiple Praetors.
-
----
-
-# 193. Consul
-
-There may be at most:
-
-```text
-2 active Consuls
-```
-
-Eligibility:
-
-```text
-Praetor
-or
-Proconsul
-```
-
-A Consul seat must be available when the vote resolves.
-
-A seat can become available because:
-
-- it is already vacant;
-- a Consul's 48-month term expires by the vote date;
-- a Consul has been removed through a successful political motion.
-
----
-
-# 194. Consul term and Proconsul
-
-A Consul term lasts:
-
-```text
-48 months
-```
-
-At expiry:
-
-```text
-Consul → Proconsul
-```
-
-A Proconsul:
-
-- no longer occupies a Consul seat;
-- receives the same passive Influence as Consul;
-- may seek Consul again;
-- may not seek Augustus.
-
-The four-year term is deliberate because the global Senate vote occurs every two years, normally giving an active Consul two opportunities to obtain an Augustus ballot.
-
-If an Augustus vote for a Consul resolves in the same month their term expires:
-
-```text
-resolve Augustus vote first
-```
-
-If successful:
-
-```text
-Augustus → victory
-```
-
-If unsuccessful:
-
-```text
-Consul → Proconsul
-```
-
-after the vote.
+Loyalties are authoritative saved state. Rendering and hover never reroll support
+or advance time. Identical match seeds and actions produce identical loyalties.
+Rejected promotions and actions do not spend resources. Senator counts always sum
+to 100, and a senator can support only one player or remain neutral.
 
 ---
 
-# 195. Augustus
-
-Only an active Consul may seek Augustus.
-
-The player must:
-
-1. win nomination for the next global Senate ballot;
-2. complete the Campaign Year;
-3. obtain at least 51 YES votes.
-
-Result:
-
-```text
-Augustus
-→ game victory
-```
-
-A Proconsul cannot seek Augustus directly.
-
----
-
-# 196. One global Senate schedule
-
-There is exactly:
-
-```text
-one Senate ballot at a time
-```
-
-All promotion levels share the same schedule.
-
-There are no separate Praetor, Consul, or Augustus election calendars.
-
-The next ballot can therefore be claimed by an eligible player seeking:
-
-```text
-Praetor
-Consul
-Augustus
-```
-
-or by an eligible political motion such as a No Confidence vote.
-
-This makes access to the Senate itself a shared multiplayer resource.
-
----
-
-# 197. Global 24-month cycle
-
-The Senate uses a repeating 24-month cycle:
-
-```text
-Months 1–12:
-Nomination Year
-
-Months 13–24:
-Campaign Year
-
-End of Month 24:
-Senate Vote
-```
-
-After the vote:
-
-```text
-new 24-month cycle starts
-```
-
-The first year acts as the cooldown before the next campaign.
-
----
-
-# 198. Nomination Year
-
-During the 12-month Nomination Year, eligible players compete for the single next ballot using Influence.
-
-Minimum cumulative Influence to enter:
-
-```text
-Praetor      100
-Consul       200
-Augustus     400
-```
-
-Recommended initial values only; keep configurable.
-
-The office sought does not give priority.
-
-Example:
-
-```text
-Player A seeks Praetor   420 Influence
-Player B seeks Consul    380 Influence
-Player C seeks Augustus  400 Influence
-```
-
-A currently leads the nomination despite seeking the lower office.
-
----
-
-# 199. Monthly sealed-bid nomination rounds
-
-Do not use:
-
-```text
-first player to click wins
-```
-
-and do not use a continuous auction.
-
-Each Nomination Year consists of 12 monthly sealed bidding rounds.
-
-For each month:
-
-1. players privately submit additional Influence;
-2. bids are hidden until month resolution;
-3. all bids resolve simultaneously;
-4. Influence is committed/spent;
-5. new cumulative totals become public;
-6. next sealed month begins.
-
-This removes last-second and network-latency advantages.
-
----
-
-# 200. Nomination example
-
-Public cumulative totals:
-
-```text
-A 180
-B 200
-```
-
-Private bids this month:
-
-```text
-A +40
-B +10
-```
-
-At monthly resolution:
-
-```text
-A 220
-B 210
-```
-
-Nobody can react to the hidden bid until the next month.
-
----
-
-# 201. Final nomination month
-
-Month 12 remains sealed.
-
-Example before final round:
-
-```text
-A 280
-B 270
-C 230
-```
-
-Private final bids:
-
-```text
-A +20
-B +50
-C +80
-```
-
-Resolve simultaneously:
-
-```text
-A 300
-B 320
-C 310
-```
-
-B wins the next ballot.
-
-No player can observe B's final bid and immediately outbid it.
-
----
-
-# 202. Nomination Influence is spent
-
-All committed nomination Influence is permanently spent.
-
-This applies to winners and losers.
-
-```text
-cannot withdraw
-cannot reduce
-cannot refund losing bids
-```
-
-This creates the strategic choice:
-
-```text
-spend heavily to control the next ballot
-or
-save Influence to fight during the Campaign Year
-```
-
----
-
-# 203. Nomination ties
-
-Do not break ties by:
-
-- click order;
-- connection order;
-- PlayerId;
-- host status.
-
-If highest cumulative totals tie after month 12:
-
-```text
-run one additional sealed sudden-death month
-```
-
-Only the tied leaders may add Influence.
-
-Reveal simultaneously.
-
-Repeat if still tied.
-
-The Campaign Year begins only after a unique winner exists.
-
----
-
-# 204. Campaign Year
-
-The nomination winner becomes the sole candidate for the next ballot.
-
-Campaign lasts:
-
-```text
-12 months
-```
-
-During that year:
-
-- candidate campaigns for support;
-- every other player may support the candidate;
-- every other player may campaign against the candidate;
-- players may expose scandals;
-- spies may discover new scandals;
-- game-state changes alter structural support;
-- projected Senate support updates monthly.
-
-No additional nomination bidding occurs during the Campaign Year.
-
----
-
-# 205. Senate composition
-
-Use 100 Senate votes split into five blocs:
-
-```text
-Aristocrats   30
-Merchants     20
-Provincials   20
-Populares     20
-Military      10
-----------------
-Total        100
-```
-
-These are recommended initial sizes and should be configurable.
-
----
-
-# 206. Senate vote format
-
-Because there is only one candidate:
-
-```text
-YES — grant requested office
-NO  — reject
-```
-
-Promotion succeeds at:
-
-```text
-YES >= 51
-```
-
-Otherwise it fails.
-
-Example:
-
-```text
-Should Player B become Praetor?
-
-YES 54
-NO  46
-```
-
----
-
-# 207. Senate support model
-
-Each bloc determines its own YES support.
-
-General structure:
-
-```text
-bloc_score =
-    structural_support
-    + candidate_campaign
-    + endorsements
-    - opposition_campaign
-    - scandal_penalties
-    + event_modifiers
-```
-
-Convert that score into the number of YES votes contributed by the bloc.
-
-The model must be deterministic and explainable in UI.
-
----
-
-# 208. Aristocrats
-
-Primary drivers:
-
-```text
-Noble population
-Noble happiness
-political rank
-prestige / Influence
-completed wonders
-political city buildings
-relevant scandals
-campaigning
-```
-
-Noble population must use diminishing returns, e.g.:
-
-```text
-sqrt(total_nobles)
-```
-
-rather than raw linear population.
-
----
-
-# 209. Merchants
-
-Primary drivers:
-
-```text
-Coin income
-trade volume
-trade reliability
-city Markets
-economic stability
-resource availability
-commerce-related scandals
-campaigning
-```
-
----
-
-# 210. Provincials
-
-Primary drivers:
-
-```text
-vassal stability
-vassal relation
-provincial free-pop happiness
-trade with provinces/vassals
-reasonable tribute
-treatment of provinces
-campaigning
-```
-
-High Vassal Control with terrible Relation must not automatically create strong Provincial support.
-
----
-
-# 211. Populares
-
-Primary drivers:
-
-```text
-Citizen happiness
-Plebeian happiness
-food policy
-food security
-famine
-tax pressure
-harsh domestic policies
-relevant scandals
-campaigning
-```
-
-Citizens matter strongly.
-
-Plebeians affect popular legitimacy mainly through happiness/unrest.
-
-Slaves do not vote.
-
----
-
-# 212. Military
-
-Primary drivers:
-
-```text
-army strength
-military victories
-successful defense
-recent defeats
-military prestige
-campaigning
-```
-
-Exact war-derived values depend on the final military implementation.
-
----
-
-# 213. Avoiding permanent Senate dominance
-
-A larger population must help without making one player unbeatable.
-
-Use:
-
-```text
-diminishing returns
-```
-
-for Noble and Citizen contribution.
-
-Examples:
-
-```text
-sqrt(population)
-log(population + 1)
-soft caps
-```
-
-Recommended overall balance target:
-
-```text
-60–70% structural support
-30–40% active politics
-```
-
-Structural:
-
-- population/happiness;
-- economy;
-- military;
-- provinces;
-- rank.
-
-Active politics:
-
-- campaigning;
-- opposition;
-- endorsements;
-- scandals;
-- current events.
-
-This ensures other players can materially affect another player's vote.
-
----
-
-# 214. Candidate campaigning
-
-During Campaign Year the candidate may spend Influence on a selected bloc:
-
-```text
-Campaign with Aristocrats
-Campaign with Merchants
-Campaign with Provincials
-Campaign with Populares
-Campaign with Military
-```
-
-Campaign effects must have diminishing returns within the same campaign.
-
-Do not allow unlimited linear purchase of Senate votes.
-
----
-
-# 215. Other players supporting the candidate
-
-Any other player may spend Influence to:
-
-```text
-Support Candidate
-```
-
-targeting a selected bloc.
-
-This increases the candidate's support in that bloc.
-
-This enables multiplayer bargaining:
-
-```text
-support my Consul vote now
-and I will support your Praetor vote later
-```
-
-The game does not need to enforce informal promises between human players.
-
----
-
-# 216. Other players opposing the candidate
-
-Any non-candidate may spend Influence to:
-
-```text
-Campaign Against Candidate
-```
-
-targeting a selected bloc.
-
-This lowers the candidate's support in that bloc.
-
-Players who are not eligible for promotion therefore still have a meaningful role in every Senate campaign.
-
----
-
-# 217. Coin bribery
-
-The candidate may use Coin to bribe Senators.
-
-Bribery:
-
-- improves campaign support;
-- creates a real player scandal opportunity;
-- may be discovered by enemy spies.
-
-This distinguishes:
-
-```text
-Influence = legitimate political campaigning
-Coin      = potentially stronger/cheaper but scandalous
-```
-
-Exact strength and discoverability are balancing values.
-
----
-
-# 218. Exposing scandals
-
-A player holding a scandal against the candidate may consume it during the Campaign Year.
-
-Different scandal types affect different blocs.
-
-Examples:
-
-```text
-Low Food / Famine
-→ strong Populares penalty
-→ Provincial penalty
-
-Harsh Slave Labor
-→ Populares / Provincial penalty
-
-Political Bribery
-→ Aristocrat / Merchant penalty
-
-Espionage Against Player
-→ broad Senate penalty
-
-High Vassal Tribute / Abuse
-→ Provincial penalty
-```
-
-Severity modifies the effect.
-
-Do not convert every scandal into a generic fixed vote loss.
-
----
-
-# 219. Campaign state is live
-
-Structural support is recalculated during the Campaign Year.
-
-Examples:
-
-```text
-Low Food enabled
-→ Citizen/Plebeian happiness may fall
-→ Populares support falls
-→ scandal opportunity appears
-
-Famine fixed
-→ support may recover
-
-Military victory
-→ Military support rises
-
-Wonder completed
-→ Aristocrat prestige may rise
-```
-
-Projected vote updates after monthly resolution.
-
----
-
-# 220. Failed vote
-
-If:
-
-```text
-YES <= 50
-```
-
-promotion fails.
-
-Then:
-
-```text
-new 12-month Nomination Year begins
-```
-
-The failed player may compete again if eligible.
-
-There is no immediate repeat vote.
-
-The global Senate cycle itself provides the one-year cooldown.
-
----
-
-# 221. Consul seat availability
-
-There are exactly two active Consul seats.
-
-A Consul candidacy may enter nomination only when a seat is expected to be available at the vote date.
-
-Valid reasons:
-
-```text
-seat already vacant
-current Consul term expires by vote
-successful removal has created vacancy
-```
-
-Never create a third active Consul.
-
----
-
-# 222. Removing a Consul early
-
-A Consul can be forced to step down through:
-
-```text
-Motion of No Confidence
-```
-
-Requirements:
-
-```text
-target is an active Consul
-initiator owns a scandal against target
-initiator participates through the global Senate schedule
-```
-
-The motion itself must win the nomination auction for the next ballot, because only one Senate vote exists at a time.
-
-During Campaign Year:
-
-```text
-YES = remove Consul
-NO  = retain Consul
-```
-
-All players may campaign for either side.
-
-At:
-
-```text
-YES >= 51
-```
-
-the target immediately becomes Proconsul and the Consul seat becomes vacant.
-
-If the motion fails:
-
-- target remains Consul;
-- scandal is consumed;
-- nomination/campaign Influence stays spent.
-
----
-
-# 223. Proconsul
-
-A player becomes Proconsul after:
-
-```text
-normal 48-month Consul term
-or
-successful No Confidence removal
-```
-
-Proconsul:
-
-```text
-same passive Influence as Consul
-does not occupy Consul seat
-can seek Consul again
-cannot seek Augustus
-```
-
----
-
-# 224. Augustus competition
-
-Active Consuls compete for access to the same global nomination schedule as everyone else.
-
-Example nomination participants:
-
-```text
-A seeks Praetor
-B seeks Consul
-C seeks Augustus
-```
-
-The highest final Influence commitment wins the one next ballot regardless of office sought.
-
-Therefore a player may deliberately outbid an Augustus attempt with a Praetor or Consul request.
-
-This is intentional multiplayer counterplay.
-
----
-
-# 225. Augustus Campaign
-
-If an active Consul wins the Augustus nomination:
-
-```text
-12-month Augustus Campaign begins
-```
-
-Other players may:
-
-- support;
-- oppose;
-- expose scandals;
-- continue espionage;
-- target blocs;
-- negotiate support.
-
-Final vote:
-
-```text
-YES >= 51
-→ Augustus
-→ victory
-```
-
----
-
-# 226. Rome Senate tab UI
-
-During Nomination Year:
-
-```text
-NEXT SENATE BALLOT — NOMINATION
-
-Months remaining
-
-Player A
-Requested office: Praetor
-Committed Influence: 180
-
-Player B
-Requested office: Consul
-Committed Influence: 220
-
-Player C
-Requested office: Augustus
-Committed Influence: 400
-```
-
-Current cumulative totals are public.
-
-Current-month additional bids are private until resolution.
-
-Local controls show:
-
-```text
-eligible requested office
-minimum bid
-already committed
-current public leader
-private additional bid
-```
-
----
-
-# 227. Rome Campaign UI
-
-During Campaign Year:
-
-```text
-NEXT SENATE VOTE
-
-Candidate: <player>
-Office: <Praetor / Consul / Augustus / No Confidence>
-Vote in: <months>
-
-Projected:
-YES 54
-NO  46
-```
-
-Bloc breakdown:
-
-```text
-Aristocrats    18 / 30 YES
-Merchants      12 / 20
-Provincials    10 / 20
-Populares       9 / 20
-Military        5 / 10
-```
-
-Each bloc is expandable to show contribution breakdown.
-
----
-
-# 228. Bloc explanation UI
-
-Example:
-
-```text
-POPULARES
-
-Citizen happiness      +6
-Plebeian happiness     +4
-Normal food policy     +3
-Recent famine          -4
-Candidate campaign     +2
-Enemy campaign         -1
-Exposed scandal        -3
-```
-
-The player must understand why projected support changed.
-
----
-
-# 229. Cursus Honorum UI
-
-The rank tab shows:
-
-```text
-Aedile
-Praetor
-Consul
-Proconsul
-Augustus
-```
-
-For local player display:
-
-```text
-current rank
-passive Influence
-next eligible office
-minimum nomination bid
-Consul term remaining
-lock reasons
-```
-
-Example:
-
-```text
-CONSUL
-
-Locked:
-✓ rank requirement met
-✗ no Consul seat available at next vote
-```
-
----
-
-# 230. Political ladder summary
-
-```text
-No Office
-    ↓ pay fixed Influence
-AEDILE
-    ↓ win global nomination
-    ↓ 12-month campaign
-    ↓ Senate vote
-PRAETOR
-    ↓ win global nomination
-    ↓ 12-month campaign
-    ↓ Senate vote
-CONSUL
-    ├─ 48-month term
-    ├─ may seek Augustus
-    │     ↓
-    │   win global nomination
-    │     ↓
-    │   12-month campaign
-    │     ↓
-    │   Senate vote
-    │     ↓
-    │   AUGUSTUS → VICTORY
-    │
-    └─ term expires / removed
-          ↓
-      PROCONSUL
-          ↓ later Consul vote
-        CONSUL
-```
-
----
-
-# 231. Senate multiplayer requirement
-
-The candidate must never effectively play a private single-player promotion minigame.
-
-Every other player must be able to influence the result by:
-
-```text
-supporting candidate
-opposing candidate
-targeting blocs
-exposing scandals
-discovering scandals
-bidding for the nomination instead
-making political agreements
-```
-
-A strong empire should have structural advantages, but political opponents must be able to delay, block, or support advancement through deliberate action.
-
----
-
-# 232. Senate invariants
-
-```text
-one global Senate ballot at a time
-
-Nomination Year = 12 months
-Campaign Year = 12 months
-
-all nomination bids are sealed within each month
-all monthly bids resolve simultaneously
-
-public information:
-    resolved cumulative Influence commitments
-
-private information:
-    current month's additional bids until resolution
-
-all committed Influence is spent
-losers receive no refund
-
-no first-click advantage
-no last-second reaction advantage
-no connection-order tiebreak
-no host advantage
-
-ties use sealed sudden-death rounds
-
-Aedile requires no Senate ballot
-
-Praetor requires Aedile + successful vote
-
-Consul requires Praetor/Proconsul + successful vote
-maximum 2 active Consuls
-Consul term = 48 months
-
-Proconsul has same Influence income as Consul
-Proconsul cannot seek Augustus
-
-Augustus requires active Consul + successful Senate vote
-Augustus triggers victory
-```
-
----
-
-# 233. Senate configuration
-
-Centralize:
-
-```text
-Aedile Influence cost
-
-minimum Praetor nomination bid
-minimum Consul nomination bid
-minimum Augustus nomination bid
-
-rank Influence/month
-
-Nomination Year length
-Campaign Year length
-Consul term length
-
-Senate bloc sizes
-bloc structural weights
-
-campaign Influence costs/effects
-campaign diminishing-return curve
-
-endorsement effects
-opposition effects
-
-bribery cost/effect
-bribery scandal discoverability
-
-scandal-to-bloc effect map
-scandal severity multipliers
-
-YES threshold
-
-No Confidence requirements/costs
-```
-
-Do not hardcode balance values in UI logic.
-
----
-
-# 234. Senate explicit non-goals
-
-Do not implement unless separately requested:
-
-```text
-separate election calendars per rank
-multiple simultaneous Senate ballots
-first-click nomination
-continuous real-time auction
-individual Senator simulation
-permanent ownership of Senators
-raw population = raw Senate votes
-automatic promotion from stats alone
-automatic Augustus victory
-Proconsul seeking Augustus
-more than two active Consuls
-```
-
----
-
-# 235. Senate chamber visualization
-
-The Rome Senate UI must visually represent all `100` Senators as individual circles arranged in a layered semicircle resembling a senate chamber.
-
-Requirements:
-
-```text
-100 circles exactly
-multiple curved / semicircular rows
-centered around the speaker / floor area
-stable seat positions
-```
-
-Each Senator circle represents one Senate vote.
-
-The layout is presentation-only. Senators are not simulated as persistent individual political characters.
-
----
-
-# 236. Senator vote colors
-
-During a Campaign Year, each Senator circle is colored according to the currently projected vote.
-
-For a normal promotion ballot:
-
-```text
-Candidate YES      candidate/player color
-NO                 opposition color
-Undecided          gray
-```
-
-For a No Confidence ballot:
-
-```text
-Remove Consul      motion/support color
-Keep Consul        target/incumbent color
-Undecided          gray
-```
-
-The exact palette must remain readable and must match player colors where appropriate.
-
-A legend must always identify the meaning of each color.
-
----
-
-# 237. Determinate and undecided Senators
-
-Not all projected Senate votes need to be committed before the final vote.
-
-Each bloc calculation produces:
-
-```text
-committed YES Senators
-committed NO Senators
-undecided Senators
-```
-
-Therefore the Rome UI may show, for example:
-
-```text
-YES        44
-NO         38
-Undecided  18
-```
-
-as:
-
-```text
-44 candidate-colored circles
-38 opposition-colored circles
-18 gray circles
-```
-
-The player must always be able to see exactly how many votes are already committed and how many remain uncertain.
-
----
-
-# 238. Undecided vote resolution
-
-At the actual Senate vote, every Senator still marked `Undecided` votes randomly.
-
-The probability is not necessarily 50/50.
-
-Each undecided Senator uses the final underlying support probability for its Senate bloc.
-
-Example:
-
-```text
-Populares final candidate support probability = 0.65
-```
-
-Every undecided Populares Senator independently resolves:
-
-```text
-65% chance YES
-35% chance NO
-```
-
-This creates a controlled random component while making the amount of uncertainty visible beforehand.
-
-Do not randomize already committed Senators.
-
----
-
-# 239. Committing Senator votes
-
-Campaign support should progressively convert uncertain Senators into committed votes.
-
-A bloc's final state can be modeled as:
-
-```text
-support_probability
-certainty
-```
-
-where:
-
-```text
-certainty determines how many bloc Senators are committed
-support_probability determines which side those committed Senators support
-and the random tendency of remaining undecided Senators
-```
-
-The precise mathematical function belongs in centralized Senate balancing configuration.
-
-Important behavior:
-
-```text
-strong structural support + strong campaigning
-→ many committed YES votes
-
-strong opposition
-→ many committed NO votes
-
-close / weakly contested bloc
-→ more gray undecided Senators
-```
-
----
-
-# 240. Vote animation
-
-When the vote resolves:
-
-1. keep committed circles unchanged;
-2. resolve undecided Senators one at a time or in a short animated sequence;
-3. gray circles change to final YES/NO colors;
-4. update vote totals as circles resolve;
-5. display final result after all 100 have resolved.
-
-This should make the visible uncertainty meaningful and make major votes dramatic without hiding the underlying probabilities.
-
-The animation must not affect simulation outcome; all random results may be generated first, then visually revealed.
-
-For deterministic multiplayer synchronization, the authoritative game state/server/host must generate the undecided-vote results once and distribute the result to all clients.
-
-Do not allow clients to independently roll Senate results.
-
----
-
-# 241. Senate projection display
-
-During Campaign Year show both:
-
-```text
-Projected committed votes
-Undecided votes
-```
-
-Example:
-
-```text
-PRAETOR VOTE
-
-YES        46
-NO         39
-Undecided  15
-
-Estimated YES probability among undecided: 58%
-```
-
-The UI may additionally show an estimated expected final total, but it must not present that estimate as guaranteed.
-
-Example:
-
-```text
-Expected final YES: ~55
-```
-
-The 15 undecided circles remain visibly gray.
-
----
-
-# 242. Senate bloc visualization
-
-The 100-circle semicircle should preserve bloc identity where possible.
-
-Recommended layout:
-
-```text
-Aristocrats   30 seats
-Merchants     20 seats
-Provincials   20 seats
-Populares     20 seats
-Military      10 seats
-```
-
-Possible implementation:
-
-- seat contiguous sections of the semicircle by bloc;
-- show subtle separators or labels;
-- hovering/tapping a Senator reveals its bloc and current state.
-
-The primary visual color remains the vote state, not the bloc.
-
----
-
-# 243. Senate random-vote invariant
-
-The Senate system must enforce:
-
-```text
-committed Senators never reroll at vote time
-
-only gray / Undecided Senators are random
-
-random probability comes from final bloc support
-
-number of undecided Senators is visible before the vote
-
-all clients see the same authoritative result
-
-total final votes always equals exactly 100
-```
-
-This supersedes any earlier implication that the Senate vote is fully deterministic.
-
-The strategic game remains mostly predictable, but unresolved support produces explicitly visible risk.
-
----
 
 # 244. Military system scope
 
@@ -10767,7 +9491,7 @@ Keep these in configuration.
 
 # 313. Fortification combat bonus
 
-A defending directly owned/vassal province may have Fort/City Wall levels.
+A defending directly owned/vassal city province may have completed Walls levels.
 
 Recommended defensive bonus:
 
@@ -12352,7 +11076,7 @@ Assessment: Favorable
 + Envelopment has 82% composition fit
 + Your Training is higher
 - Enemy Heavy Infantry counters cavalry frontally
-- Defender has Fort II
+- Defender has Walls II
 ```
 
 Do not show a fake precise win probability.

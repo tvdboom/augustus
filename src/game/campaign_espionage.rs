@@ -7,12 +7,14 @@ use crate::game::politics::diplomacy::{PoliticalState, Tribute};
 use crate::game::politics::espionage::{
     EspionageEvent, ScandalKind, ScandalTarget, Severity, SpyProvince,
 };
-use crate::game::politics::senate::{Ballot, SenateEvent};
 
 impl Campaign {
     /// Resolve networks from actual post-demographic happiness, food supply and policy.
     /// This adapter never manufactures a human player's misconduct.
     pub fn advance_espionage(&mut self) {
+        if self.espionage.last_resolution_month().is_some_and(|last| self.economy.month <= last) {
+            return;
+        }
         let provinces: Vec<_> = self
             .economy
             .provinces
@@ -92,6 +94,8 @@ impl Campaign {
             &mut self.politics,
             &self.espionage_config,
         );
+        // Only paid networks that survived detection can deliver provincial reports.
+        self.refresh_intelligence_reports();
         for event in events {
             match event {
                 EspionageEvent::Withdrawn(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyWithdrawn,
@@ -114,30 +118,6 @@ impl Campaign {
         }
         // Blackmail affects valuation only for its actual owner and target; economics
         // reads these multipliers at the next proposal/recurring evaluation.
-    }
-
-    /// Keep evidence backing the active removal motion valid and consume it at its vote.
-    pub fn handle_senate_evidence(&mut self, event: &SenateEvent) {
-        match *event {
-            SenateEvent::CampaignStarted(
-                holder,
-                Ballot::NoConfidence {
-                    scandal_id,
-                    ..
-                },
-            ) => {
-                if self.espionage.reserve_motion(holder, scandal_id, self.economy.month).is_err() {
-                    self.senate.campaign = None;
-                    self.senate.nominations.clear();
-                    self.senate.nomination_elapsed = 0;
-                    self.messages.push(("The removal nomination lapsed because its supporting evidence expired. A new Nomination Year begins; committed Influence remains spent.".into(), None));
-                }
-            },
-            SenateEvent::ConsumeScandal(id) => {
-                let _ = self.espionage.consume_motion(id);
-            },
-            _ => {},
-        }
     }
 }
 

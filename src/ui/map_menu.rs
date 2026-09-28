@@ -150,7 +150,12 @@ pub(in crate::app) fn map_standard_height(screen: egui::Rect, scale: f32) -> f32
 }
 
 pub(in crate::app) fn map_resource_strip_right(screen: egui::Rect, scale: f32) -> f32 {
-    (screen.width() / scale - 170.0).max(310.0)
+    let content_right = MAP_RESOURCE_STRIP_LEFT
+        + HUD_FIRST_GROUP_WIDTH
+        + HUD_SECOND_GROUP_WIDTH
+        + HUD_THIRD_GROUP_WIDTH
+        + MAP_DATE_SECTION_WIDTH;
+    (screen.width() / scale - 170.0).clamp(310.0, content_right)
 }
 
 pub(in crate::app) fn map_resource_strip_visible(screen: egui::Rect, scale: f32) -> bool {
@@ -171,11 +176,12 @@ pub(crate) fn map_hud_contains(screen: egui::Rect, pointer: egui::Pos2) -> bool 
             && local.y < MAP_RESOURCE_STRIP_HEIGHT)
 }
 
-pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
+pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) -> bool {
     let screen = ctx.content_rect();
     let rail_height = map_standard_height(screen, scale) - MAP_STANDARD_FLAG_HEIGHT;
     let strip_right = map_resource_strip_right(screen, scale);
     let date_left = strip_right - MAP_DATE_SECTION_WIDTH;
+    let mut banner_clicked = false;
     for (id, top, width, height) in [
         ("augustus_standard_flag_hitbox", 0.0, MAP_STANDARD_WIDTH, MAP_STANDARD_FLAG_HEIGHT),
         (
@@ -195,13 +201,25 @@ pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
                     egui::vec2(width, height) * scale,
                     egui::Sense::click_and_drag(),
                 );
-                response.on_hover_cursor(egui::CursorIcon::Default);
+                if id == "augustus_standard_flag_hitbox" {
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Main province")
+                    });
+                    banner_clicked = response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Open your main province")
+                        .clicked();
+                } else {
+                    response.on_hover_cursor(egui::CursorIcon::Default);
+                }
             });
     }
     if map_resource_strip_visible(screen, scale) {
         egui::Area::new(egui::Id::new("augustus_resource_strip_hitbox"))
             .fixed_pos(screen.min + egui::vec2(MAP_RESOURCE_STRIP_LEFT, 0.0) * scale)
-            .order(egui::Order::Foreground)
+            // Block map drags underneath the resource controls without stealing their hover.
+            .order(egui::Order::Middle)
+            .movable(false)
             .show(ctx, |ui| {
                 let (_, response) = ui.allocate_exact_size(
                     egui::vec2(date_left - MAP_RESOURCE_STRIP_LEFT, MAP_RESOURCE_STRIP_HEIGHT)
@@ -211,6 +229,7 @@ pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) {
                 response.on_hover_cursor(egui::CursorIcon::Default);
             });
     }
+    banner_clicked
 }
 
 pub(in crate::app) fn map_date_hitbox(
@@ -246,9 +265,8 @@ pub(in crate::app) fn load_player_standard(
     ctx: &egui::Context,
     color_index: usize,
 ) -> egui::TextureHandle {
-    let (name, png) = PLAYER_STANDARDS[color_index];
-    let mut rgba =
-        image::load_from_memory(png).expect("player standard PNG must be valid").to_rgba8();
+    let name = format!("player-standard-{}", PLAYER_COLOR_NAMES[color_index]);
+    let mut rgba = player_standard_image(color_index);
     let max_side = ctx.input(|input| input.max_texture_side).max(1) as u32;
     if rgba.width() > max_side || rgba.height() > max_side {
         let fraction = (max_side as f32 / rgba.width().max(rgba.height()) as f32).min(1.0);
@@ -264,4 +282,31 @@ pub(in crate::app) fn load_player_standard(
         ),
         egui::TextureOptions::LINEAR,
     )
+}
+
+/// Tint the cloth to the shared palette while retaining goldwork, folds and alpha.
+pub(in crate::app) fn player_standard_image(color_index: usize) -> image::RgbaImage {
+    let mut rgba = image::load_from_memory(PLAYER_STANDARD_PNG)
+        .expect("player standard PNG must be valid")
+        .to_rgba8();
+    let color = PLAYER_COLORS[color_index];
+    let cloth_red = f32::from(rgba.get_pixel(80, 700)[0]);
+    for pixel in rgba.pixels_mut() {
+        let [red, green, blue, alpha] = pixel.0;
+        // The red cloth has a much stronger red channel than the gold ornament.
+        if alpha == 0 || f32::from(red) <= f32::from(green) * 1.6 || red <= blue {
+            continue;
+        }
+        for (channel, target) in pixel.0[..3].iter_mut().zip([color.r(), color.g(), color.b()]) {
+            let target = f32::from(target);
+            let shade = f32::from(red);
+            *channel = if shade <= cloth_red {
+                target * shade / cloth_red
+            } else {
+                target + (255.0 - target) * (shade - cloth_red) / (255.0 - cloth_red)
+            }
+            .round() as u8;
+        }
+    }
+    rgba
 }

@@ -581,7 +581,7 @@ fn player_color_picker(ui: &mut egui::Ui, selected: &mut usize) -> bool {
                     }
                     if response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(format!("House color {}", index + 1))
+                        .on_hover_text(format!("{} house color", PLAYER_COLOR_NAMES[index]))
                         .clicked()
                     {
                         *selected = index;

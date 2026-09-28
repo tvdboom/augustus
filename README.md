@@ -35,141 +35,172 @@ Switch between players using the lower-right player list to make decisions and a
 | Hover statistics, policy choices, Senate blocs, and actions | Read formulas, costs, prerequisites, and explanations |
 
 Pause while reviewing several players' decisions. Everyone uses the same monthly clock and Senate
-schedule. Music, mute, volume, and click feedback remain in the shared circular audio controls.
+loyalty review. Music, mute, volume, and click feedback remain in the shared circular audio controls.
 Settings retains the existing audio options.
 
-## Population and resources
+## Gameplay
 
-Provinces contain **Nobles, Citizens, Plebeians, and Slaves**, each with a separate count and happiness.
-Comfortable capacity comes from area, terrain, cities, and buildings. Overcrowding lowers happiness
-and encourages migration; it never directly deletes population. Happiness affects births, while
-natural mortality continues independently. Automatic class changes preserve population.
+The campaign advances monthly. Hover values and actions for detailed effects, prerequisites, and costs.
 
-Plebeians and Slaves provide productive labor. Each worker is allocated once between Food, Metal,
-and Stone according to geographic potential and the selected resource focus. Slaves have higher
-baseline productivity. Light/Normal/Harsh labor changes output, happiness, and mortality. Each owned
-province has its own food, labor, focus, and migration policies.
+### Provinces and geography
 
-Food, Metal, and Stone are **global player stockpiles**. Coin and Influence have no physical storage
-limit. Local storage buildings expand global capacity. Excess physical goods are discarded after
-monthly production, trade, and consumption. Taxes come from Nobles, Citizens, and Plebeians.
+The map contains **54 provinces**, including eight cities with unique building options. Area and
+terrain shape capacity, production, travel, and combat. Provinces can be independent, vassalized,
+or directly owned; ownership grants production and policy controls. Visible sea crossings connect
+routes for trade, movement, migration, and political distance.
 
-One-time exchanges and ownership changes discard storage overflow immediately. Above 150% comfortable
-population capacity, births receive additional gradual suppression even if buildings keep happiness
-high; population is never forcibly truncated to its capacity.
+### Population and happiness
 
-Civilian and military food requests share a proportional supply ratio. Partial shortage lowers births
-and happiness and causes proportional famine deaths. NPC provinces use abstract internal provisioning:
-their deficits affect trade demand and scarcity without hidden stockpiles or automatic NPC famine.
+Each province contains **Nobles, Citizens, Plebeians, and Slaves**, with separate populations and
+happiness. Births, deaths, and class changes update them monthly. Area, terrain, cities, and buildings
+provide comfortable capacity; overcrowding lowers happiness and births without a hard population cap.
+Your civilians and troops share Food proportionally. Shortages lower happiness and births, cause
+civilian famine deaths, and weaken military Morale.
 
-Influence comes from domestic Nobles, relevant city buildings, completed directly owned wonders,
-political rank, and controlled vassals. The province overview explains production allocation, capacity,
-food requests, last month's supply, demographic changes, and happiness modifiers. Geographic
-specialization makes policies, buildings, ownership, and trade meaningful.
+### Migration
 
-## Construction
+Unhappy free populations migrate automatically to neighboring provinces, favoring space, happiness,
+and cities. Overcrowding increases departures; Migration Focus changes arrivals and departures.
+Relations affect destinations, and hostility blocks routes. Slaves do not migrate freely.
+Migration and class changes preserve total population.
 
-Each province has **one construction slot**, separate from its recruitment slot. Standard buildings
-include Granary, Warehouse, Aqueduct, Farm/Irrigation, Mine, Quarry, Road, Fort, Armory, and Stone Yard.
-The eight existing city provinces additionally allow Forum, Baths, Temple, Arena, Urban Market, and
-City Walls. Building levels have no fixed gameplay maximum: benefits are linear while costs and
-construction time grow exponentially.
+### Resources, production, and storage
 
-Buildings cost Stone and Metal, paid in full when work starts. Cancellation has no refund.
-Projects and progress remain attached to their province after capture.
+| Resource | Main role |
+| --- | --- |
+| **Food** | Feeds civilians and troops; shortages damage population and Morale |
+| **Metal** | Equips recruits and pays part of construction costs |
+| **Stone** | Builds and upgrades provincial improvements and wonders |
+| **Coin** | Pays wages, trade, diplomacy, spies, and bribes; earned through taxes, tribute, and exchange |
+| **Influence** | Funds politics; earned from Nobles, buildings, wonders, political rank, and vassals |
 
-The ten canonical wonder sites retain their existing geography and completed artwork. Ay Khanum was
-removed at the user's request because its site lay outside the playable atlas. A province
-can complete at most one wonder. Wonders grant a one-time completion Influence reward and passive
-Influence to the current direct owner. Assigned local Slaves accelerate work with diminishing returns,
-remain part of population and food demand, and stop ordinary resource production while assigned.
-A change of ownership resets their assignment.
+Plebeians and Slaves produce goods, with each worker allocated once by geographic potential and
+Resource Focus. Slaves have higher baseline productivity. Goods enter **global player stockpiles**;
+provincial storage buildings expand capacity. Overflow is discarded after monthly settlement,
+immediate transfers, and ownership changes. Coin and Influence have no storage cap. Nobles,
+Citizens, and Plebeians pay taxes.
 
-Construction is available in the province panel's **Buildings** tab. Hover an illustration or Build
-button for effects and prerequisites; hover the Slave slider for the exact acceleration thresholds.
-The current tiers retain the document's 25/50/100/200 assigned Slaves; optional rescaling awaits a user decision.
+### Governance and policies
 
-## Diplomacy, trade, and spies
+Open **Governance** from the left menu to set nationwide policies:
 
-**Relation** measures friendship; **Control** measures political power. Independent provinces have
-Local Control plus every player's share totaling 100. Gifts, Influence, recurring programs, trade,
-interference, and hostile occupation affect these separate values.
+- **Food Rations:** balance consumption against happiness, births, and mortality.
+- **Slave Labor:** balance productivity against Slave happiness and mortality.
+- **Noble Taxes:** trade higher Coin income for lower Noble happiness.
+- **Army Wages:** trade treasury costs against military Morale; incomplete payment weakens support.
 
-At **51 Independent Control and a unique lead**, a player may voluntarily vassalize a province.
-Starting Vassal Control equals the previous Independent Control minus 50; rival shares disappear
-and relations remain. Low relation erodes Vassal Control. Diplomacy and real military garrisons can
-support it. Tribute trades income against goodwill. Vassals provide Influence according to Control
-but do not contribute ordinary production or wonder income to the overlord's stores. Integration at
-100 Control is optional; at zero a vassal becomes independent. Independent provinces can also be
-directly integrated at 100 Control.
+Domestic edicts cover all directly owned provinces, including new acquisitions; wages cover all your
+troops. Vassals keep their policies. **Resource Focus** and **Migration Focus** remain province-local.
 
-Player trades require both players' acceptance. NPC trades evaluate need, surplus, scarcity, relation,
-cash, and recurring budget. Proposals show the legal route and delivered bundles after transport loss.
-Switch to the invited player's view and open **Trade** to accept or cancel a proposal; the acceptance
-hover shows its current route and net delivery. One-time acceptance requires both parties' resources.
-Roads improve route efficiency. Hostile transit, including declared NPC war, can interrupt routes.
-Visible sea crossings are shared by trade, military movement, political distance, and migration.
+### Buildings and construction
 
-Monthly deals can suspend and resume; three consecutive failures cancel them. Established NPC deals
-with at least 80% supply scale both sides equally; new agreements require the full promised amount.
-Recurring NPC trade improves relation and may slowly raise independent Control up to the trade
-ceiling of 40. One-time exchange never generates Control.
+Use **Buildings** for four countryside improvements: Granary (Food storage), Warehouse (Metal and
+Stone storage), Road (army travel speed and trade routes), and Aqueduct (population capacity).
+Cities add eight buildings: Forum, Baths, Market, Temple, Arena, Walls, Academy, and Foundry.
+Academies add Influence and Citizen happiness; Foundries increase Metal output. The smaller cards
+fit the usual panel without scrolling when there is no wonder. Each province has **one construction slot**, separate from recruitment.
+Stone and Metal are paid upfront; cancellation gives no refund. Upgrades have no fixed cap: benefits
+grow linearly, costs and time exponentially. Capture preserves progress.
 
-Spy networks pay deployment and upkeep, risk detection, and discover evidence of real player
-misconduct or hidden NPC opportunities. Evidence supports NPC blackmail, Senate scandal exposure,
-and evidence-backed removal motions. Detection precedes discovery. Evidence has an owner, target,
-severity, and lifetime; exposing or consuming it changes actual state.
+### Wonders
 
-## Senate and victory
+Seven historical sites allow wonders, with at most one per province. Asia retains the Colossus of
+Rhodes; Achaia retains the Temple of Zeus at Olympia. Unbuilt wonders are hidden. Active projects
+show an icon with their construction animation when zoomed in; completed wonders show an icon
+with the final artwork. Completion grants an Influence
+reward and ongoing Influence to the direct owner. Assigned Slaves speed construction with diminishing
+returns, still need Food, and stop ordinary production. Capture preserves progress but resets workers.
 
-The retained political ladder is:
+### Diplomacy and control
 
-**Quaestor → Aedile → Praetor → Censor → Consul → Augustus**
+**Relation** measures friendship; **Control** measures political power. Independent provinces split
+100 Control between local authorities and players. Gifts, Coin, Influence, recurring programs, trade,
+and occupation improve your position; interference undermines rivals. Distance raises political
+costs. Owned provinces leave Control competition, but enemy agitation and funded unrest lower happiness.
 
-Aedile is purchased with Influence. Praetor, **Censor**, Consul, and Augustus use the global Senate
-nomination and voting system. A 12-month Nomination Year uses sealed monthly Influence commitments;
-its winner receives a 12-month Campaign Year. Tied leaders enter additional sealed rounds.
-Committed nomination Influence is spent even when the nomination is lost.
+### Vassals and integration
 
-The 100 Senate seats belong to Aristocrats, Merchants, Provincials, Populares, and Military blocs.
-Hover a bloc to inspect its current factors. Campaigning, endorsements, opposition, bribery, and
-actual scandals affect support. The chamber distinguishes committed YES, committed NO, and undecided
-senators. Only undecided votes are rolled, and the saved result animates without rerolling.
-**51 YES votes** pass a motion.
+At **51 Independent Control with a unique lead**, you may vassalize a province. Its starting Vassal
+Control equals your previous share minus 50. Vassals grant Influence; tribute adds Coin at the cost
+of goodwill. They do not supply ordinary production or wonder income. Poor relations erode Control;
+diplomacy and garrisons support it. At zero they become independent. At **100 Control**, optionally
+integrate a vassal or independent province into direct ownership; relations affect initial happiness.
 
-At most two Consuls serve, with 48-month terms. Expired or removed Consuls become Proconsuls and must
-regain an active seat before seeking Augustus. Winning the Augustus ballot wins the campaign.
-The older README's Imperium Maius, eight-city, mutiny, and treasury/happiness victory checklist has
-been superseded by this Senate system.
+### Trade agreements
 
-## Military and battle plans
+Open the nationwide **Trade** panel from the left menu to propose monthly or one-time exchanges.
+Player deals need both parties' consent; switch to the recipient's view to accept. NPC terms reflect
+needs, surplus, scarcity, relations, and budget; one-time offers have worse terms. Previews show
+routes and transport losses. Roads improve efficiency; hostile transit can interrupt deliveries.
 
-Forces belong to an owner and province; there are no persistent Army objects. Recruitment drafts
-actual Plebeians or Citizens and pays Metal immediately. The eleven types are Light/Heavy Infantry,
-Archers, Light/Heavy Cavalry, Horse Archers, War Chariots, War Camels, War Elephants, Ballista, and
-Catapult. Special troops require explicit provincial traditions.
+Monthly deals suspend on failure, resume when viable, and cancel after three consecutive failures.
+Established NPC deals can scale both sides equally when at least 80% can be supplied; new deals
+require full supply. Recurring NPC trade improves Relation and can raise Independent Control up to
+40; one-time exchanges never grant Control. Cancel NPC routes immediately for a Relation penalty,
+or give **six months' notice** to avoid it. Player agreements end immediately without political effects.
 
-Cohorts retain permanent manpower losses. Training and Morale affect combat, and military Renown
-forms a career separate from political rank. Food upkeep scales with surviving strength. There is
-no monthly Metal upkeep, manpower healing, or automatic regeneration of destroyed NPC defenders.
-Disbanding in owned territory returns only survivors to their original class.
+### Open market
 
-Save a **Battle Plan** with a primary type, secondary type, flank type, flank slots per side, and tactic.
-Deployment uses real available units, reserves, terrain width, and deterministic fallbacks. Plans lock
-on engagement. Tactic fit uses surviving composition. Explicit unit matchups, tactic counters,
-support protection, maneuver, terrain, forts, Training, and Morale affect simultaneous round damage.
-Pre-battle assessments are qualitative and preserve unknown enemy tactics.
+Buy or sell Food, Metal, and Stone immediately for Coin in **Trade**. Larger transactions receive
+worse unit prices, so smaller exchanges give better returns. Purchases require Coin and storage.
+Market exchanges grant no Relation or Control.
 
-Select cohorts and their destination in the military panel. Optional ordered waypoints let you choose
-the route; its crossings and arrival time are previewed before departure. Scouting shows known hostile
-cohorts, including defenders already fighting, while enemy tactics remain unknown. Movement uses the slowest unit, province
-size, terrain, and roads, and revalidates access at each crossing. Hostile arrivals stop for battle.
-Independent victories establish occupation before Control accumulation; victory over an enemy-owned
-province transfers ownership. Close zoom shows owner-colored representative animated units; distant
-zoom hides individual troops.
+### Espionage and scandals
 
-Combat values are configurable Augustus defaults inspired by the supplied Imperator-style design.
-They are **not a verified complete reproduction of one particular Imperator: Rome patch**.
+Spy networks uncover player misconduct or hidden NPC opportunities, costing deployment and upkeep
+and risking detection. Evidence has a target, severity, and expiry. Use it to blackmail NPCs for
+Control or favorable trade, or expose rivals to undermine their Senate support and consular office.
+Exposure and blackmail consume evidence.
+
+### Political ranks, Senate, and victory
+
+Advance through **Quaestor → Aedile → Praetor → Censor → Consul → Augustus** by paying Influence
+and attracting loyal senators. Promotions are immediate, with at most one per player per month.
+In two-player games, the five promotions require **100/180/280/400/800 Influence** and
+**5/12/22/40/60 supporters**. Support requirements scale down with player count; Augustus always
+requires at least 51. There is no election calendar or nomination auction.
+
+The Senate has 100 persistent senators, initially neutral gray, split into five labeled factions:
+Aristocrats, Merchants, Provincials, Populares, and Military. Supporters use their player's color.
+Every month, faction preferences and individual priorities compare all players' economy, welfare,
+provinces, political standing and military career. Hover chamber sections to inspect the reasons.
+Faction outreach fades over six months; Coin bribes lease one senator for six months, with an
+escalating price and ten-senator cap. Exposed real scandals damage relevant factions for a year,
+cancel the target's bribery leases, and can cause senators to switch sides or return to neutral.
+
+Two Consuls serve at most, for **24 months**, then automatically become Proconsuls. All departing
+Consuls must wait **12 months** and meet the full cost and support requirements to return.
+Three monthly reviews below 60% of appointment support force resignation; active scandals reduce
+this to one review. Augustus requires an active Consul seat and wins immediately.
+
+Clicking **Rome** opens the Senate. The protected capital permits no ordinary province actions,
+trade or espionage, and begins with **50 defending cohorts**. **Conquering Rome wins immediately**,
+regardless of the conqueror's political rank or Senate support.
+
+### Military recruitment and upkeep
+
+Recruit cohorts in owned provinces using actual Plebeians or Citizens and upfront Metal. Eleven
+troop types cover infantry, archers, cavalry, specialist mounts, and artillery; special units require
+local traditions. Each province has one recruitment slot. Surviving soldiers consume Food and Coin
+wages each month. Casualties are permanent; disbanding in owned territory returns only survivors to
+their original class. Training and Morale affect combat, while battle-earned Renown advances a
+military career separate from political office. Defeated NPC defenders do not automatically regenerate.
+
+### Movement and conquest
+
+Select cohorts, a destination, and optional waypoints in **Military** to preview the route and arrival
+time. Speed depends on the slowest unit, province size, terrain, and roads; access is checked at each
+crossing. Hostile arrivals stop for battle. Defeating independent defenders establishes occupation,
+allowing later Control gains; victory in an enemy-owned province transfers ownership. Peaceful
+military presence does not create occupation.
+
+### Battle plans and combat
+
+Save a **Battle Plan** with primary, secondary, and flank unit types, flank slots, and a tactic.
+Plans lock when battle begins; deployment uses available cohorts, terrain width, and reserves.
+Unit matchups, tactic counters and composition, flanking, support protection, terrain, forts,
+Training, and Morale determine simultaneous combat rounds. Reserves replace routed troops.
+Pre-battle assessments show known hostile forces but keep enemy tactics hidden.
 
 ## Implementation status
 

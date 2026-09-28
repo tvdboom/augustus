@@ -55,10 +55,15 @@ impl EconomicProvince {
 
     /// Divide productive labor once, then calculate sector production from allocated shares.
     pub fn production(&self, config: &EconomyConfig) -> ([f64; 3], [f64; 3]) {
-        let labor = self.population[2] * config.productivity[0]
+        let mut labor = self.population[2] * config.productivity[0]
             + (self.population[3] - self.assigned_slaves()).max(0.0)
                 * config.productivity[1]
                 * config.slave_policy[self.policies.slave_labor as usize].productivity;
+        if self.construction.is_some() {
+            // Wonder-assigned slaves were already removed above; divert only remaining labor.
+            labor *= 1.0
+                - config.construction_labor[self.policies.construction as usize].clamp(0.0, 1.0);
+        }
         let focus = config.focus_weights[self.policies.focus as usize];
         let weights: [f64; 3] = std::array::from_fn(|i| self.potential[i] * focus[i]);
         let denominator: f64 = weights.iter().sum();
@@ -90,7 +95,14 @@ impl EconomicProvince {
                 + food.happiness
                 + buildings.happiness[class]
                 + self.happiness_modifiers[class]
+                + if class == 0 {
+                    self.noble_tax_happiness
+                } else {
+                    0.0
+                }
                 + self.temporary_happiness[class]
+                + self.civic_happiness
+                + self.recruitment_happiness
                 + if class == 3 {
                     slave.happiness
                 } else {
@@ -104,8 +116,27 @@ impl EconomicProvince {
 
     /// Taxes have no direct slave tax, avoiding double counting slave production.
     pub fn tax_income(&self, config: &EconomyConfig) -> f64 {
-        self.population.iter().zip(config.tax_rates).map(|(count, rate)| count * rate).sum::<f64>()
+        self.population
+            .iter()
+            .zip(config.tax_rates)
+            .enumerate()
+            .map(|(class, (count, rate))| {
+                count
+                    * rate
+                    * if class == 0 {
+                        self.noble_tax_multiplier
+                    } else {
+                        1.0
+                    }
+            })
+            .sum::<f64>()
             * (1.0 + self.building_effects(config).tax).max(0.0)
+    }
+
+    /// Requested monthly civic budget, based on residents before demographic changes.
+    pub fn civic_spending_cost(&self, config: &EconomyConfig) -> f64 {
+        self.total_population()
+            * config.civic_coin_per_resident[self.policies.civic_spending as usize].max(0.0)
     }
 
     /// Births/deaths are independent flows; class upgrades preserve the remaining total.
@@ -147,7 +178,10 @@ impl EconomicProvince {
         }
         let before = self.population;
         // Rates use one immutable pre-conversion snapshot: no same-month cascading promotion.
-        let manumission = before[3] * config.class_change_rates[0].clamp(0.0, 1.0);
+        let manumission = before[3]
+            * (config.class_change_rates[0]
+                * config.manumission_multiplier[self.policies.manumission as usize])
+                .clamp(0.0, 1.0);
         let citizenship = before[2]
             * config.class_change_rates[1].clamp(0.0, 1.0)
             * if self.has_city {
@@ -171,6 +205,23 @@ impl EconomicProvince {
 }
 
 impl EconomyWorld {
+    /// Civilian total, comfortable capacity and last month's net growth across
+    /// directly owned provinces. Drafted soldiers are no longer residents.
+    pub fn player_population(&self, player: usize) -> (f64, f64, f64) {
+        let mut total = 0.0;
+        let mut capacity = 0.0;
+        let mut growth = 0.0;
+        for (id, province) in self.provinces.iter().enumerate() {
+            if province.owner == Some(player) {
+                total += province.total_population();
+                capacity += province.capacity(&self.config);
+                growth +=
+                    self.last_report.province_reports.get(id).map_or(0.0, |r| r.population_delta);
+            }
+        }
+        (total, capacity, growth)
+    }
+
     /// Current class happiness and last monthly change, weighted by residents in
     /// directly owned provinces. Empty classes have neutral happiness and no change.
     pub fn player_happiness(&self, player: usize, class: usize) -> (f64, f64) {

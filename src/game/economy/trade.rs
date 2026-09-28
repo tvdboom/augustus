@@ -104,6 +104,8 @@ pub struct TradeAgreement {
     pub last_fulfillment: f64,
     /// Month of the last successful transfer; political profiles can limit rewards to recent trade.
     pub last_executed_month: Option<u32>,
+    /// Final monthly delivery after voluntary NPC cancellation notice.
+    pub cancellation_month: Option<u32>,
 }
 
 impl TradeAgreement {
@@ -129,6 +131,7 @@ impl TradeAgreement {
             last_delivered_value: 0.0,
             last_fulfillment: 0.0,
             last_executed_month: None,
+            cancellation_month: None,
         }
     }
 }
@@ -232,6 +235,17 @@ pub struct TradePoliticalEffect {
     pub delivered_value: f64,
 }
 
+/// Immediate NPC cancellation changes sentiment only, without changing Control.
+#[derive(Clone, Copy, Debug)]
+pub struct TradeCancellationEffect {
+    /// Province whose agreement was ended.
+    pub province: usize,
+    /// Cancelling participant.
+    pub player: usize,
+    /// Positive relation loss applied once.
+    pub relation_loss: f64,
+}
+
 /// Read-only preflight data for the trade proposal panel.
 #[derive(Clone, Debug)]
 pub struct TradeQuote {
@@ -279,9 +293,7 @@ impl EconomyWorld {
                 }
             }
             let (_, output) = province.production(config);
-            let fort = f64::from(
-                province.level(BuildingType::Fort) + province.level(BuildingType::CityWalls),
-            );
+            let fort = f64::from(province.level(BuildingType::CityWalls));
             let needs = [
                 civilian_food + military_food,
                 trade.npc_base_need[1] + military_food * trade.npc_military_metal_need + fort,
@@ -560,7 +572,11 @@ impl EconomyWorld {
     }
 
     /// Either participating human may cancel a recurring route or pending proposal.
-    pub fn cancel_trade(&mut self, id: u64, player: usize) -> Result<(), String> {
+    pub fn cancel_trade(
+        &mut self,
+        id: u64,
+        player: usize,
+    ) -> Result<Option<TradeCancellationEffect>, String> {
         let trade =
             self.trades.iter_mut().find(|trade| trade.id == id).ok_or("Unknown agreement")?;
         if trade.party_a != TradeParty::Player(player)
@@ -568,8 +584,55 @@ impl EconomyWorld {
         {
             return Err("Only a participant can cancel this trade".into());
         }
+        if !matches!(
+            trade.status,
+            TradeStatus::Proposed | TradeStatus::Active | TradeStatus::Suspended
+        ) {
+            return Err("This agreement has already ended".into());
+        }
+        let npc = match (trade.party_a, trade.party_b) {
+            (TradeParty::Npc(id), _) | (_, TradeParty::Npc(id)) => Some(id),
+            _ => None,
+        };
+        let effect = npc.filter(|_| trade.status != TradeStatus::Proposed).map(|province| {
+            TradeCancellationEffect {
+                province,
+                player,
+                relation_loss: self.config.trade.cancellation_relation_penalty,
+            }
+        });
         trade.status = TradeStatus::Cancelled;
-        Ok(())
+        if let Some(effect) = effect {
+            if let Some(relation) =
+                self.provinces[effect.province].relation_by_player.get_mut(player)
+            {
+                *relation = (*relation - effect.relation_loss).clamp(0.0, 100.0);
+            }
+        }
+        Ok(effect)
+    }
+
+    /// Keep an NPC route running for six monthly deliveries before ending without a penalty.
+    pub fn schedule_trade_cancellation(&mut self, id: u64, player: usize) -> Result<u32, String> {
+        let trade =
+            self.trades.iter_mut().find(|trade| trade.id == id).ok_or("Unknown agreement")?;
+        if trade.party_a != TradeParty::Player(player)
+            && trade.party_b != TradeParty::Player(player)
+        {
+            return Err("Only a participant can give notice".into());
+        }
+        if !matches!(trade.party_b, TradeParty::Npc(_))
+            || trade.frequency != TradeFrequency::Monthly
+            || !matches!(trade.status, TradeStatus::Active | TradeStatus::Suspended)
+        {
+            return Err("Notice is only needed for an open NPC route; player agreements can end immediately without a penalty".into());
+        }
+        if trade.cancellation_month.is_some() {
+            return Err("This route already has cancellation notice".into());
+        }
+        let due = self.month.saturating_add(self.config.trade.cancellation_notice_months);
+        trade.cancellation_month = Some(due);
+        Ok(due)
     }
 
     /// Recurring agreements execute in stable creation order; reservations prevent overcommitment.
@@ -584,6 +647,11 @@ impl EconomyWorld {
             if trade.frequency != TradeFrequency::Monthly
                 || !matches!(trade.status, TradeStatus::Active | TradeStatus::Suspended)
             {
+                continue;
+            }
+            let next_month = self.month.saturating_add(1);
+            if trade.cancellation_month.is_some_and(|due| next_month > due) {
+                self.trades[index].status = TradeStatus::Cancelled;
                 continue;
             }
             match self.execute_trade(&mut trade, inputs) {
@@ -618,6 +686,14 @@ impl EconomyWorld {
                         });
                     }
                 },
+            }
+            if trade.cancellation_month.is_some_and(|due| next_month >= due)
+                && matches!(self.trades[index].status, TradeStatus::Active | TradeStatus::Suspended)
+            {
+                self.trades[index].status = TradeStatus::Cancelled;
+                events.push(EconomyEvent::TradeNoticeCompleted {
+                    agreement: trade.id,
+                });
             }
         }
         let mut total_by_province = BTreeMap::<usize, f64>::new();
@@ -732,6 +808,9 @@ impl EconomyWorld {
             },
             TradeParty::Npc(id) => {
                 let p = self.provinces.get(id).ok_or("Unknown NPC province")?;
+                if p.name == "Latium" {
+                    return Err("Rome does not permit provincial trade".into());
+                }
                 if p.owner.is_some() {
                     Err("Owned provinces use their player's global economy".into())
                 } else {

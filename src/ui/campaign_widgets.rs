@@ -36,6 +36,13 @@ pub(in crate::app) enum Icon {
     Influence,
     Population,
     Happiness,
+    Amount,
+    Delta,
+    Change,
+    Notifications,
+    Cancel,
+    Notice,
+    Confirm,
     Nobles,
     Citizens,
     Plebeians,
@@ -43,6 +50,10 @@ pub(in crate::app) enum Icon {
     Spy,
     Trade,
     Control,
+    Relation,
+    Diplomacy,
+    Policies,
+    Construction,
     Attack,
     Province,
     Morale,
@@ -67,6 +78,11 @@ fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
             include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/", $name, ".png")) as &[u8]
         };
     }
+    macro_rules! building_art {
+        ($name:literal) => {
+            include_bytes!(concat!(env!("OUT_DIR"), "/building-icons/", $name, ".png")) as &[u8]
+        };
+    }
     let bytes = match kind {
         Icon::Food => prepared!("food"),
         Icon::Metal => prepared!("metal"),
@@ -81,28 +97,36 @@ fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         Icon::Slaves => prepared!("slaves"),
         Icon::Spy => prepared!("spy"),
         Icon::Trade => prepared!("trade"),
-        Icon::Control => prepared!("court-nobles"),
+        Icon::Control => prepared!("control"),
+        Icon::Relation => prepared!("relation"),
+        Icon::Diplomacy => prepared!("diplomacy"),
+        Icon::Policies => prepared!("policies"),
+        Icon::Construction => prepared!("construction"),
+        Icon::Amount => prepared!("amount"),
+        Icon::Delta => prepared!("delta"),
+        Icon::Change => prepared!("change"),
+        Icon::Notifications => prepared!("notifications"),
+        Icon::Cancel => prepared!("cancel"),
+        Icon::Notice => prepared!("notice"),
+        Icon::Confirm => prepared!("confirm"),
         Icon::Attack => prepared!("attack"),
         Icon::Province => prepared!("province"),
         Icon::Morale => prepared!("morale"),
         Icon::MilitaryPower => prepared!("military-power"),
         Icon::Eagle => prepared!("spqr-eagle-gold"),
         Icon::Building(building) => match building {
-            BuildingType::Granary | BuildingType::Warehouse | BuildingType::Farm => {
-                prepared!("granary")
-            },
-            BuildingType::Aqueduct | BuildingType::Baths | BuildingType::Road => {
-                prepared!("aqueduct")
-            },
-            BuildingType::Mine
-            | BuildingType::Quarry
-            | BuildingType::Armory
-            | BuildingType::StoneYard => prepared!("foundry"),
-            BuildingType::Fort | BuildingType::CityWalls => prepared!("province"),
-            BuildingType::Forum => prepared!("forum"),
-            BuildingType::Temple => prepared!("great-temple"),
-            BuildingType::Arena => prepared!("grand-theater"),
-            BuildingType::UrbanMarket => prepared!("marketplace"),
+            BuildingType::Granary => building_art!("granary-rural"),
+            BuildingType::Warehouse => building_art!("granary"),
+            BuildingType::Aqueduct => building_art!("aqueduct"),
+            BuildingType::Baths => building_art!("baths"),
+            BuildingType::Road => building_art!("road"),
+            BuildingType::Foundry => building_art!("foundry"),
+            BuildingType::Academy => building_art!("academy"),
+            BuildingType::CityWalls => building_art!("walls"),
+            BuildingType::Forum => building_art!("forum"),
+            BuildingType::Temple => building_art!("great-temple"),
+            BuildingType::Arena => building_art!("grand-theater"),
+            BuildingType::UrbanMarket => building_art!("marketplace"),
         },
         Icon::Wonder(id) => crate::map::wonder_image(id).unwrap_or(prepared!("great-temple")),
         Icon::Unit(_) => unreachable!(),
@@ -121,14 +145,21 @@ fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
     id
 }
 
-/// Draw an image at the requested logical size; unit icons select the first atlas cell.
+/// Draw semantic artwork at the requested size; unit icons use the first atlas cell.
 pub(in crate::app) fn icon(ui: &mut egui::Ui, kind: Icon, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    paint_icon(ui, kind, rect);
+    response
+}
+
+/// Paint within an already allocated badge or ledger cell without advancing layout.
+pub(in crate::app) fn paint_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
     let uv = if matches!(kind, Icon::Unit(_)) {
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(0.25, 0.25))
     } else {
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
     };
-    ui.add(egui::Image::new((texture(ui.ctx(), kind), egui::vec2(size, size))).uv(uv))
+    ui.painter().image(texture(ui.ctx(), kind), rect, uv, egui::Color32::WHITE);
 }
 
 /// A compact icon-value pair with the complete explanation on hover.
@@ -146,43 +177,54 @@ pub(in crate::app) fn stat(
     .on_hover_text(tooltip)
 }
 
-/// Existing landscape artwork anchors the overview visually; city views use the city banner.
+/// Province terrain and settlement banners have distinct cached illustrations.
+#[derive(Clone, Copy)]
+pub(in crate::app) enum ProvinceLandscape {
+    Terrain(crate::game::economy::Terrain),
+    City,
+    Village,
+}
+
+/// Settlement banners distinguish cities from villages; overviews use province terrain.
 pub(in crate::app) fn portrait(
     ui: &mut egui::Ui,
-    terrain: crate::game::economy::Terrain,
-    city: bool,
+    landscape: ProvinceLandscape,
     height: f32,
-) {
+) -> egui::Rect {
     use crate::game::economy::Terrain;
-    let key = egui::Id::new(("campaign-landscape", terrain as usize, city));
-    let image = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
-        let (name, bytes): (&str, &[u8]) = if city {
+    let (name, bytes): (&str, &[u8]) = match landscape {
+        ProvinceLandscape::City => {
             ("city", include_bytes!("../../assets/images/cities/city-panel-banner.png"))
-        } else {
-            match terrain {
-                Terrain::Desert => {
-                    ("desert", include_bytes!("../../assets/images/map/terrain/desert.png"))
-                },
-                Terrain::Farmland => {
-                    ("farmland", include_bytes!("../../assets/images/map/terrain/farmland.png"))
-                },
-                Terrain::Forest => {
-                    ("forest", include_bytes!("../../assets/images/map/terrain/forest.png"))
-                },
-                Terrain::Hills => {
-                    ("hills", include_bytes!("../../assets/images/map/terrain/hills.png"))
-                },
-                Terrain::Mountains => {
-                    ("mountain", include_bytes!("../../assets/images/map/terrain/mountain.png"))
-                },
-                Terrain::Marsh => {
-                    ("marsh", include_bytes!("../../assets/images/map/terrain/marsh.png"))
-                },
-                Terrain::Plains => {
-                    ("plains", include_bytes!("../../assets/images/map/terrain/plains.png"))
-                },
-            }
-        };
+        },
+        ProvinceLandscape::Village => {
+            ("village", include_bytes!("../../assets/images/cities/village-panel-banner.png"))
+        },
+        ProvinceLandscape::Terrain(terrain) => match terrain {
+            Terrain::Desert => {
+                ("desert", include_bytes!("../../assets/images/map/terrain/desert.png"))
+            },
+            Terrain::Farmland => {
+                ("farmland", include_bytes!("../../assets/images/map/terrain/farmland.png"))
+            },
+            Terrain::Forest => {
+                ("forest", include_bytes!("../../assets/images/map/terrain/forest.png"))
+            },
+            Terrain::Hills => {
+                ("hills", include_bytes!("../../assets/images/map/terrain/hills.png"))
+            },
+            Terrain::Mountains => {
+                ("mountain", include_bytes!("../../assets/images/map/terrain/mountain.png"))
+            },
+            Terrain::Marsh => {
+                ("marsh", include_bytes!("../../assets/images/map/terrain/marsh.png"))
+            },
+            Terrain::Plains => {
+                ("plains", include_bytes!("../../assets/images/map/terrain/plains.png"))
+            },
+        },
+    };
+    let key = egui::Id::new(("campaign-landscape", name));
+    let image = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
         let handle = province_panel::load_image(ui.ctx(), (name, bytes), "campaign-portrait");
         ui.ctx().data_mut(|d| d.insert_temp(key, handle.clone()));
         handle
@@ -208,6 +250,57 @@ pub(in crate::app) fn portrait(
         egui::Stroke::new(1.0, province_panel::RULE),
         egui::StrokeKind::Inside,
     );
+    rect
+}
+
+/// Keep landscape labels over the image; the city badge opens its building inspector.
+pub(in crate::app) fn landscape_badges(
+    ui: &mut egui::Ui,
+    landscape: egui::Rect,
+    terrain: crate::game::economy::Terrain,
+    city: Option<&str>,
+    scale: f32,
+) -> bool {
+    use crate::game::economy::Terrain;
+    let label = match terrain {
+        Terrain::Desert => "Desert",
+        Terrain::Farmland => "Farmland",
+        Terrain::Forest => "Forest",
+        Terrain::Hills => "Hills",
+        Terrain::Mountains => "Mountains",
+        Terrain::Marsh => "Marsh",
+        Terrain::Plains => "Plains",
+    };
+    let painter = ui.painter().with_clip_rect(landscape);
+    let margin = 8.0 * scale;
+    let height = 27.0 * scale;
+    let bottom = landscape.bottom() - margin;
+    let font = egui::FontId::proportional(14.0 * scale);
+    let text = painter.layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
+    let badge = egui::Rect::from_min_max(
+        egui::pos2(landscape.left() + margin, bottom - height),
+        egui::pos2(landscape.left() + margin + text.size().x + 20.0 * scale, bottom),
+    );
+    painter.rect_filled(badge, 3.0 * scale, egui::Color32::from_black_alpha(180));
+    painter.galley(badge.center() - text.size() * 0.5, text, egui::Color32::WHITE);
+    if let Some(city) = city {
+        let width = (province_panel::navigation_badge_width(&painter, city, scale) * scale)
+            .min((landscape.right() - badge.right() - 2.0 * margin).max(1.0));
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(landscape.right() - margin - width, bottom - height),
+            egui::pos2(landscape.right() - margin, bottom),
+        );
+        return province_panel::navigation_badge(
+            ui,
+            &painter,
+            rect,
+            city,
+            province_panel::NavigationIcon::City,
+            scale,
+            "landscape-city",
+        );
+    }
+    false
 }
 
 /// The map's global popup style must match its compact widgets, not the main menu's 23px body.

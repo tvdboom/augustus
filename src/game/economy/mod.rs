@@ -7,6 +7,7 @@
 
 mod buildings;
 mod config;
+mod market;
 mod model;
 mod population;
 mod simulation;
@@ -14,6 +15,7 @@ mod trade;
 
 pub use buildings::*;
 pub use config::*;
+pub use market::*;
 pub use model::*;
 pub use population::{birth_modifier, normalized_capacity_area};
 pub use trade::*;

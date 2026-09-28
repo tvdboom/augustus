@@ -297,6 +297,7 @@ pub struct EspionageState {
     discovered_sources: BTreeSet<(PlayerId, u64)>,
     global_conditions: BTreeMap<(PlayerId, ScandalKind), Severity>,
     next_id: u64,
+    last_resolution_month: Option<u32>,
     rng: PoliticalRng,
 }
 
@@ -312,8 +313,14 @@ impl EspionageState {
             discovered_sources: BTreeSet::new(),
             global_conditions: BTreeMap::new(),
             next_id: 1,
+            last_resolution_month: None,
             rng: PoliticalRng::new(seed),
         }
+    }
+
+    /// Last resolved month; duplicate ticks cannot charge upkeep or refresh intelligence.
+    pub fn last_resolution_month(&self) -> Option<u32> {
+        self.last_resolution_month
     }
 
     /// Deploy one network per actor and target, charging Influence exactly once.
@@ -326,7 +333,8 @@ impl EspionageState {
         config: &EspionageConfig,
     ) -> Result<(), PoliticalError> {
         let target = politics.get(province).ok_or(PoliticalError::MissingTarget)?;
-        if matches!(target.state, PoliticalState::Owned { owner } if owner == player)
+        if target.state == PoliticalState::Rome
+            || matches!(target.state, PoliticalState::Owned { owner } if owner == player)
             || matches!(target.state, PoliticalState::Vassal { overlord, .. } if overlord == player)
         {
             return Err(PoliticalError::Ineligible);
@@ -546,6 +554,10 @@ impl EspionageState {
         politics: &mut [ProvincePolitics],
         config: &EspionageConfig,
     ) -> Vec<EspionageEvent> {
+        if self.last_resolution_month.is_some_and(|last| month <= last) {
+            return Vec::new();
+        }
+        self.last_resolution_month = Some(month);
         let mut events = Vec::new();
         let mut surviving = Vec::new();
         for mut mission in std::mem::take(&mut self.missions) {
@@ -553,7 +565,10 @@ impl EspionageState {
                 continue;
             };
             let own_vassal = politics.get(mission.province).is_some_and(|target| matches!(target.state, PoliticalState::Vassal { overlord, .. } if overlord == mission.owner));
-            if province.owner == Some(mission.owner) || own_vassal {
+            let capital = politics
+                .get(mission.province)
+                .is_some_and(|target| target.state == PoliticalState::Rome);
+            if province.owner == Some(mission.owner) || own_vassal || capital {
                 events.push(EspionageEvent::Withdrawn(mission.owner, mission.province));
                 continue;
             }
@@ -564,7 +579,6 @@ impl EspionageState {
                 events.push(EspionageEvent::Withdrawn(mission.owner, mission.province));
                 continue;
             }
-            mission.months_active += 1;
             let detection = detection_chance(province.noble_happiness, config);
             if self.rng.unit() < detection {
                 events.push(EspionageEvent::Detected(mission.owner, mission.province));
@@ -585,6 +599,7 @@ impl EspionageState {
                     politics.change_relation(mission.owner, -config.npc_detection_relation_loss);
                 }
             } else {
+                mission.months_active = mission.months_active.saturating_add(1);
                 surviving.push(mission);
             }
         }

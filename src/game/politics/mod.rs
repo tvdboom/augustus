@@ -20,17 +20,17 @@ pub enum PoliticalRank {
     /// Initial office, retained from the existing game.
     #[default]
     Quaestor,
-    /// Purchased with Influence without consuming a Senate ballot.
+    /// First promotion, requiring Influence and loyal senators.
     Aedile,
-    /// Senate-elected office after Aedile.
+    /// Support-gated office after Aedile.
     Praetor,
-    /// Senate-elected office retained between Praetor and Consul.
+    /// Support-gated office between Praetor and Consul.
     Censor,
     /// One of the two time-limited highest republican offices.
     Consul,
-    /// Former Consul; must be reelected before seeking Augustus.
+    /// Former Consul; must be reappointed before seeking Augustus.
     Proconsul,
-    /// Winning office, awarded only by a successful Senate ballot.
+    /// Winning office, awarded by Senate support or the conquest of Rome.
     Augustus,
 }
 
@@ -68,10 +68,14 @@ pub struct PoliticalPlayer {
     pub rank: PoliticalRank,
     /// Available coin.
     pub coin: f64,
-    /// Available Influence, excluding sealed bid escrow.
+    /// Available Influence.
     pub influence: f64,
-    /// Absolute month of Consul expiry, inclusive for an Augustus ballot.
+    /// Exclusive expiry month of a 24-month Consul term.
     pub consul_until: Option<u32>,
+    /// Earliest month a former Consul may regain a seat.
+    pub consul_again_at: u32,
+    /// Last promotion month; only one rank may be gained each month.
+    pub promoted_at: Option<u32>,
 }
 
 impl PoliticalPlayer {
@@ -112,16 +116,18 @@ pub enum PoliticalError {
     MissingTarget,
     /// The province state or rank does not permit this action.
     Ineligible,
-    /// The shared Senate is in the other phase.
-    WrongPhase,
     /// No usable political route exists.
     NoConnection,
     /// A once-per-month action has already been performed.
     AlreadyUsed,
-    /// No Consul seat is expected to be available at the vote.
+    /// Both Consul seats are occupied at the time of appointment.
     NoConsulSeat,
     /// This action requires unexpired evidence against the target.
     ScandalRequired,
+    /// Too few senators currently support this player.
+    InsufficientSupport,
+    /// A former Consul must wait at least a year.
+    ConsulCooldown,
 }
 
 impl std::fmt::Display for PoliticalError {
@@ -132,11 +138,16 @@ impl std::fmt::Display for PoliticalError {
             Self::InsufficientFunds => "Insufficient funds for this action.",
             Self::MissingTarget => "The selected target no longer exists.",
             Self::Ineligible => "The current office or province state does not permit this action.",
-            Self::WrongPhase => "This action is unavailable during the current Senate phase.",
             Self::NoConnection => "No usable political route connects to this province.",
             Self::AlreadyUsed => "This action has already been used this month.",
-            Self::NoConsulSeat => "Both Consul seats remain occupied at the expected vote date.",
+            Self::NoConsulSeat => "Both Consul seats are occupied.",
             Self::ScandalRequired => "An unexpired scandal against this player is required.",
+            Self::InsufficientSupport => {
+                "Attract the required number of senators before seeking this office."
+            },
+            Self::ConsulCooldown => {
+                "A former Consul must wait 12 months before returning to office."
+            },
         })
     }
 }

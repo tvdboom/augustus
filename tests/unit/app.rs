@@ -11,7 +11,7 @@ fn selected_local_house_color_reaches_players_and_province_headers() {
     };
     let mut ownership = ProvinceOwnership::default();
     practice.start_new_game(&mut ownership);
-    assert_eq!(practice.players.iter().map(|p| p.color_index).collect::<Vec<_>>(), [4, 5, 0, 1]);
+    assert_eq!(practice.players.iter().map(|p| p.color_index).collect::<Vec<_>>(), [4, 0, 1, 2]);
     for (id, province) in ownership.campaign_seeds().iter().enumerate() {
         if let Some(owner) = province.owner {
             assert_eq!(
@@ -201,6 +201,65 @@ fn map_hud_hit_region_covers_visible_frame() {
 }
 
 #[test]
+fn player_banner_click_opens_each_players_founding_province() {
+    let mut practice = LocalPractice::default();
+    let mut ownership = ProvinceOwnership::default();
+    practice.start_new_game(&mut ownership);
+    let seeds = ownership.campaign_seeds();
+    for player in [0, 1, 0] {
+        practice.active_player = player;
+        let province = practice.players[player].main_province.unwrap();
+        assert_eq!(seeds[province].owner, Some(player));
+        let context = egui::Context::default();
+        let mut view = campaign_panel::CampaignUi::default();
+        view.open_province_section((province + 1) % seeds.len(), 3);
+        view.open = Some(campaign_panel::CampaignTab::Military);
+        let mut detail = ProvincePanelOpen(None);
+        let mut governance = GovernancePanelOpen(true);
+        let position = egui::pos2(110.0, 100.0);
+        {
+            let mut frame = |events| {
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                });
+                let clicked = draw_map_menu_hitboxes(&context, 1.0);
+                if clicked {
+                    assert!(open_main_province(&practice, &mut view, &mut detail, &mut governance));
+                }
+                let mut output = context.end_pass();
+                output.textures_delta.clear();
+                clicked
+            };
+            frame(vec![]);
+            frame(vec![]);
+            for pressed in [true, false] {
+                let clicked = frame(vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                assert_eq!(clicked, !pressed);
+            }
+        }
+        assert_eq!(view.open, Some(campaign_panel::CampaignTab::Province));
+        assert_eq!(view.province, Some(province));
+        assert_eq!(detail.0, Some(MapDetail::Province(province)));
+        assert!(!governance.0);
+        ownership.sync_campaign_province(province, None, [0.0; 4], [0.0; 3], 0.0);
+        assert_eq!(practice.players[player].main_province, Some(province));
+    }
+}
+
+#[test]
 fn left_menu_stays_clickable_after_the_rail_is_clicked() {
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
@@ -234,24 +293,30 @@ fn left_menu_stays_clickable_after_the_rail_is_clicked() {
 
 #[test]
 fn player_standards_share_the_red_outline() {
-    let red = image::load_from_memory(PLAYER_STANDARDS[0].1)
+    let red = image::load_from_memory(PLAYER_STANDARD_PNG)
         .expect("red player standard PNG must be valid")
         .to_rgba8();
     let red_alpha: Vec<_> = red.pixels().map(|pixel| pixel[3]).collect();
-    for (name, png) in PLAYER_STANDARDS.iter().skip(1).copied() {
-        let standard =
-            image::load_from_memory(png).expect("player standard PNG must be valid").to_rgba8();
+    for (index, name) in PLAYER_COLOR_NAMES.iter().enumerate() {
+        let standard = player_standard_image(index);
         assert_eq!(standard.dimensions(), red.dimensions(), "{name}");
         let alpha: Vec<_> = standard.pixels().map(|pixel| pixel[3]).collect();
         assert_eq!(alpha, red_alpha, "{name}");
+        // Fixed samples cover the eagle, laurel and lettering on the standard.
+        for (x, y) in [(100, 90), (100, 130), (80, 40), (110, 235)] {
+            assert_eq!(
+                red.get_pixel(x, y),
+                standard.get_pixel(x, y),
+                "goldwork must stay unchanged for {name}"
+            );
+        }
     }
 }
 
 #[test]
 fn player_colors_match_their_banner_cloth() {
-    for (index, (name, png)) in PLAYER_STANDARDS.iter().enumerate() {
-        let standard =
-            image::load_from_memory(png).expect("player standard PNG must be valid").to_rgba8();
+    for (index, name) in PLAYER_COLOR_NAMES.iter().enumerate() {
+        let standard = player_standard_image(index);
         let pixel = standard.get_pixel(80, 700);
         assert_eq!(
             PLAYER_COLORS[index],
@@ -269,7 +334,7 @@ fn all_player_standards_load_with_eguis_texture_limits() {
             max_texture_side: Some(limit),
             ..Default::default()
         });
-        for color_index in 0..PLAYER_STANDARDS.len() {
+        for color_index in 0..PLAYER_COLORS.len() {
             let texture = load_player_standard(&context, color_index);
             assert!(texture.size()[0] <= limit);
             assert!(texture.size()[1] <= limit);

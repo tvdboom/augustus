@@ -1,6 +1,6 @@
 //! Aggregate influence income and outflow for the local map HUD.
 
-use super::{flow_panel, ProvinceOwnership};
+use super::{campaign::Campaign, flow_panel, ProvinceOwnership};
 use bevy_egui::egui;
 
 pub(in crate::app) fn show(
@@ -10,10 +10,23 @@ pub(in crate::app) fn show(
     date_left: f32,
     player: usize,
     ownership: &ProvinceOwnership,
+    campaign: Option<&Campaign>,
     icon: &egui::TextureHandle,
     open: &mut bool,
 ) {
-    let income = [("Nobles", ownership.influence_delta_for(player))];
+    let nobles = campaign.map_or_else(
+        || ownership.influence_delta_for(player),
+        |campaign| {
+            campaign
+                .economy
+                .provinces
+                .iter()
+                .filter(|p| p.owner == Some(player))
+                .map(|p| p.population[0] * campaign.economy.config.influence_per_noble)
+                .sum()
+        },
+    );
+    let income = [("Nobles", nobles)];
     // Spy missions and trades are not available on the local map yet.
     let outflow = [("Spy missions", 0.0), ("Trades", 0.0)];
     flow_panel::show(

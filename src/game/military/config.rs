@@ -109,6 +109,8 @@ pub struct MilitaryConfig {
     pub training_supply_threshold: f64,
     /// Morale baseline before rank/training effects.
     pub base_morale: f64,
+    /// Normal monthly wages per current soldier in the campaign's population scale.
+    pub coin_per_manpower: f64,
     /// Maximum recovery toward baseline per peaceful month.
     pub morale_recovery: f64,
     /// Morale lost for a fully unsupplied month.
@@ -361,6 +363,7 @@ impl Default for MilitaryConfig {
             passive_training: 1.,
             training_supply_threshold: 0.95,
             base_morale: 50.,
+            coin_per_manpower: 0.05,
             morale_recovery: 5.,
             shortage_morale_penalty: 25.,
             participation_training: 2.,

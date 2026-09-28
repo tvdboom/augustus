@@ -1,13 +1,12 @@
 //! Parchment governance card opened from the map's laws icon.
 
+use super::policy_widgets::{self, section};
 use crate::map::{EdictLevel, Governance};
 use bevy_egui::egui;
 
 const WIDTH: f32 = 500.0;
 const HEIGHT: f32 = 570.0;
 const HEADER_HEIGHT: f32 = 61.0;
-const ROW_HEIGHT: f32 = 95.0;
-const SECTION_HEIGHT: f32 = 34.0;
 
 const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
 const RULE: egui::Color32 = egui::Color32::from_rgb(191, 171, 143);
@@ -386,26 +385,6 @@ pub(in crate::app) fn show(
     (changed, close_clicked)
 }
 
-fn section(ui: &mut egui::Ui, scale: f32, title: &str) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), SECTION_HEIGHT * scale),
-        egui::Sense::hover(),
-    );
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(
-        rect.shrink2(egui::vec2(0.0, 3.0 * scale)),
-        1.0 * scale,
-        egui::Color32::from_rgb(73, 69, 61),
-    );
-    painter.text(
-        rect.left_center() + egui::vec2(10.0, 0.0) * scale,
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(13.5 * scale),
-        egui::Color32::from_rgb(249, 238, 215),
-    );
-}
-
 fn hover_effects(response: egui::Response, scale: f32, effects: &[&str]) -> egui::Response {
     if effects.is_empty() {
         return response;
@@ -434,42 +413,17 @@ fn edict_row(
     descriptions: [&[&str]; 3],
     badges: [[Option<EffectBadge>; 4]; 3],
 ) -> bool {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), ROW_HEIGHT * scale),
-        egui::Sense::hover(),
-    );
+    let rect = policy_widgets::card(ui, scale, title);
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0 * scale, egui::Color32::from_rgb(247, 243, 232));
-    painter.rect_stroke(
-        rect,
-        2.0 * scale,
-        egui::Stroke::new(0.8 * scale, RULE),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        rect.left_top() + egui::vec2(10.0, 17.0) * scale,
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(14.5 * scale),
-        INK,
-    );
     let chosen = match *selected {
         EdictLevel::Low => 0,
         EdictLevel::Medium => 1,
         EdictLevel::High => 2,
     };
     let visible_badges: Vec<_> = badges[chosen].into_iter().flatten().collect();
-    let badge_left = rect.right() - 103.0 * scale;
-    let badge_stack_height = (visible_badges.len() as f32 * 19.0
-        + visible_badges.len().saturating_sub(1) as f32 * 3.0)
-        * scale;
-    let badge_top = rect.bottom() - 7.0 * scale - badge_stack_height;
+    let count = visible_badges.len();
     for (index, badge) in visible_badges.into_iter().enumerate() {
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(badge_left, badge_top + index as f32 * 22.0 * scale),
-            egui::vec2(93.0, 19.0) * scale,
-        );
-        painter.rect_filled(badge_rect, 3.0 * scale, egui::Color32::from_rgb(235, 226, 208));
+        let badge_rect = policy_widgets::effect_rect(&painter, rect, scale, count, index);
         painter.image(
             icons[badge.icon].id(),
             egui::Rect::from_min_size(
@@ -504,69 +458,20 @@ fn edict_row(
     let labels = ["Low", "Medium", "High"];
     let mut changed = false;
     for (index, level) in levels.into_iter().enumerate() {
-        let chip = egui::Rect::from_min_size(
-            rect.left_bottom() + egui::vec2(10.0 + index as f32 * 100.0, -38.0) * scale,
-            egui::vec2(94.0, 29.0) * scale,
-        );
-        let response = ui
-            .interact(chip, ui.id().with((id, index)), egui::Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        let response = hover_effects(response, scale, descriptions[index]);
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::RadioButton,
-                *selected == level,
-                format!("{title}: {}", labels[index]),
-            )
-        });
-        if response.clicked() && *selected != level {
-            *selected = level;
-            changed = true;
-        }
-        let active = *selected == level;
-        let pressed = response.is_pointer_button_down_on();
-        painter.rect_filled(
+        let chip = policy_widgets::choice_rect(rect, scale, index);
+        let (choice_changed, response) = policy_widgets::choice(
+            ui,
             chip,
-            3.0 * scale,
-            if pressed {
-                egui::Color32::from_rgb(204, 177, 145)
-            } else if active {
-                egui::Color32::from_rgb(227, 208, 181)
-            } else if response.hovered() {
-                egui::Color32::from_rgb(239, 229, 208)
-            } else {
-                egui::Color32::from_rgb(249, 246, 237)
-            },
-        );
-        painter.rect_stroke(
-            chip,
-            3.0 * scale,
-            egui::Stroke::new(
-                (if pressed {
-                    1.6
-                } else {
-                    1.0
-                }) * scale,
-                if active || pressed {
-                    accent
-                } else {
-                    RULE
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
-        let circle = chip.left_center() + egui::vec2(15.0 * scale, 0.0);
-        painter.circle_stroke(circle, 6.5 * scale, egui::Stroke::new(1.4 * scale, accent));
-        if active {
-            painter.circle_filled(circle, 3.1 * scale, accent);
-        }
-        painter.text(
-            circle + egui::vec2(12.0 * scale, 0.0),
-            egui::Align2::LEFT_CENTER,
+            ui.id().with((id, index)),
+            title,
             labels[index],
-            egui::FontId::proportional(12.5 * scale),
-            INK,
+            selected,
+            level,
+            accent,
+            scale,
         );
+        changed |= choice_changed;
+        hover_effects(response, scale, descriptions[index]);
     }
     changed
 }

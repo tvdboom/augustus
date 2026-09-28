@@ -18,12 +18,28 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/icons/stone.png", "stone"),
     ("images/icons/spy.png", "spy"),
     ("images/icons/trade.png", "trade"),
+    ("images/icons/control.png", "control"),
+    ("images/icons/relation.png", "relation"),
+    ("images/icons/diplomacy.png", "diplomacy"),
+    ("images/icons/policies.png", "policies"),
+    ("images/icons/construction.png", "construction"),
+    ("images/icons/amount.png", "amount"),
+    ("images/icons/delta.png", "delta"),
+    ("images/icons/change.png", "change"),
+    ("images/icons/notifications.png", "notifications"),
+    ("images/icons/cancel.png", "cancel"),
+    ("images/icons/notice.png", "notice"),
+    ("images/icons/confirm.png", "confirm"),
     ("images/icons/court-nobles.png", "court-nobles"),
     ("images/icons/attack.png", "attack"),
     ("images/ui/spqr-eagle-gold.png", "spqr-eagle-gold"),
     ("images/icons/province.png", "province"),
     ("images/buildings/aqueduct.png", "aqueduct"),
     ("images/buildings/granary.png", "granary"),
+    ("images/buildings/granary-rural.png", "granary-rural"),
+    ("images/buildings/road.png", "road"),
+    ("images/buildings/baths.png", "baths"),
+    ("images/buildings/walls.png", "walls"),
     ("images/buildings/forum.png", "forum"),
     ("images/buildings/marketplace.png", "marketplace"),
     ("images/buildings/foundry.png", "foundry"),
@@ -33,9 +49,30 @@ const PANEL_ICONS: &[(&str, &str)] = &[
 ];
 
 fn main() {
-    let source_root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets");
+    let repository = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let source_root = repository.join("assets");
     let output_root = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("panel-icons");
     std::fs::create_dir_all(&output_root).expect("create panel icon output directory");
+    // Original Imperator symbols, preserved pixel-for-pixel from Paradox's
+    // published army-interface screenshot. See docs/references/README.md.
+    let reference = repository.join("docs/references/imperator-army-tactics.png");
+    println!("cargo:rerun-if-changed={}", reference.display());
+    let tactics = image::open(reference).expect("Imperator army reference").to_rgba8();
+    let tactic_root = output_root.with_file_name("tactic-icons");
+    std::fs::create_dir_all(&tactic_root).expect("create tactic icon directory");
+    for (name, x, y, size) in [
+        ("balanced", 32, 307, 42),
+        ("shock-action", 565, 173, 52),
+        ("envelopment", 565, 253, 52),
+        ("skirmishing", 565, 333, 52),
+        ("deception", 565, 413, 52),
+        ("bottleneck", 565, 493, 52),
+    ] {
+        image::imageops::crop_imm(&tactics, x, y, size, size.min(46))
+            .to_image()
+            .save(tactic_root.join(format!("{name}.png")))
+            .expect("write original tactic symbol");
+    }
 
     for &(source, name) in PANEL_ICONS {
         let path = source_root.join(source);
@@ -61,6 +98,11 @@ fn main() {
             }
         }
         small.save(output_root.join(format!("{name}.png"))).expect("write panel icon PNG");
+        if source.starts_with("images/buildings/") || name == "province" {
+            let large_root = output_root.with_file_name("building-icons");
+            std::fs::create_dir_all(&large_root).expect("create building illustration directory");
+            normalize_animation(&path, &large_root.join(format!("{name}.png")), 128);
+        }
     }
     // Like the existing embedded panel art, normalize animation sources at build
     // time so opening a map panel never performs a large Lanczos resample.

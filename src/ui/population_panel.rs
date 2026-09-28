@@ -1,8 +1,9 @@
 //! Owned-population hover card and class-by-province drilldown.
 
+use super::resource_hud::format_population;
 use super::{
-    format_hud_number, hud_resource_positions, HudResource, ProvinceOwnership,
-    HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT, POP_CLASS_NAMES,
+    hud_resource_positions, HudResource, ProvinceOwnership, HUD_RESOURCE_GROUP_PADDING,
+    HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT, POP_CLASS_NAMES,
 };
 use bevy_egui::egui;
 
@@ -243,7 +244,7 @@ fn paint(
                 painter.text(
                     p(PANEL_WIDTH - 20.0, y + CLASS_HEIGHT / 2.0),
                     egui::Align2::RIGHT_CENTER,
-                    format_hud_number(counts[class]),
+                    format_population(counts[class]),
                     egui::FontId::proportional(13.0 * scale),
                     ink,
                 );
@@ -306,7 +307,7 @@ fn paint(
                             row_painter.text(
                                 egui::pos2(rect.right() - 20.0 * scale, row.center().y),
                                 egui::Align2::RIGHT_CENTER,
-                                format_hud_number(*count),
+                                format_population(*count),
                                 egui::FontId::proportional(12.0 * scale),
                                 ink,
                             );
@@ -332,7 +333,7 @@ fn paint(
             painter.text(
                 p(PANEL_WIDTH - 20.0, footer_top + 24.0),
                 egui::Align2::RIGHT_CENTER,
-                format_hud_number(population.amount),
+                format_population(population.amount),
                 egui::FontId::proportional(17.0 * scale),
                 ink,
             );

@@ -266,6 +266,15 @@ impl MilitaryWorld {
         &mut self,
         owner: impl Fn(ProvinceId) -> Option<PlayerId>,
     ) -> Vec<MilitaryEvent> {
+        self.advance_recruitment_with_speed(owner, |_| 1.0)
+    }
+
+    /// Apply a funded local work rate; ownership changes still cancel without refunds.
+    pub fn advance_recruitment_with_speed(
+        &mut self,
+        owner: impl Fn(ProvinceId) -> Option<PlayerId>,
+        speed: impl Fn(ProvinceId) -> f64,
+    ) -> Vec<MilitaryEvent> {
         let mut complete = vec![];
         for (province, state) in self.provinces.iter_mut().enumerate() {
             for penalty in &mut state.draft_penalties {
@@ -279,7 +288,7 @@ impl MilitaryWorld {
                 state.recruitment = None;
             }
             if let Some(project) = &mut state.recruitment {
-                project.progress += 1.;
+                project.progress += speed(province).max(0.0);
                 if project.progress >= project.required_progress {
                     complete.push((province, state.recruitment.take().unwrap()));
                 }
@@ -317,6 +326,16 @@ impl MilitaryWorld {
     }
     /// Apply proportional food shortage and peaceful morale/training without healing men.
     pub fn apply_supply(&mut self, owner: ForceOwner, supply_ratio: f64) {
+        self.apply_supply_with_wages(owner, supply_ratio, 0.0);
+    }
+
+    /// Nationwide wage morale adjusts recovery targets without accumulating policy drift.
+    pub fn apply_supply_with_wages(
+        &mut self,
+        owner: ForceOwner,
+        supply_ratio: f64,
+        wage_morale: f64,
+    ) {
         let supply = supply_ratio.clamp(0., 1.);
         let config = &self.config;
         let update = |unit: &mut Unit, in_battle: bool| {
@@ -329,7 +348,8 @@ impl MilitaryWorld {
                 unit.training = (unit.training + config.passive_training).min(100.);
             }
             if supply >= config.training_supply_threshold && !in_battle {
-                let target = (config.base_morale + unit.training * 0.1).min(100.);
+                let target =
+                    (config.base_morale + unit.training * 0.1 + wage_morale).clamp(0., 100.);
                 if unit.morale < target {
                     unit.morale = (unit.morale + config.morale_recovery).min(target);
                 } else {
@@ -788,7 +808,12 @@ fn record_destroyed_cohorts(
 pub fn initial_defenders(name: &str) -> Vec<UnitType> {
     use UnitType::*;
     match name {
-        "Latium" => vec![HeavyInfantry, HeavyInfantry, LightInfantry, Archers, LightCavalry],
+        "Latium" => {
+            let mut guards = vec![HeavyInfantry; 32];
+            guards.extend([Archers; 10]);
+            guards.extend([HeavyCavalry; 8]);
+            guards
+        },
         "Achaia" | "Asia" | "Africa Proconsularis" | "Aegyptus" | "Syria" => {
             vec![LightInfantry, LightInfantry, HeavyInfantry, Archers]
         },

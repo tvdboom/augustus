@@ -1,32 +1,29 @@
-//! One shared sealed nomination auction, one campaign and one authoritative Senate vote.
-
+//! Persistent individual loyalties: monthly realignment and immediate support-gated offices.
 use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer, PoliticalRank, PoliticalRng};
-use std::collections::{BTreeMap, BTreeSet};
 
-/// Five public Senate blocs, with no persistent individual senator simulation.
+/// Public factions with distinct preferences and contiguous chamber sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bloc {
-    /// Nobility, prestige and political institutions.
+    /// Nobles and republican institutions.
     Aristocrats,
-    /// Commerce, reliability and economic security.
+    /// Commerce and economic security.
     Merchants,
-    /// Provincial welfare and non-coercive vassal stability.
+    /// Provincial welfare and voluntary vassal stability.
     Provincials,
-    /// Citizens, plebeians, food and domestic policies.
+    /// Citizens, plebeians and domestic policy.
     Populares,
-    /// Military strength, service and victories.
+    /// Army strength, service and victories.
     Military,
 }
-
 impl Bloc {
-    /// Stable order for profiles, scores, configuration and chamber seats.
+    /// Stable faction ordering for configuration and chamber sections.
     pub const ALL: [Self; 5] =
         [Self::Aristocrats, Self::Merchants, Self::Provincials, Self::Populares, Self::Military];
-    /// Index into five-bloc arrays.
+    /// Index into faction arrays.
     pub fn index(self) -> usize {
         self as usize
     }
-    /// Display label for tabs and tooltips.
+    /// Full public faction name.
     pub fn label(self) -> &'static str {
         match self {
             Self::Aristocrats => "Aristocrats",
@@ -36,137 +33,142 @@ impl Bloc {
             Self::Military => "Military",
         }
     }
-}
-
-/// Requested motion; all offices compete in the same auction without priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ballot {
-    /// Promote an Aedile.
-    Praetor,
-    /// Promote a Praetor through the same nomination and voting mechanics.
-    Censor,
-    /// Elect a Censor or former Consul to an available seat.
-    Consul,
-    /// Elect a currently serving Consul to victory.
-    Augustus,
-    /// Remove the specified active Consul using evidence owned by the initiator.
-    NoConfidence {
-        /// Incumbent whose office is challenged.
-        target: PlayerId,
-        /// Evidence reserved for and consumed by the motion.
-        scandal_id: u64,
-    },
-}
-
-impl Ballot {
-    /// Player-facing name of the vote.
-    pub fn label(self) -> &'static str {
+    /// Short explanation of the faction's actual structural preferences.
+    pub fn preferences(self) -> &'static str {
         match self {
-            Self::Praetor => "Praetor",
-            Self::Censor => "Censor",
-            Self::Consul => "Consul",
-            Self::Augustus => "Augustus",
-            Self::NoConfidence {
-                ..
-            } => "No Confidence",
+            Self::Aristocrats => "Happy nobles, political standing, Forums and wonders. Influence prestige has diminishing returns.",
+            Self::Merchants => "Profitable income, reliable delivered trade, Markets and secure resources.",
+            Self::Provincials => "Happy free populations, friendly stable vassals and provincial trade. High tribute drives them away.",
+            Self::Populares => "Happy citizens and plebeians, generous food and low taxes. Famine and harsh labor drive them away.",
+            Self::Military => "Strong trained armies, military career rank and recent victories. Defeats weaken support.",
         }
     }
 }
 
-/// Central Senate costs, timing and support-to-vote conversion.
+/// Costs and loyalty rules; there is no election calendar.
 #[derive(Debug, Clone)]
 pub struct SenateConfig {
-    /// Aedile is bought without a ballot.
-    pub aedile_cost: f64,
-    /// Minimum Praetor, Censor, Consul, Augustus and removal nominations.
-    pub minimum_bids: [f64; 5],
-    /// Quaestor, Aedile, Praetor, Censor, Consul, Augustus income; Proconsul uses Consul.
+    /// Aedile, Praetor, Censor, Consul and Augustus appointment costs.
+    pub promotion_costs: [f64; 5],
+    /// Non-stacking monthly office income; Proconsul shares the Consul slot.
     pub rank_influence: [f64; 6],
-    /// Number of sealed monthly rounds before selecting a nominee.
-    pub nomination_months: u32,
-    /// Campaign duration after a unique nomination winner emerges.
-    pub campaign_months: u32,
-    /// Serving Consul term duration in months.
-    pub consul_term: u32,
-    /// Exact 100-vote chamber split by bloc.
+    /// Number of senators in each contiguous faction section, totaling 100.
     pub bloc_sizes: [u8; 5],
-    /// Number of YES votes required to pass.
-    pub yes_threshold: u8,
-    /// Influence spending at half of its maximum campaign support.
-    pub campaign_half_saturation: f64,
-    /// Maximum probability contribution from each side's campaign.
-    pub campaign_cap: f64,
-    /// Coin price equivalent to one Influence in bribery's support formula.
-    pub bribery_coin_per_influence: f64,
-    /// Probability floor and ceiling prevent absolute certainty from raw empire size.
-    pub probability_bounds: [f64; 2],
-    /// Neutral Senate support before the explainable structural/active contributions.
-    pub baseline_support: f64,
-    /// Multipliers for each bloc's listed structural factors, in tooltip order.
-    pub structural_weights: [[f64; 7]; 5],
-    /// Certainty base, support-distance weight, campaign-engagement weight, and cap.
-    pub certainty_curve: [f64; 4],
-    /// Default button increment for legitimate campaigning and endorsements.
-    pub campaign_action_influence: f64,
-    /// Default button increment for scandalous coin bribery.
-    pub bribery_action_coin: f64,
+    /// Length of a Consul term in months.
+    pub consul_term: u32,
+    /// Mandatory return cooldown after every Consul departure.
+    pub consul_cooldown: u32,
+    /// Consecutive reviews below retention support before forced resignation.
+    pub loss_grace_months: u32,
+    /// Influence price of faction outreach.
+    pub court_cost: f64,
+    /// Initial attraction points from non-stacking faction outreach.
+    pub court_bonus: f64,
+    /// Lifetime of outreach, fading linearly.
+    pub court_months: u32,
+    /// Coin price of the first temporary loyalty lease.
+    pub bribe_base_coin: f64,
+    /// Exclusive lifetime of a senator's bribery lease.
+    pub bribe_months: u32,
+    /// Maximum number of simultaneously bribed senators per player.
+    pub bribe_cap: usize,
+    /// Lifetime of exposed accusations, fading linearly.
+    pub scandal_months: u32,
 }
-
 impl Default for SenateConfig {
-    /// Initial configuration preserves the Censor between the spec's Praetor and Consul.
     fn default() -> Self {
         Self {
-            aedile_cost: 100.0,
-            minimum_bids: [100.0, 150.0, 200.0, 400.0, 200.0],
+            promotion_costs: [100.0, 180.0, 280.0, 400.0, 800.0],
             rank_influence: [0.0, 1.0, 2.0, 3.0, 4.0, 0.0],
-            nomination_months: 12,
-            campaign_months: 12,
-            consul_term: 48,
-            bloc_sizes: [30, 20, 20, 20, 10],
-            yes_threshold: 51,
-            campaign_half_saturation: 60.0,
-            campaign_cap: 0.25,
-            bribery_coin_per_influence: 5.0,
-            probability_bounds: [0.02, 0.98],
-            baseline_support: 0.45,
-            structural_weights: [[1.0; 7]; 5],
-            certainty_curve: [0.4, 0.8, 0.25, 0.95],
-            campaign_action_influence: 10.0,
-            bribery_action_coin: 50.0,
+            bloc_sizes: [20; 5],
+            consul_term: 24,
+            consul_cooldown: 12,
+            loss_grace_months: 3,
+            court_cost: 20.0,
+            court_bonus: 8.0,
+            court_months: 6,
+            bribe_base_coin: 80.0,
+            bribe_months: 6,
+            bribe_cap: 10,
+            scandal_months: 12,
         }
     }
 }
-
 impl SenateConfig {
-    /// Enforce the invariant of exactly 100 seats before the simulation starts.
+    /// Enforce chamber, duration and cost invariants before simulation.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.bloc_sizes.iter().map(|v| *v as u16).sum::<u16>() != 100 {
-            return Err("The Senate must contain exactly 100 votes.");
+        if self.bloc_sizes.iter().map(|n| usize::from(*n)).sum::<usize>() != 100 {
+            return Err("The Senate must contain exactly 100 senators.");
         }
-        if self.nomination_months == 0 || self.campaign_months == 0 || self.consul_term == 0 {
+        if [
+            self.consul_term,
+            self.consul_cooldown,
+            self.loss_grace_months,
+            self.court_months,
+            self.bribe_months,
+            self.scandal_months,
+        ]
+        .contains(&0)
+        {
             return Err("Political durations must be positive.");
         }
-        if self.yes_threshold != 51 {
-            return Err("The Senate requires an absolute majority of 51 votes.");
+        if self
+            .promotion_costs
+            .iter()
+            .chain([&self.court_cost, &self.court_bonus, &self.bribe_base_coin])
+            .any(|n| !n.is_finite() || *n <= 0.0)
+        {
+            return Err("Political costs and bonuses must be finite and positive.");
         }
         Ok(())
     }
-    /// Nomination minimum shared by model and UI.
-    pub fn minimum_bid(&self, ballot: Ballot) -> f64 {
-        self.minimum_bids[match ballot {
-            Ballot::Praetor => 0,
-            Ballot::Censor => 1,
-            Ballot::Consul => 2,
-            Ballot::Augustus => 3,
-            Ballot::NoConfidence {
-                ..
-            } => 4,
-        }]
+    /// Two-player baseline scales by sqrt(2 / players); victory always needs a majority.
+    pub fn requirements(
+        &self,
+        rank: PoliticalRank,
+        players: usize,
+    ) -> Option<PromotionRequirement> {
+        let next = match rank {
+            PoliticalRank::Quaestor => PoliticalRank::Aedile,
+            PoliticalRank::Aedile => PoliticalRank::Praetor,
+            PoliticalRank::Praetor => PoliticalRank::Censor,
+            PoliticalRank::Censor | PoliticalRank::Proconsul => PoliticalRank::Consul,
+            PoliticalRank::Consul => PoliticalRank::Augustus,
+            PoliticalRank::Augustus => return None,
+        };
+        let i = next.ladder_index() - 1;
+        let scale = (2.0 / players.clamp(2, 8) as f64).sqrt();
+        let senators = (([5.0, 12.0, 22.0, 40.0, 60.0][i] * scale).round() as usize).max(
+            if next == PoliticalRank::Augustus {
+                51
+            } else {
+                3
+            },
+        );
+        Some(PromotionRequirement {
+            rank: next,
+            influence: self.promotion_costs[i],
+            senators,
+        })
     }
-    /// Non-stacking monthly office income; callers add it during normal economy income.
+    /// Non-stacking monthly Influence supplied by the current office.
     pub fn rank_income(&self, rank: PoliticalRank) -> f64 {
         self.rank_influence[rank.ladder_index()]
     }
+    /// Consuls retain office with at least 60% of appointment support, rounded up.
+    pub fn retention_support(&self, players: usize) -> usize {
+        (self.requirements(PoliticalRank::Censor, players).unwrap().senators * 3).div_ceil(5)
+    }
+}
+#[derive(Debug, Clone, Copy)]
+/// Requirements for the actor's next available office.
+pub struct PromotionRequirement {
+    /// Office to be awarded.
+    pub rank: PoliticalRank,
+    /// One-time Influence price.
+    pub influence: f64,
+    /// Number of currently loyal senators required.
+    pub senators: usize,
 }
 
 /// Current empire aggregates used to explain structural bloc support.
@@ -263,476 +265,343 @@ pub struct SupportReason {
     pub points: f64,
 }
 
-/// A bloc's visible uncertainty and final underlying probability.
+/// One stable senator with individual emphasis within a public faction.
 #[derive(Debug, Clone)]
-pub struct BlocProjection {
-    /// Senate faction represented.
+pub struct Senator {
+    /// Stable chamber identity, never changed during a match.
+    pub id: usize,
+    /// Faction determining structural preferences and chamber section.
     pub bloc: Bloc,
-    /// Seats fixed to YES before the final vote.
-    pub yes: u8,
-    /// Seats fixed to NO before the final vote.
-    pub no: u8,
-    /// Gray seats independently resolved at the final probability.
-    pub undecided: u8,
-    /// Chance that each undecided seat will choose YES.
-    pub support_probability: f64,
-    /// Neutral support before the listed modifiers, for faithful tooltips.
-    pub baseline_support: f64,
-    /// Structural and active political effects for tooltips.
-    pub reasons: Vec<SupportReason>,
+    /// Player currently supported, or neutral gray.
+    pub allegiance: Option<PlayerId>,
+    /// Temporary loyalty override, visibly marked by a gold ring.
+    pub bribe: Option<SenatorBribe>,
+    preferences: [f64; 7],
+    threshold: f64,
 }
-
-/// Public totals from resolved sealed nomination rounds.
-#[derive(Debug, Clone)]
-pub struct Nomination {
-    /// Player requesting the next ballot.
+#[derive(Debug, Clone, Copy)]
+/// An exclusive temporary loyalty lease.
+pub struct SenatorBribe {
+    /// Player who paid for the senator's support.
     pub player: PlayerId,
-    /// Office or motion requested.
-    pub ballot: Ballot,
-    /// Permanently spent, publicly revealed Influence.
-    pub committed: f64,
+    /// Exclusive expiry month.
+    pub until: u32,
 }
-
-/// Active campaign; spending has diminishing returns and the empire profile stays live.
 #[derive(Debug, Clone)]
-pub struct Campaign {
-    /// Player who won access to the single ballot.
-    pub candidate: PlayerId,
-    /// Promotion or removal motion.
-    pub ballot: Ballot,
-    /// Completed months of the campaign.
-    pub elapsed: u32,
-    /// Candidate and endorsement Influence by bloc.
-    pub support_spending: [f64; 5],
-    /// Opponents' Influence by bloc.
-    pub opposition_spending: [f64; 5],
-    /// Coin bribery, reported separately because it creates evidence.
-    pub bribery: [f64; 5],
-    /// Accumulated exposed-scandal probability penalties.
-    pub scandal_penalties: [f64; 5],
+struct Outreach {
+    player: PlayerId,
+    bloc: Bloc,
+    until: u32,
 }
-
-/// Authoritative saved results; the UI animates these instead of rerolling votes.
 #[derive(Debug, Clone)]
-pub struct SenateResult {
-    /// Absolute resolution month.
-    pub month: u32,
-    /// Player who sought the ballot.
-    pub candidate: PlayerId,
-    /// Requested office or motion.
-    pub ballot: Ballot,
-    /// Final YES count.
-    pub yes: u8,
-    /// Final NO count.
-    pub no: u8,
-    /// Whether the majority and final eligibility checks both passed.
-    pub passed: bool,
-    /// Stable bloc-order sequence of all 100 final votes.
-    pub votes: Vec<bool>,
-    /// Identifies circles that were gray and should animate.
-    pub was_undecided: Vec<bool>,
+/// An exposed real scandal with faction-specific, fading attraction penalties.
+pub struct Accusation {
+    /// Player whose misconduct was exposed.
+    pub target: PlayerId,
+    /// Attraction-point penalties in faction order.
+    pub penalties: [f64; 5],
+    /// Exclusive expiry month.
+    pub until: u32,
 }
-
-/// Model events passed to toasts and evidence inventory without UI coupling.
 #[derive(Debug, Clone)]
+/// Office transitions for player-scoped notifications and victory handling.
 pub enum SenateEvent {
-    /// Unique winner begins their campaign.
-    CampaignStarted(PlayerId, Ballot),
-    /// A tied final auction needs another sealed month.
-    SuddenDeath(Vec<PlayerId>),
-    /// Senate reached its authoritative result.
-    VoteResolved(SenateResult),
-    /// Office ended and a seat became vacant.
+    /// Player paid Influence and met the support requirement.
+    RankAdvanced(PlayerId, PoliticalRank),
+    /// A Consul completed their term and became Proconsul.
     ConsulExpired(PlayerId),
-    /// Evidence is consumed at the end of a No Confidence campaign, whether it wins or loses.
-    ConsumeScandal(u64),
-    /// Elected Augustus; the session can enter its victory state.
+    /// Lost support, possibly accelerated by a scandal, forced resignation.
+    ConsulRemoved(PlayerId),
+    /// A serving Consul secured Augustus support and won.
     Victory(PlayerId),
 }
 
-/// Shared Roman political calendar. Private bids are intentionally not public fields.
+/// The authoritative chamber. No bids, vote rolls, nominee or global ballot remains.
 #[derive(Debug, Clone)]
 pub struct SenateState {
-    /// Absolute number of resolved months.
+    /// Number of completed monthly loyalty reviews.
     pub month: u32,
-    /// Number of nomination months already completed.
-    pub nomination_elapsed: u32,
-    /// Public cumulative, already revealed nominations.
-    pub nominations: BTreeMap<PlayerId, Nomination>,
-    /// None during nomination; exactly one shared campaign otherwise.
-    pub campaign: Option<Campaign>,
-    /// Most recent authoritative outcome.
-    pub last_result: Option<SenateResult>,
-    /// Winning player, set only through an Augustus vote.
+    /// All 100 persistent public allegiances.
+    pub senators: Vec<Senator>,
+    /// Winning player, set by Augustus appointment or Rome's conquest.
     pub winner: Option<PlayerId>,
-    /// When tied, only these players may bid in the additional sealed rounds.
-    pub sudden_death: BTreeSet<PlayerId>,
-    pending_bids: BTreeMap<PlayerId, (Ballot, f64)>,
-    rng: PoliticalRng,
+    /// Active publicly exposed scandals.
+    pub accusations: Vec<Accusation>,
+    outreach: Vec<Outreach>,
+    low_support: Vec<u32>,
+    used_actions: Vec<(PlayerId, Bloc, bool)>,
 }
-
 impl SenateState {
-    /// Initialize a match-specific random stream and the first Nomination Year.
+    /// Initialize a default chamber with neutral loyalties and seeded preferences.
     pub fn new(seed: u64) -> Self {
+        Self::with_config(seed, &SenateConfig::default())
+    }
+    /// Initialize a chamber from the authoritative match configuration.
+    pub fn with_config(seed: u64, config: &SenateConfig) -> Self {
+        assert!(config.validate().is_ok(), "invalid Senate configuration");
+        let mut rng = PoliticalRng::new(seed);
+        let mut senators = Vec::with_capacity(100);
+        for bloc in Bloc::ALL {
+            for _ in 0..config.bloc_sizes[bloc.index()] {
+                senators.push(Senator {
+                    id: senators.len(),
+                    bloc,
+                    allegiance: None,
+                    bribe: None,
+                    preferences: std::array::from_fn(|_| 0.65 + rng.unit() * 0.7),
+                    threshold: 3.0 + rng.unit() * 10.0,
+                });
+            }
+        }
         Self {
             month: 0,
-            nomination_elapsed: 0,
-            nominations: BTreeMap::new(),
-            campaign: None,
-            last_result: None,
+            senators,
             winner: None,
-            sudden_death: BTreeSet::new(),
-            pending_bids: BTreeMap::new(),
-            rng: PoliticalRng::new(seed),
+            accusations: vec![],
+            outreach: vec![],
+            low_support: vec![],
+            used_actions: vec![],
         }
     }
-
-    /// Fixed-cost first promotion has no effect on the shared Senate calendar.
-    pub fn buy_aedile(
-        &self,
-        player: &mut PoliticalPlayer,
-        config: &SenateConfig,
-    ) -> Result<(), PoliticalError> {
-        if player.rank != PoliticalRank::Quaestor {
-            return Err(PoliticalError::Ineligible);
-        }
-        player.spend(Currency::Influence, config.aedile_cost)?;
-        player.rank = PoliticalRank::Aedile;
-        Ok(())
+    /// Count all senators currently supporting a player.
+    pub fn support(&self, player: PlayerId) -> usize {
+        self.senators.iter().filter(|s| s.allegiance == Some(player)).count()
     }
-
-    /// Expected ballot month; sudden-death months extend the schedule explicitly.
-    pub fn expected_vote_month(&self, config: &SenateConfig) -> u32 {
-        self.month
-            + self.campaign.as_ref().map_or(
-                config
-                    .nomination_months
-                    .saturating_sub(self.nomination_elapsed)
-                    .max(u32::from(!self.sudden_death.is_empty()))
-                    + config.campaign_months,
-                |campaign| config.campaign_months.saturating_sub(campaign.elapsed),
-            )
+    /// Count the player's loyal senators within one faction.
+    pub fn bloc_support(&self, player: PlayerId, bloc: Bloc) -> usize {
+        self.senators.iter().filter(|s| s.bloc == bloc && s.allegiance == Some(player)).count()
     }
-
-    /// Check rank, term and seat restrictions without spending or changing state.
-    pub fn eligibility(
+    /// Validate rank, cooldown, seats, support and funds without mutating anything.
+    pub fn promotion_eligibility(
         &self,
         player: PlayerId,
-        ballot: Ballot,
         players: &[PoliticalPlayer],
-        has_scandal: bool,
         config: &SenateConfig,
-    ) -> Result<(), PoliticalError> {
+    ) -> Result<PromotionRequirement, PoliticalError> {
+        if self.winner.is_some() {
+            return Err(PoliticalError::Ineligible);
+        }
         let actor = players.get(player).ok_or(PoliticalError::MissingTarget)?;
-        let vote_month = self.expected_vote_month(config);
-        match ballot {
-            Ballot::Praetor if actor.rank == PoliticalRank::Aedile => Ok(()),
-            Ballot::Censor if actor.rank == PoliticalRank::Praetor => Ok(()),
-            Ballot::Consul
-                if matches!(actor.rank, PoliticalRank::Censor | PoliticalRank::Proconsul) =>
-            {
-                if players
-                    .iter()
-                    .filter(|p| {
-                        p.rank == PoliticalRank::Consul
-                            && p.consul_until.is_some_and(|until| until > vote_month)
-                    })
-                    .count()
-                    < 2
-                {
-                    Ok(())
-                } else {
-                    Err(PoliticalError::NoConsulSeat)
-                }
-            },
-            Ballot::Augustus
-                if actor.rank == PoliticalRank::Consul
-                    && actor.consul_until.is_some_and(|until| until >= vote_month) =>
-            {
-                Ok(())
-            },
-            Ballot::NoConfidence {
-                target,
-                ..
-            } if target != player
-                && players.get(target).is_some_and(|p| {
-                    p.rank == PoliticalRank::Consul
-                        && p.consul_until.is_some_and(|until| until >= vote_month)
-                }) =>
-            {
-                if has_scandal {
-                    Ok(())
-                } else {
-                    Err(PoliticalError::ScandalRequired)
-                }
-            },
-            _ => Err(PoliticalError::Ineligible),
+        let requirement =
+            config.requirements(actor.rank, players.len()).ok_or(PoliticalError::Ineligible)?;
+        if requirement.rank == PoliticalRank::Consul {
+            if actor.consul_again_at > self.month {
+                return Err(PoliticalError::ConsulCooldown);
+            }
+            if players.iter().filter(|p| p.rank == PoliticalRank::Consul).count() >= 2 {
+                return Err(PoliticalError::NoConsulSeat);
+            }
         }
-    }
-
-    /// Escrow a sealed additional bid. Funds become unavailable immediately, but the
-    /// additional amount is revealed and committed only at the simultaneous monthly step.
-    /// `has_scandal` is supplied by the authoritative evidence inventory, never by the UI.
-    pub fn submit_bid(
-        &mut self,
-        player: PlayerId,
-        ballot: Ballot,
-        amount: f64,
-        players: &mut [PoliticalPlayer],
-        has_scandal: bool,
-        config: &SenateConfig,
-    ) -> Result<(), PoliticalError> {
-        self.bid_eligibility(player, ballot, amount, players, has_scandal, config)?;
-        players[player].spend(Currency::Influence, amount)?;
-        self.pending_bids
-            .entry(player)
-            .and_modify(|entry| entry.1 += amount)
-            .or_insert((ballot, amount));
-        Ok(())
-    }
-
-    /// Validate the complete bid, including a prior sealed choice and sudden-death
-    /// participation, without spending funds or revealing another player's bid.
-    pub fn bid_eligibility(
-        &self,
-        player: PlayerId,
-        ballot: Ballot,
-        amount: f64,
-        players: &[PoliticalPlayer],
-        has_scandal: bool,
-        config: &SenateConfig,
-    ) -> Result<(), PoliticalError> {
-        if self.campaign.is_some() || self.winner.is_some() {
-            return Err(PoliticalError::WrongPhase);
-        }
-        if !amount.is_finite() || amount <= 0.0 {
-            return Err(PoliticalError::InvalidAmount);
-        }
-        if !self.sudden_death.is_empty() && !self.sudden_death.contains(&player) {
-            return Err(PoliticalError::Ineligible);
-        }
-        self.eligibility(player, ballot, players, has_scandal, config)?;
-        if self.nominations.get(&player).is_some_and(|n| n.ballot != ballot)
-            || self.pending_bids.get(&player).is_some_and(|(b, _)| *b != ballot)
+        if requirement.rank == PoliticalRank::Augustus
+            && actor.consul_until.is_none_or(|end| end <= self.month)
         {
             return Err(PoliticalError::Ineligible);
         }
-        let committed = self.nominations.get(&player).map_or(0.0, |n| n.committed);
-        let pending = self.pending_bids.get(&player).map_or(0.0, |(_, value)| *value);
-        if committed + pending + amount < config.minimum_bid(ballot) {
-            return Err(PoliticalError::InvalidAmount);
+        if actor.promoted_at == Some(self.month) {
+            return Err(PoliticalError::AlreadyUsed);
         }
-        if players[player].influence + 1e-9 < amount {
+        if self.support(player) < requirement.senators {
+            return Err(PoliticalError::InsufficientSupport);
+        }
+        if actor.influence + 1e-9 < requirement.influence {
             return Err(PoliticalError::InsufficientFunds);
         }
-        Ok(())
+        Ok(requirement)
     }
-
-    /// Read only the viewing player's private additional commitment.
-    pub fn private_bid(&self, viewer: PlayerId) -> f64 {
-        self.pending_bids.get(&viewer).map_or(0.0, |(_, amount)| *amount)
-    }
-
-    /// Return only this viewer's already chosen motion, including an unrevealed bid.
-    pub fn chosen_ballot(&self, viewer: PlayerId) -> Option<Ballot> {
-        self.nominations
-            .get(&viewer)
-            .map(|n| n.ballot)
-            .or_else(|| self.pending_bids.get(&viewer).map(|(ballot, _)| *ballot))
-    }
-
-    /// Inspect current structural attitudes before nomination without starting a
-    /// campaign, committing seats, modifying bids, or advancing the random stream.
-    pub fn preview_projection(
-        &self,
-        candidate: PlayerId,
-        ballot: Ballot,
-        players: &[PoliticalPlayer],
-        profiles: &[PoliticalProfile],
+    /// Appoint immediately; supporters stay with their player and are never consumed.
+    pub fn promote(
+        &mut self,
+        player: PlayerId,
+        players: &mut [PoliticalPlayer],
         config: &SenateConfig,
-    ) -> Vec<BlocProjection> {
-        let mut preview = self.clone();
-        preview.campaign = Some(Campaign {
-            candidate,
-            ballot,
-            elapsed: 0,
-            support_spending: [0.0; 5],
-            opposition_spending: [0.0; 5],
-            bribery: [0.0; 5],
-            scandal_penalties: [0.0; 5],
-        });
-        preview.projection(players, profiles, config)
+    ) -> Result<SenateEvent, PoliticalError> {
+        let requirement = self.promotion_eligibility(player, players, config)?;
+        players[player].spend(Currency::Influence, requirement.influence)?;
+        let actor = &mut players[player];
+        actor.rank = requirement.rank;
+        actor.promoted_at = Some(self.month);
+        if actor.rank == PoliticalRank::Consul {
+            actor.consul_until = Some(self.month + config.consul_term);
+            self.low_support.resize(players.len(), 0);
+            self.low_support[player] = 0;
+        }
+        if players[player].rank == PoliticalRank::Augustus {
+            players[player].consul_until = None;
+            self.winner = Some(player);
+            Ok(SenateEvent::Victory(player))
+        } else {
+            Ok(SenateEvent::RankAdvanced(player, requirement.rank))
+        }
     }
-
-    /// Spend Influence to support or oppose a bloc. Candidates cannot oppose their own promotion.
-    pub fn campaign_spend(
+    /// Legitimate short-lived outreach. Refreshing replaces the bonus; it never stacks.
+    pub fn court(
         &mut self,
         player: PlayerId,
         bloc: Bloc,
-        support: bool,
-        amount: f64,
         players: &mut [PoliticalPlayer],
+        config: &SenateConfig,
     ) -> Result<(), PoliticalError> {
-        let campaign = self.campaign.as_mut().ok_or(PoliticalError::WrongPhase)?;
-        if player == campaign.candidate
-            && !support
-            && !matches!(campaign.ballot, Ballot::NoConfidence { .. })
-        {
+        self.action_eligibility(player, bloc, false, players)?;
+        players[player].spend(Currency::Influence, config.court_cost)?;
+        self.outreach.retain(|o| o.player != player || o.bloc != bloc);
+        self.outreach.push(Outreach {
+            player,
+            bloc,
+            until: self.month + config.court_months,
+        });
+        self.used_actions.push((player, bloc, false));
+        Ok(())
+    }
+    fn action_eligibility(
+        &self,
+        player: PlayerId,
+        bloc: Bloc,
+        bribe: bool,
+        players: &[PoliticalPlayer],
+    ) -> Result<(), PoliticalError> {
+        if self.winner.is_some() {
             return Err(PoliticalError::Ineligible);
         }
-        players
-            .get_mut(player)
-            .ok_or(PoliticalError::MissingTarget)?
-            .spend(Currency::Influence, amount)?;
-        if support {
-            campaign.support_spending[bloc.index()] += amount;
-        } else {
-            campaign.opposition_spending[bloc.index()] += amount;
+        if player >= players.len() {
+            return Err(PoliticalError::MissingTarget);
+        }
+        if self.used_actions.contains(&(player, bloc, bribe)) {
+            return Err(PoliticalError::AlreadyUsed);
         }
         Ok(())
     }
-
-    /// Spend candidate coin for a stronger campaign; caller records Political Bribery
-    /// as an actual scandal opportunity whenever this succeeds with a positive amount.
+    /// Count unexpired leases against this player's bribery cap.
+    pub fn active_bribes(&self, player: PlayerId) -> usize {
+        self.senators
+            .iter()
+            .filter(|s| s.bribe.is_some_and(|b| b.player == player && b.until > self.month))
+            .count()
+    }
+    /// Quote the validated escalating price without purchasing a loyalty lease.
+    pub fn bribe_quote(
+        &self,
+        player: PlayerId,
+        bloc: Bloc,
+        players: &[PoliticalPlayer],
+        config: &SenateConfig,
+    ) -> Result<f64, PoliticalError> {
+        self.action_eligibility(player, bloc, true, players)?;
+        let count = self.active_bribes(player);
+        if count >= config.bribe_cap
+            || !self
+                .senators
+                .iter()
+                .any(|s| s.bloc == bloc && s.allegiance != Some(player) && s.bribe.is_none())
+        {
+            return Err(PoliticalError::Ineligible);
+        }
+        Ok(config.bribe_base_coin + 20.0 * count as f64)
+    }
+    /// One senator per payment, at most ten active leases. Caller records real misconduct.
     pub fn bribe(
         &mut self,
         player: PlayerId,
         bloc: Bloc,
-        amount: f64,
         players: &mut [PoliticalPlayer],
-    ) -> Result<(), PoliticalError> {
-        let campaign = self.campaign.as_mut().ok_or(PoliticalError::WrongPhase)?;
-        if player != campaign.candidate {
-            return Err(PoliticalError::Ineligible);
-        }
-        players
-            .get_mut(player)
-            .ok_or(PoliticalError::MissingTarget)?
-            .spend(Currency::Coin, amount)?;
-        campaign.bribery[bloc.index()] += amount;
-        Ok(())
+        config: &SenateConfig,
+    ) -> Result<usize, PoliticalError> {
+        let cost = self.bribe_quote(player, bloc, players, config)?;
+        let index = self
+            .senators
+            .iter()
+            .position(|s| s.bloc == bloc && s.allegiance != Some(player) && s.bribe.is_none())
+            .ok_or(PoliticalError::Ineligible)?;
+        players[player].spend(Currency::Coin, cost)?;
+        let senator = &mut self.senators[index];
+        senator.bribe = Some(SenatorBribe {
+            player,
+            until: self.month + config.bribe_months,
+        });
+        senator.allegiance = Some(player);
+        self.used_actions.push((player, bloc, true));
+        Ok(senator.id)
     }
-
-    /// Add already validated evidence effects, differentiated by bloc and severity.
+    /// Accusations need real unexpired evidence, consumed atomically here. They damage
+    /// relevant factions for a year and release that target's compromised bribery leases.
     pub fn expose_scandal(
         &mut self,
-        target: PlayerId,
-        penalties: [f64; 5],
-    ) -> Result<(), PoliticalError> {
-        let campaign = self.campaign.as_mut().ok_or(PoliticalError::WrongPhase)?;
-        let expected = match campaign.ballot {
-            Ballot::NoConfidence {
-                target,
-                ..
-            } => target,
-            _ => campaign.candidate,
-        };
-        if target != expected {
+        holder: PlayerId,
+        id: u64,
+        players: &[PoliticalPlayer],
+        espionage: &mut super::espionage::EspionageState,
+        config: &SenateConfig,
+    ) -> Result<PlayerId, PoliticalError> {
+        use super::espionage::ScandalTarget;
+        if self.winner.is_some() {
             return Err(PoliticalError::Ineligible);
         }
-        for (current, penalty) in campaign.scandal_penalties.iter_mut().zip(penalties) {
-            *current += penalty.max(0.0);
-        }
-        Ok(())
-    }
-
-    /// Explain live support and visible uncertainty from the current campaign/profile.
-    pub fn projection(
-        &self,
-        players: &[PoliticalPlayer],
-        profiles: &[PoliticalProfile],
-        config: &SenateConfig,
-    ) -> Vec<BlocProjection> {
-        let Some(campaign) = &self.campaign else {
-            return Vec::new();
-        };
-        let profile_id = match campaign.ballot {
-            Ballot::NoConfidence {
-                target,
-                ..
-            } => target,
-            _ => campaign.candidate,
-        };
-        let fallback = PoliticalProfile::default();
-        let profile = profiles.get(profile_id).unwrap_or(&fallback);
-        let player = players.get(profile_id).cloned().unwrap_or_default();
-        Bloc::ALL
-            .into_iter()
-            .map(|bloc| {
-                let i = bloc.index();
-                let mut reasons = structural_reasons(bloc, profile, &player);
-                for (reason, weight) in reasons.iter_mut().zip(config.structural_weights[i]) {
-                    reason.points *= weight;
-                }
-                if matches!(campaign.ballot, Ballot::NoConfidence { .. }) {
-                    for reason in &mut reasons {
-                        reason.points = -reason.points;
-                    }
-                }
-                let support =
-                    diminishing(campaign.support_spending[i], config.campaign_half_saturation)
-                        * config.campaign_cap;
-                let opposition =
-                    diminishing(campaign.opposition_spending[i], config.campaign_half_saturation)
-                        * config.campaign_cap;
-                let bribery = diminishing(
-                    campaign.bribery[i] / config.bribery_coin_per_influence.max(0.01),
-                    config.campaign_half_saturation,
-                ) * config.campaign_cap;
-                let scandal_sign = if matches!(campaign.ballot, Ballot::NoConfidence { .. }) {
-                    1.0
-                } else {
-                    -1.0
-                };
-                reasons.extend([
-                    SupportReason {
-                        label: "Campaign and endorsements",
-                        points: support * 100.0,
-                    },
-                    SupportReason {
-                        label: "Opposition campaign",
-                        points: -opposition * 100.0,
-                    },
-                    SupportReason {
-                        label: "Coin bribery",
-                        points: bribery * 100.0,
-                    },
-                    SupportReason {
-                        label: "Exposed scandals",
-                        points: campaign.scandal_penalties[i] * scandal_sign * 100.0,
-                    },
-                ]);
-                let probability = (config.baseline_support
-                    + reasons.iter().map(|r| r.points / 100.0).sum::<f64>())
-                .clamp(config.probability_bounds[0], config.probability_bounds[1]);
-                let engagement = diminishing(
-                    campaign.support_spending[i]
-                        + campaign.opposition_spending[i]
-                        + campaign.bribery[i] / config.bribery_coin_per_influence.max(0.01),
-                    config.campaign_half_saturation,
-                );
-                let certainty = (config.certainty_curve[0]
-                    + (probability - 0.5).abs() * config.certainty_curve[1]
-                    + engagement * config.certainty_curve[2])
-                    .clamp(0.0, config.certainty_curve[3]);
-                let size = config.bloc_sizes[i];
-                let committed = (f64::from(size) * certainty).round() as u8;
-                let yes = (f64::from(committed) * probability).round() as u8;
-                BlocProjection {
-                    bloc,
-                    yes,
-                    no: committed - yes,
-                    undecided: size - committed,
-                    support_probability: probability,
-                    baseline_support: config.baseline_support,
-                    reasons,
-                }
+        let evidence = espionage
+            .scandals
+            .iter()
+            .find(|s| {
+                s.id == id && s.holder == holder && s.expires > self.month && !s.reserved_for_motion
             })
-            .collect()
+            .ok_or(PoliticalError::ScandalRequired)?;
+        let ScandalTarget::Player(target) = evidence.target else {
+            return Err(PoliticalError::Ineligible);
+        };
+        if target == holder || holder >= players.len() || target >= players.len() {
+            return Err(PoliticalError::Ineligible);
+        }
+        let penalties = evidence.kind.bloc_penalties(evidence.severity).map(|n| n * 100.0);
+        espionage.consume(holder, id, self.month)?;
+        self.accusations.push(Accusation {
+            target,
+            penalties,
+            until: self.month + config.scandal_months,
+        });
+        for senator in &mut self.senators {
+            if senator.bribe.is_some_and(|b| b.player == target) {
+                senator.bribe = None;
+            }
+        }
+        Ok(target)
     }
-
-    /// Advance the single shared calendar once after the month's economic/political
-    /// changes. Undecided votes are rolled here once and saved for presentation.
+    /// Explain structural attraction plus the current fading outreach and scandals.
+    pub fn reasons(
+        &self,
+        player: PlayerId,
+        bloc: Bloc,
+        actor: &PoliticalPlayer,
+        profile: &PoliticalProfile,
+        config: &SenateConfig,
+    ) -> Vec<SupportReason> {
+        let mut reasons = structural_reasons(bloc, profile, actor);
+        let outreach = self
+            .outreach
+            .iter()
+            .filter(|o| o.player == player && o.bloc == bloc && o.until > self.month)
+            .map(|o| {
+                config.court_bonus * (o.until - self.month) as f64 / config.court_months as f64
+            })
+            .sum();
+        let penalty = self
+            .accusations
+            .iter()
+            .filter(|a| a.target == player && a.until > self.month)
+            .map(|a| {
+                a.penalties[bloc.index()] * (a.until - self.month) as f64
+                    / config.scandal_months as f64
+            })
+            .sum::<f64>()
+            .min(30.0);
+        reasons.push(SupportReason {
+            label: "Faction outreach (fades)",
+            points: outreach,
+        });
+        reasons.push(SupportReason {
+            label: "Exposed scandals (fades)",
+            points: -penalty,
+        });
+        reasons
+    }
+    /// All senators compare all players against the same snapshot once each month.
+    /// Exact ties remain neutral; a two-point incumbent margin prevents jitter.
     pub fn advance_month(
         &mut self,
         players: &mut [PoliticalPlayer],
@@ -741,184 +610,112 @@ impl SenateState {
     ) -> Vec<SenateEvent> {
         assert!(config.validate().is_ok(), "invalid Senate configuration");
         if self.winner.is_some() {
-            return Vec::new();
+            return vec![];
         }
         self.month += 1;
-        let mut events = Vec::new();
-        if self.campaign.is_some() {
-            self.campaign.as_mut().expect("campaign present").elapsed += 1;
-            if self.campaign.as_ref().is_some_and(|c| c.elapsed >= config.campaign_months) {
-                let projection = self.projection(players, profiles, config);
-                let campaign = self.campaign.take().expect("campaign present");
-                let mut votes = Vec::with_capacity(100);
-                let mut was_undecided = Vec::with_capacity(100);
-                for bloc in projection {
-                    for _ in 0..bloc.yes {
-                        votes.push(true);
-                        was_undecided.push(false);
-                    }
-                    for _ in 0..bloc.no {
-                        votes.push(false);
-                        was_undecided.push(false);
-                    }
-                    for _ in 0..bloc.undecided {
-                        votes.push(self.rng.unit() < bloc.support_probability);
-                        was_undecided.push(true);
-                    }
+        self.used_actions.clear();
+        self.outreach.retain(|o| o.until > self.month);
+        self.accusations.retain(|a| a.until > self.month);
+        let factors: Vec<_> = players
+            .iter()
+            .enumerate()
+            .map(|(id, actor)| {
+                let p = profiles.get(id).cloned().unwrap_or_default();
+                Bloc::ALL.map(|bloc| self.reasons(id, bloc, actor, &p, config))
+            })
+            .collect();
+        for senator in &mut self.senators {
+            if let Some(bribe) = senator.bribe {
+                if bribe.until > self.month && bribe.player < players.len() {
+                    senator.allegiance = Some(bribe.player);
+                    continue;
                 }
-                let yes = votes.iter().filter(|yes| **yes).count() as u8;
-                let passed =
-                    yes >= config.yes_threshold && self.apply_result(&campaign, players, config);
-                let result = SenateResult {
-                    month: self.month,
-                    candidate: campaign.candidate,
-                    ballot: campaign.ballot,
-                    yes,
-                    no: 100 - yes,
-                    passed,
-                    votes,
-                    was_undecided,
-                };
-                if let Ballot::NoConfidence {
-                    scandal_id,
-                    ..
-                } = campaign.ballot
-                {
-                    events.push(SenateEvent::ConsumeScandal(scandal_id));
-                }
-                if passed && campaign.ballot == Ballot::Augustus {
-                    self.winner = Some(campaign.candidate);
-                    events.push(SenateEvent::Victory(campaign.candidate));
-                }
-                self.last_result = Some(result.clone());
-                events.push(SenateEvent::VoteResolved(result));
-                self.nomination_elapsed = 0;
-                self.nominations.clear();
-                self.sudden_death.clear();
+                senator.bribe = None;
             }
-        } else {
-            self.nomination_elapsed += 1;
-            for (player, (ballot, amount)) in std::mem::take(&mut self.pending_bids) {
-                self.nominations.entry(player).and_modify(|n| n.committed += amount).or_insert(
-                    Nomination {
-                        player,
-                        ballot,
-                        committed: amount,
-                    },
-                );
-            }
-            if self.nomination_elapsed >= config.nomination_months {
-                let best = self.nominations.values().map(|n| n.committed).fold(0.0, f64::max);
-                let leaders: Vec<_> = self
-                    .nominations
-                    .values()
-                    .filter(|n| (n.committed - best).abs() < 1e-9)
-                    .cloned()
-                    .collect();
-                match leaders.as_slice() {
-                    [] => {
-                        self.nomination_elapsed = 0;
-                    },
-                    [leader] => {
-                        self.campaign = Some(Campaign {
-                            candidate: leader.player,
-                            ballot: leader.ballot,
-                            elapsed: 0,
-                            support_spending: [0.0; 5],
-                            opposition_spending: [0.0; 5],
-                            bribery: [0.0; 5],
-                            scandal_penalties: [0.0; 5],
-                        });
-                        self.sudden_death.clear();
-                        events.push(SenateEvent::CampaignStarted(leader.player, leader.ballot));
-                    },
-                    _ => {
-                        self.sudden_death = leaders.iter().map(|n| n.player).collect();
-                        events.push(SenateEvent::SuddenDeath(
-                            self.sudden_death.iter().copied().collect(),
-                        ));
-                    },
+            let scores: Vec<f64> = factors
+                .iter()
+                .map(|factions| {
+                    factions[senator.bloc.index()]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            // Outreach and scandal effects are public and identical within a faction.
+                            r.points
+                                * if i < structural_reasons_len(senator.bloc) {
+                                    senator.preferences[i]
+                                } else {
+                                    1.0
+                                }
+                        })
+                        .sum()
+                })
+                .collect();
+            let mut best = None;
+            let mut best_score = senator.threshold;
+            let mut tied = false;
+            for (player, &score) in scores.iter().enumerate() {
+                if score > best_score + 0.000_001 {
+                    best = Some(player);
+                    best_score = score;
+                    tied = false;
+                } else if best.is_some() && (score - best_score).abs() <= 0.000_001 {
+                    tied = true;
                 }
             }
+            if let Some(incumbent) = senator.allegiance.filter(|&p| p < scores.len()) {
+                let score = scores[incumbent];
+                if score >= senator.threshold - 2.0 && best_score <= score + 2.0 {
+                    continue;
+                }
+            }
+            senator.allegiance = if tied {
+                None
+            } else {
+                best
+            };
         }
-        // Augustus gets its same-month ballot before the Consul term expires.
-        for (id, player) in players.iter_mut().enumerate() {
-            if player.rank == PoliticalRank::Consul
-                && player.consul_until.is_some_and(|until| until <= self.month)
-            {
-                player.rank = PoliticalRank::Proconsul;
-                player.consul_until = None;
+        self.low_support.resize(players.len(), 0);
+        let mut events = Vec::new();
+        for id in 0..players.len() {
+            if players[id].rank != PoliticalRank::Consul {
+                self.low_support[id] = 0;
+                continue;
+            }
+            if players[id].consul_until.is_none_or(|end| end <= self.month) {
+                self.end_consul(id, players, config);
                 events.push(SenateEvent::ConsulExpired(id));
+                continue;
+            }
+            let supporters = self.support(id);
+            let minimum = config.retention_support(players.len());
+            self.low_support[id] = if supporters < minimum {
+                self.low_support[id] + 1
+            } else {
+                0
+            };
+            let scandal_removal =
+                self.accusations.iter().any(|a| a.target == id && a.until > self.month)
+                    && supporters < minimum;
+            if scandal_removal || self.low_support[id] >= config.loss_grace_months {
+                self.end_consul(id, players, config);
+                events.push(SenateEvent::ConsulRemoved(id));
             }
         }
         events
     }
-
-    /// Recheck final eligibility and apply a passed motion; never create a third Consul.
-    fn apply_result(
-        &self,
-        campaign: &Campaign,
-        players: &mut [PoliticalPlayer],
-        config: &SenateConfig,
-    ) -> bool {
-        let Some(actor) = players.get(campaign.candidate) else {
-            return false;
-        };
-        let valid = match campaign.ballot {
-            Ballot::Praetor => actor.rank == PoliticalRank::Aedile,
-            Ballot::Censor => actor.rank == PoliticalRank::Praetor,
-            Ballot::Consul => {
-                matches!(actor.rank, PoliticalRank::Censor | PoliticalRank::Proconsul)
-                    && players
-                        .iter()
-                        .filter(|p| {
-                            p.rank == PoliticalRank::Consul
-                                && p.consul_until.is_some_and(|until| until > self.month)
-                        })
-                        .count()
-                        < 2
-            },
-            Ballot::Augustus => {
-                actor.rank == PoliticalRank::Consul
-                    && actor.consul_until.is_some_and(|until| until >= self.month)
-            },
-            Ballot::NoConfidence {
-                target,
-                ..
-            } => players.get(target).is_some_and(|p| p.rank == PoliticalRank::Consul),
-        };
-        if !valid {
-            return false;
-        }
-        match campaign.ballot {
-            Ballot::Praetor => players[campaign.candidate].rank = PoliticalRank::Praetor,
-            Ballot::Censor => players[campaign.candidate].rank = PoliticalRank::Censor,
-            Ballot::Consul => {
-                // Expiring incumbents vacate before installing a newly elected Consul.
-                for player in players.iter_mut() {
-                    if player.rank == PoliticalRank::Consul
-                        && player.consul_until.is_some_and(|until| until <= self.month)
-                    {
-                        player.rank = PoliticalRank::Proconsul;
-                        player.consul_until = None;
-                    }
-                }
-                players[campaign.candidate].rank = PoliticalRank::Consul;
-                players[campaign.candidate].consul_until = Some(self.month + config.consul_term);
-            },
-            Ballot::Augustus => {
-                players[campaign.candidate].rank = PoliticalRank::Augustus;
-                players[campaign.candidate].consul_until = None;
-            },
-            Ballot::NoConfidence {
-                target,
-                ..
-            } => {
-                players[target].rank = PoliticalRank::Proconsul;
-                players[target].consul_until = None;
-            },
-        }
-        true
+    fn end_consul(&mut self, id: PlayerId, players: &mut [PoliticalPlayer], config: &SenateConfig) {
+        players[id].rank = PoliticalRank::Proconsul;
+        players[id].consul_until = None;
+        players[id].consul_again_at = self.month + config.consul_cooldown;
+        self.low_support[id] = 0;
+    }
+}
+fn structural_reasons_len(bloc: Bloc) -> usize {
+    match bloc {
+        Bloc::Aristocrats => 6,
+        Bloc::Merchants | Bloc::Provincials => 5,
+        Bloc::Populares => 7,
+        Bloc::Military => 3,
     }
 }
 

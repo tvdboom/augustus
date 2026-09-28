@@ -8,6 +8,144 @@ fn campaign() -> Campaign {
     campaign_with_players(2)
 }
 
+#[test]
+fn defeating_romes_defenders_awards_immediate_victory_without_political_control() {
+    let mut c = campaign();
+    c.economy.provinces[1].name = "Latium".into();
+    c.politics[1] = ProvincePolitics::rome(2);
+    c.npc_wars[0][1] = true;
+    for _ in 0..8 {
+        c.military.seed_unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    }
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
+    c.military.config.base_morale_damage = 100.0;
+    c.begin_encounter(1, ForceOwner::Player(0), Some(0));
+    assert_eq!(c.senate.winner, None);
+    c.advance_month();
+    assert_eq!(c.senate.winner, Some(0));
+    assert_eq!(c.economy.provinces[1].owner, Some(0));
+    assert_eq!(c.actors[0].rank, crate::game::politics::PoliticalRank::Augustus);
+    for recipient in 0..2 {
+        assert!(c
+            .notifications
+            .history_for(recipient)
+            .any(|n| n.kind == NoticeKind::AugustusVictory));
+    }
+    let month = c.economy.month;
+    c.advance_month();
+    assert_eq!(c.economy.month, month);
+}
+
+#[test]
+fn defeating_a_visiting_rival_cannot_win_while_romes_local_defenders_remain() {
+    let mut c = campaign();
+    c.economy.provinces[1].name = "Latium".into();
+    c.politics[1] = ProvincePolitics::rome(2);
+    c.wars[0][1] = true;
+    c.wars[1][0] = true;
+    let attacker = ForceOwner::Player(0);
+    let rival = ForceOwner::Player(1);
+    for _ in 0..8 {
+        c.military.seed_unit(1, attacker, UnitType::HeavyInfantry).unwrap();
+    }
+    c.military.seed_unit(1, rival, UnitType::LightInfantry).unwrap();
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::HeavyInfantry).unwrap();
+    c.military.config.base_morale_damage = 100.0;
+    c.military
+        .start_battle(1, &[attacker], &[rival], None, Some(0), MilitaryTerrain::Plains, 0, 1)
+        .unwrap();
+    c.advance_month();
+    assert!(c.military.battles.is_empty());
+    assert_eq!(c.military.history[0].result, BattleResult::AttackerVictory);
+    assert_eq!(c.senate.winner, None);
+    assert_eq!(c.politics[1].state, PoliticalState::Rome);
+    assert_eq!(c.economy.provinces[1].owner, None);
+}
+
+#[test]
+fn recruitment_effort_funds_active_projects_proportionally_and_resets_when_cancelled() {
+    let mut c = campaign();
+    c.economy.provinces[2].owner = Some(0);
+    for id in [0, 2] {
+        c.economy.provinces[id].policies.recruitment = RecruitmentEffort::High;
+        c.military
+            .recruit(
+                id,
+                0,
+                UnitType::LightInfantry,
+                true,
+                &[],
+                &mut c.economy.provinces[id].population,
+                &mut c.economy.players[0].resources[1],
+            )
+            .unwrap();
+    }
+    c.economy.provinces[1].policies.recruitment = RecruitmentEffort::High;
+    c.economy.players[0].coin = 1.0;
+    assert_eq!(c.recruitment_effort_cost(0), 2.0);
+    let speeds = c.pay_recruitment_effort();
+    assert_eq!(c.economy.players[0].coin, 0.0);
+    for id in [0, 2] {
+        assert_eq!(speeds[id], 1.25);
+        assert_eq!(c.economy.provinces[id].recruitment_happiness, -1.0);
+    }
+    assert_eq!(c.economy.provinces[1].recruitment_happiness, 0.0);
+    let unfunded = c.pay_recruitment_effort();
+    for id in [0, 2] {
+        assert_eq!(unfunded[id], 1.0);
+        assert_eq!(c.economy.provinces[id].recruitment_happiness, 0.0);
+    }
+    c.military.cancel_recruitment(0, ForceOwner::Player(0)).unwrap();
+    c.economy.provinces[2].change_owner(Some(1), None);
+    c.economy.players[0].coin = 10.0;
+    c.pay_recruitment_effort();
+    assert_eq!(c.recruitment_effort_cost(0), 0.0);
+    assert_eq!(c.economy.players[0].coin, 10.0);
+    assert!(c.economy.provinces.iter().all(|p| p.recruitment_happiness == 0.0));
+}
+
+#[test]
+fn recruitment_effort_changes_monthly_progress_and_applies_only_for_active_months() {
+    for effort in [RecruitmentEffort::Low, RecruitmentEffort::Normal, RecruitmentEffort::High] {
+        let mut c = campaign();
+        c.economy.provinces[0].policies.recruitment = effort;
+        c.military.config.units[UnitType::LightInfantry as usize].recruitment_months = 1.5;
+        c.military
+            .recruit(
+                0,
+                0,
+                UnitType::LightInfantry,
+                true,
+                &[],
+                &mut c.economy.provinces[0].population,
+                &mut c.economy.players[0].resources[1],
+            )
+            .unwrap();
+        let coin_before = c.economy.players[0].coin;
+        c.advance_month();
+        assert_eq!(
+            c.economy.provinces[0].recruitment_happiness,
+            c.economy.config.recruitment_happiness[effort as usize]
+        );
+        assert_eq!(
+            c.economy.last_report.player_delta[0][3],
+            c.economy.players[0].coin - coin_before
+        );
+        if effort == RecruitmentEffort::High {
+            assert!(c.military.provinces[0].recruitment.is_none());
+            assert_eq!(c.military.all_units().count(), 1);
+            c.advance_month();
+            assert_eq!(c.economy.provinces[0].recruitment_happiness, 0.0);
+            assert_eq!(c.recruitment_effort_cost(0), 0.0);
+        } else {
+            assert_eq!(
+                c.military.provinces[0].recruitment.as_ref().unwrap().progress,
+                c.economy.config.recruitment_speed[effort as usize]
+            );
+        }
+    }
+}
+
 /// The three-player variant exercises neutral territory and incompatible coalitions.
 fn campaign_with_players(players: usize) -> Campaign {
     let mut campaign = Campaign::default();
@@ -58,6 +196,52 @@ fn campaign_with_players(players: usize) -> Campaign {
     }
     campaign.active = true;
     campaign
+}
+
+#[test]
+fn completed_roads_reach_the_military_graph_and_reduce_army_travel_time() {
+    let mut c = campaign();
+    c.economy.players[0].resources = [10_000.0; 3];
+    let travel = |c: &Campaign| {
+        edge_travel_months(
+            &c.graph[0],
+            &c.graph[1],
+            100.0,
+            c.military.config.reference_speed,
+            &c.military.config,
+        )
+    };
+    let before = travel(&c);
+    c.economy.start_building(0, 0, BuildingType::Road).unwrap();
+    c.reconcile_provinces();
+    assert_eq!(c.graph[0].road_level, 0, "Unfinished roads must not grant movement bonuses");
+    for _ in 0..3 {
+        c.economy.advance_month(&MonthlyInputs::default());
+    }
+    c.reconcile_provinces();
+    assert_eq!(c.graph[0].road_level, 1);
+    assert!(travel(&c) < before, "Completed roads must speed army movement across their province");
+}
+
+#[test]
+fn unopposed_capture_is_retained_in_the_capturing_players_province_history() {
+    let mut c = campaign();
+    c.wars[0][1] = true;
+    c.military.seed_unit(2, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    c.begin_encounter(2, ForceOwner::Player(0), None);
+    assert!(matches!(
+        c.politics[2].state,
+        PoliticalState::Owned {
+            owner: 0
+        }
+    ));
+    let notices: Vec<_> = c.notifications.history_for(0).collect();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].province, Some(2));
+    assert_eq!(notices[0].title, "Province captured");
+    assert_eq!(notices[0].kind, NoticeKind::OccupationEstablished);
+    assert_eq!(notices[0].action, NoticeAction::OpenProvince(2));
+    assert!(c.notifications.history_for(1).next().is_none());
 }
 
 #[test]

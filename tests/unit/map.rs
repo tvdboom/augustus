@@ -957,8 +957,11 @@ fn every_wonder_has_illustration_at_close_zoom() {
                 .image
                 .unwrap_or_else(|| panic!("{} needs its illustration at zoom {zoom}", wonder.name));
             let site = projection.point(wonder.position);
-            assert!(marker.icon.center().distance(site) < 0.001, "{} icon moved", wonder.name);
             assert!(image.center().distance(site) < 0.001, "{} art moved", wonder.name);
+            assert_eq!(marker.icon.center().x, site.x);
+            assert!(marker.icon.bottom() < image.top(), "{} icon overlaps its art", wonder.name);
+            assert!(marker.bounds(zoom).contains_rect(marker.icon));
+            assert!(marker.bounds(zoom).contains_rect(image));
             assert!(
                 (image.height() / zoom - 18.0).abs() < 0.001,
                 "{} art changes map scale at zoom {zoom}",
@@ -983,12 +986,104 @@ fn wonders_do_not_share_city_sites() {
 }
 
 #[test]
-fn every_canonical_wonder_has_exactly_one_playable_construction_site() {
+fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_completed_art() {
+    use crate::game::economy::{
+        ConstructionProject, EconomicProvince, EconomyWorld, Terrain, WonderProject,
+    };
+
+    let ctx = egui::Context::default();
+    let textures: Vec<_> =
+        WONDERS.iter().map(|wonder| load_map_texture(&ctx, wonder.name, wonder.png)).collect();
+    let province = EconomicProvince::new(
+        "Wonder site",
+        10.0,
+        Terrain::Farmland,
+        false,
+        [1.0; 3],
+        [10.0; 4],
+        1,
+    );
+    let mut world = EconomyWorld::new(1, vec![province], vec![vec![]]);
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 545.0));
+    for (index, wonder) in WONDERS.iter().enumerate() {
+        world.provinces[0].wonder_sites = vec![index];
+        for state in 0..3 {
+            world.provinces[0].completed_wonder = (state == 2).then_some(index);
+            world.provinces[0].construction =
+                (state == 1).then_some(ConstructionProject::Wonder(WonderProject {
+                    wonder_id: index,
+                    progress: 12.0,
+                    required_progress: 36.0,
+                    assigned_slaves: 0.0,
+                }));
+            for zoom in [MIN_ZOOM, CITY_BLEND_END, MAX_ZOOM] {
+                let projection = Projection {
+                    origin: rect.center(),
+                    scale: 14.7 * zoom,
+                    center: wonder.position,
+                };
+                let markers = layout_wonders(&projection, rect, zoom);
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(rect),
+                        ..Default::default()
+                    },
+                    |ui| paint_wonders(ui.painter(), &markers, zoom, &textures, Some(&world), 1.5),
+                );
+                let expected_texture = if state == 1 && zoom > MIN_ZOOM {
+                    wonder_construction_texture(&ctx, index).id()
+                } else {
+                    textures[index].id()
+                };
+                let artwork: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == expected_texture => {
+                            Some(mesh)
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    artwork.len(),
+                    usize::from(state != 0 && zoom > MIN_ZOOM),
+                    "{} art missing in construction state {state} at zoom {zoom}",
+                    wonder.name
+                );
+                if let Some(mesh) = artwork.first() {
+                    assert!(mesh.vertices.iter().all(|vertex| vertex.color.a() == 255));
+                }
+                let icons = output.shapes.iter().filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Path(path)
+                        if path.stroke.color == egui::epaint::ColorMode::Solid(egui::Color32::WHITE))
+                }).count();
+                assert_eq!(
+                    icons,
+                    if state == 0 {
+                        0
+                    } else {
+                        3
+                    },
+                    "{} icon visibility in construction state {state} at zoom {zoom}",
+                    wonder.name
+                );
+                if state == 0 {
+                    assert!(output.shapes.is_empty(), "Unbuilt wonders must draw nothing");
+                }
+                output.textures_delta.clear();
+            }
+        }
+    }
+}
+
+#[test]
+fn every_canonical_wonder_has_one_province_and_no_province_has_multiple_wonders() {
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED]);
     let seeds = ownership.campaign_seeds();
     let config = crate::game::economy::EconomyConfig::default();
-    assert_eq!(WONDERS.len(), 10);
+    assert_eq!(WONDERS.len(), 7);
     assert_eq!(config.wonders.len(), WONDERS.len());
     for (id, wonder) in WONDERS.iter().enumerate() {
         assert_ne!(wonder.name, "Ay Khanum");
@@ -1002,6 +1097,16 @@ fn every_canonical_wonder_has_exactly_one_playable_construction_site() {
         );
     }
     assert!(seeds.iter().flat_map(|p| &p.wonder_sites).all(|&id| id < WONDERS.len()));
+    for province in &seeds {
+        assert!(province.wonder_sites.len() <= 1, "{} has multiple wonder sites", province.name);
+    }
+    for (province_name, wonder_name) in
+        [("Asia", "Colossus of Rhodes"), ("Achaia", "Temple of Zeus at Olympia")]
+    {
+        let province = seeds.iter().find(|p| p.name == province_name).unwrap();
+        assert_eq!(province.wonder_sites.len(), 1);
+        assert_eq!(WONDERS[province.wonder_sites[0]].name, wonder_name);
+    }
 }
 
 #[test]

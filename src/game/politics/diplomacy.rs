@@ -64,6 +64,8 @@ impl Default for DiplomacyConfig {
 /// The mutually exclusive political states of a province.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PoliticalState {
+    /// The protected capital has no political Control or bilateral Relation.
+    Rome,
     /// Local plus player shares always total 100.
     Independent {
         /// Control held by local government.
@@ -181,6 +183,12 @@ pub struct ProvincePolitics {
 }
 
 impl ProvincePolitics {
+    /// Rome has no provincial actions and cannot be politically acquired.
+    pub fn rome(players: usize) -> Self {
+        let mut province = Self::independent(players);
+        province.state = PoliticalState::Rome;
+        province
+    }
     /// Start an independent province with all power local and neutral relations.
     pub fn independent(players: usize) -> Self {
         Self {
@@ -214,6 +222,9 @@ impl ProvincePolitics {
 
     /// Apply sentiment without ever changing political control.
     pub fn change_relation(&mut self, player: PlayerId, change: f64) {
+        if self.state == PoliticalState::Rome {
+            return;
+        }
         if change.is_finite() {
             if let Some(relation) = self.relations.get_mut(player) {
                 *relation = (*relation + change).clamp(0.0, 100.0);
@@ -242,7 +253,9 @@ impl ProvincePolitics {
         distance: Option<usize>,
         config: &DiplomacyConfig,
     ) -> Result<(), PoliticalError> {
-        if matches!(self.state, PoliticalState::Owned { .. }) || player >= self.relations.len() {
+        if matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome)
+            || player >= self.relations.len()
+        {
             return Err(PoliticalError::Ineligible);
         }
         valid_amount(amount)?;
@@ -332,7 +345,7 @@ impl ProvincePolitics {
         control_gain: f64,
         config: &DiplomacyConfig,
     ) {
-        if matches!(self.state, PoliticalState::Owned { .. }) {
+        if matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome) {
             return;
         }
         self.change_relation(player, relation_gain.max(0.0));
@@ -580,7 +593,7 @@ impl ProvincePolitics {
         config: &DiplomacyConfig,
     ) -> f64 {
         let mut control_support = 0.0;
-        if !matches!(self.state, PoliticalState::Owned { .. }) {
+        if !matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome) {
             for player in 0..players.len().min(self.support.len()) {
                 let Ok(distance) = distance_multiplier(distances.get(player).copied().flatten())
                 else {
@@ -675,7 +688,8 @@ impl ProvincePolitics {
             },
             PoliticalState::Owned {
                 ..
-            } => {},
+            }
+            | PoliticalState::Rome => {},
         }
         self.clear_pending();
         self.used_interference.clear();

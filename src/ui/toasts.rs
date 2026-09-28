@@ -40,6 +40,8 @@ pub(in crate::app) struct Toast {
     level: ToastLevel,
     action: Option<ToastAction>,
     seconds_left: f32,
+    notice: Option<super::campaign_notifications::CampaignNotice>,
+    month: Option<u32>,
 }
 
 impl Toast {
@@ -62,12 +64,45 @@ impl Toast {
             level,
             action: None,
             seconds_left: TOAST_SECONDS,
+            notice: None,
+            month: None,
         }
     }
 
     pub(in crate::app) fn with_action(mut self, action: ToastAction) -> Self {
         self.action = Some(action);
         self
+    }
+
+    pub(in crate::app) fn with_notice(
+        mut self,
+        notice: super::campaign_notifications::CampaignNotice,
+    ) -> Self {
+        self.notice = Some(notice);
+        self
+    }
+
+    fn message(&self, month: u32) -> super::campaign_notices::Message<'_> {
+        use super::campaign_widgets::Icon;
+        let (icon, title) = if self.text.contains("Food stores") {
+            (Icon::Food, "Low food stocks")
+        } else if self.text.contains("treasury") {
+            (Icon::Coin, "Low treasury")
+        } else if self.text.contains("unhappy") {
+            (Icon::Happiness, "Population unhappy")
+        } else if self.text == "Local practice started." {
+            (Icon::Eagle, "Local practice")
+        } else {
+            (Icon::Notifications, "Campaign update")
+        };
+        super::campaign_notices::Message {
+            icon,
+            title,
+            body: &self.text,
+            month,
+            warning: self.level != ToastLevel::Info,
+            actionable: self.action.is_some(),
+        }
     }
 }
 
@@ -134,7 +169,9 @@ impl WarningWatch {
             self.active = [false; 6];
         }
         if !self.announced_game {
-            toasts.push(Toast::info("Local practice started."));
+            toasts.push(
+                Toast::info("Local practice started.").with_action(ToastAction::OpenGovernance),
+            );
             self.announced_game = true;
         }
 
@@ -217,6 +254,7 @@ pub(in crate::app) fn draw(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    campaign: Res<super::campaign::Campaign>,
 ) {
     if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice || toasts.0.is_empty() {
         return;
@@ -237,66 +275,62 @@ pub(in crate::app) fn draw(
         .show(context, |ui| {
             ui.set_max_width(max_width);
             ui.spacing_mut().item_spacing.y = 6.0 * scale;
-            for (index, toast) in toasts.0.iter().enumerate() {
-                let (fill, accent) = match toast.level {
-                    ToastLevel::Info => (
-                        egui::Color32::from_rgba_unmultiplied(49, 34, 25, 242),
-                        egui::Color32::from_rgb(213, 167, 112),
-                    ),
-                    ToastLevel::Warning => (
-                        egui::Color32::from_rgba_unmultiplied(65, 47, 21, 244),
-                        egui::Color32::from_rgb(245, 198, 83),
-                    ),
-                    ToastLevel::Error => (
-                        egui::Color32::from_rgba_unmultiplied(70, 30, 29, 244),
-                        egui::Color32::from_rgb(244, 120, 105),
-                    ),
-                };
-                let response = egui::Frame::new()
-                    .fill(fill)
-                    .stroke(egui::Stroke::new(scale, accent))
-                    .corner_radius(5.0 * scale)
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&toast.text).size(14.0 * scale).color(accent),
-                            )
-                            .wrap(),
-                        );
-                    })
-                    .response;
+            for (index, toast) in toasts.0.iter_mut().enumerate() {
+                if let Some(notice) = &toast.notice {
+                    ui.push_id(notice.id, |ui| {
+                        if super::campaign_notices::card(ui, notice, scale).clicked() {
+                            clicked =
+                                Some((index, toast.action.unwrap_or(ToastAction::OpenGovernance)));
+                        }
+                    });
+                    continue;
+                }
+                let month = *toast.month.get_or_insert(campaign.economy.month);
+                let response =
+                    super::campaign_notices::message_card(ui, toast.message(month), scale);
                 if let Some(action) = toast.action {
-                    if response
-                        .interact(egui::Sense::click())
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Open Governance")
-                        .clicked()
-                    {
+                    if response.clicked() {
                         clicked = Some((index, action));
                     }
                 }
             }
         });
     if let Some((index, action)) = clicked {
-        toasts.0.remove(index);
-        match action {
-            ToastAction::OpenGovernance => {
-                governance_open.0 = true;
-                campaign_ui.open = Some(super::campaign_panel::CampaignTab::Governance);
-            },
-            ToastAction::OpenProvince(id) => {
-                province_open.0 = Some(super::MapDetail::Province(id));
-                map_view.focus_province(id);
-            },
-            ToastAction::FocusWonder(id) => map_view.focus_wonder(id),
-            ToastAction::OpenEvidence(province) => {
-                campaign_ui.open_evidence(province);
-                if let Some(province) = province {
-                    province_open.0 = Some(super::MapDetail::Province(province));
-                    map_view.focus_province(province);
-                }
-            },
+        let toast = toasts.0.remove(index).expect("clicked notice exists");
+        if let Some(notice) = toast.notice {
+            governance_open.0 = false;
+            if notice.kind == super::campaign_notifications::NoticeKind::TradeInterrupted {
+                super::campaign_trade::open_routes(context, notice.recipient);
+            }
+            super::campaign_panel::open_notification(
+                &mut campaign_ui,
+                &notice,
+                &campaign,
+                &mut province_open,
+                &mut map_view,
+            );
+        } else {
+            match action {
+                ToastAction::OpenGovernance => {
+                    governance_open.0 = true;
+                    campaign_ui.open = None;
+                    province_open.0 = None;
+                },
+                ToastAction::OpenProvince(id) => {
+                    province_open.0 = Some(super::MapDetail::Province(id));
+                    map_view.focus_province(id);
+                },
+                ToastAction::FocusWonder(id) => map_view.focus_wonder(id),
+                ToastAction::OpenEvidence(province) => {
+                    campaign_ui.open_evidence(province);
+                    if let Some(province) = province {
+                        province_open.0 = Some(super::MapDetail::Province(province));
+                        map_view.focus_province(province);
+                    } else {
+                        province_open.0 = None;
+                    }
+                },
+            }
         }
         play_click(&sound, &audio, &assets);
     }
