@@ -1,38 +1,117 @@
 # Augustus — Population, Resources, Trade, Relations, Control, and Vassals
 
+> Cohort manpower uses whole people in the UI: Heavy Infantry starts at
+> 1,000/1,000 and a War Elephant corps at 200/200 personnel. Elephant animals
+> are not counted separately. Combat sums attacks on each cohort, then rounds
+> casualties to the nearest whole person. Surviving people remain in that cohort;
+> there is no automatic reinforcement. Recruitment spends separate economy
+> population units: 1 Plebeian unit for infantry, archers, and siege cohorts;
+> 1 Citizen unit for mounted cohorts. Disband returns the
+> surviving fraction of that population cost. Economy population units are an
+> aggregate recruitment pool, not a literal hundred-person headcount.
+
+> User override, 2026-09-29: the currency is sestertius (plural sestertii).
+> Only Citizens and Plebeians pay taxes. Nobles and Slaves are exempt; remove
+> the Noble Taxes edict and its happiness effects. Provincial tax tooltips keep
+> population counts and signed income amounts, without a currency suffix per row.
+
+> User override, 2026-09-29: province Military / Stationed Units shows Overview-style
+> three badges in one row for total cohorts, monthly Food demand and Army morale,
+> followed by one compact army row per owner. Each row shows nonzero unit types with
+> cohort counts, army morale and Food upkeep. Province totals include all stationed
+> and fighting armies, including foreign armies. The province owner supplies Food
+> for all of them; marching armies remain supplied by their own owner. Army morale
+> is averaged by surviving manpower across all units. Food demand displays a red
+> negative amount per month in both Military and Overview. Army rows use an army
+> icon and individual stat/unit tooltips, with no row tooltip or Stationed label.
+> The top-right Disband control includes an icon and explains only that soldiers
+> return to their respective population classes. Foreign army morale is now public;
+> foreign tactics, formation preferences and Training remain private. Only your own
+> rows open a separate Army panel containing tactics, formation, movement orders,
+> disbanding and aggregate details per unit type. Map troop clicks open the matching
+> Army panel for your forces (including marching orders), or the province Military
+> page for foreign forces. Morale is army-wide; Training is shared per owner/unit type
+> within each army. Merging averages both by surviving manpower (equal surviving
+> types at Training 10 and 20 become 15); different unit types retain different Training.
+> Cohort identities and permanent manpower losses remain intact. Formation editing
+> supports dragging available combat types onto frontline, rear-line or flank roles;
+> the explicit rear row contains reserve replacements behind the front, distinct from
+> automatic ranged/siege support. These role preferences feed actual deployment and
+> lock in battle. This overrides earlier per-cohort morale and foreign-morale privacy.
+
+> **Current local military and construction queues (September 2026):**
+> Each province still advances one recruitment and one construction project at a time.
+> Clicking another unit, building or canonical wonder pays the costs immediately and adds a
+> waiting order. Repeated building clicks quote the next level after paid upgrades.
+> Completing or cancelling the active project starts the next order at zero progress;
+> spare monthly progress is not carried into a second order. Cancelling active work
+> refunds nothing. Right-clicking a waiting icon removes only that order and refunds
+> its original Stone/Metal or population/Metal payment. Remaining building upgrades
+> keep their paid cost and work requirement, with target levels resequenced so none
+> are skipped. Construction strips appear beneath the City, Countryside or Wonders
+> heading; recruitment uses the same icon, percentage bar, cancel control and waiting
+> icons. Building cards no longer contain progress bars or cancel controls.
+> Cancelling active or queued construction/recruitment and disbanding cohorts or
+> armies first opens a centered Yes/No confirmation above all other UI. Only Yes
+> applies the action; No, Escape or clicking outside dismisses it. Game time waits
+> while confirmation is open and then resumes with the previous pause/speed settings.
+> Capture cancels paid recruitment orders and clears waiting construction orders;
+> the active construction project retains the existing capture behavior.
+> Recruitment population and Metal leave the economy at click time, while Food
+> upkeep begins when the cohort completes. Special-unit traditions still apply.
+> Current production scales are Food 3.3, Metal 0.9, Stone 1.2, with unchanged
+> labor allocation (Plebeians 1.0, Slaves 1.5). Full-cohort Food upkeep in roster order
+> is 1.5 / 2.5 / 1.5 / 3 / 4 / 3 / 3 / 2.5 / 6 / 1.5 / 2.
+> Building and equipment prices and recruitment durations are unchanged. This
+> targets an agricultural province covering civilians and a small army, while
+> resource-poor provinces still depend on focus, trade and development.
+
+> Balance update, 2026-09-29: Food output uses diminishing returns after the
+> normal labor, potential, focus and building calculation: `raw / (1 + raw / 400)`.
+> This reduces unusually large opening harvests while preserving every sampled
+> urban starting province's positive Food flow. Baseline city capacity is 90
+> residents so compensated urban starts do not suffer severe overcrowding and lose
+> their workers to unrest. The one-population-unit levy
+> has a base draft happiness penalty of 2 plus the existing population-share
+> penalty, capped as before; draft fatigue fades by 1 point per month and stacks
+> across repeated orders. Recruitment Effort's monthly Coin charge is based on
+> population units drafted, independently of the displayed soldier headcount.
+> Full-strength cohort wages per month in roster order are 1 / 2 / 1 / 2 / 3 /
+> 2.5 / 2.5 / 2.5 / 5 / 2 / 2 sestertii. Damaged cohorts cost proportionally
+> less; nationwide Army Wages policy still multiplies those amounts.
+
+
 > Implementation specification.  
 > This document is intended to be sufficient for another coding agent to implement the mechanics described here without needing the design conversation.
 
-> User override, 2026-09-28: province visibility is exact or hidden, with no estimated
-> populations or qualitative substitutes. Direct owners and a vassal's own overlord
-> see current local information. Foreign independent NPCs, foreign vassals and
-> player-owned provinces use the same rules: geography, resource potential,
-> completed building levels, Relation and Control are public. Population and class
-> happiness require one surviving spy month; production, consumption and policies
-> require two; construction progress, stationed troops, Training, Morale and
-> recruitment require three. Deployment reveals no private information. Paid
-> maintenance and detection resolve before a report; scandal discovery remains
-> separate. Reports contain exact observations dated by game month, refresh monthly,
-> and remain historical when a spy is withdrawn or caught. Redeployment starts at
-> access zero; older tiers retain their original dates until unlocked again.
-> Spies reveal only their assigned province, never nationwide player stockpiles,
-> treasury, tactics or movement destinations. Own stationed troops observe their
-> province and immediately adjacent provinces; battle participants observe their
-> battlefield. Military observation does not reveal recruitment queues. Foreign
-> movement routes are private. Historical spy troops are shown in dated inspector
-> reports, not as current map sprites. Wonder starts and completions remain public;
-> their detailed progress requires administration or a third-month report. NPC trade
-> export/import offers and prices remain public negotiation terms; foreign NPC Coin
-> treasuries and demand-band descriptions are hidden. These rules override earlier
-> requirements to display foreign construction or exact spy risk before intelligence.
-> Display unknown values as `?`, without explanatory hidden-information text. Omit
-> unavailable construction details from the overview and building panel; keep dates
-> on reports that are available and public wonder announcements.
-> Foreign ledgers use the same columns as domestic ledgers: population amount,
-> monthly change and happiness; resource stock/storage and provincial production.
-> Shared foreign stockpiles remain `? / ?`; public resource potential remains
-> available in the resource tooltip. Population changes are dated first-month
-> observations, calculated from births, deaths and migration as in domestic ledgers.
+> User override, 2026-09-29: all provinces expose current, exact local facts to
+> everyone, including foreign independent NPCs, vassals and enemy player provinces.
+> Use the same overview layout as domestic provinces: population and class happiness,
+> monthly population changes, capacity, food demand/supply, monthly resource production,
+> Civic Power (provincial Influence and Sestertius income), political status, Relation and
+> Control. Building levels, statues, wonders, active construction/progress, local
+> policies and recruitment progress are public and current without spies or nearby troops.
+> Stationed and fighting armies are public by owner, cohort type/count and surviving
+> manpower in every province. Enemy tactics, chosen deployment positions, Morale and
+> Training remain private, including during battles, in tooltips and in spy reports.
+> Only the owner may manage their province or issue orders to their units.
+> Foreign nationwide balances (resource stockpiles, Sestertius treasury and Influence)
+> and movement routes/destinations remain private; show `?` or `? / ?` in the shared
+> balance columns while always showing exact provincial monthly income/production.
+> NPCs have no national stockpiles. Battle previews use explicit baseline assumptions
+> for private enemy Morale and Training, never their actual values. Spy networks
+> retain upkeep, detection and scandal discovery; they no longer unlock province facts.
+> Cached historical reports never replace current public facts or map troops.
+> These rules override all earlier province-intelligence visibility requirements.
+
+> User override, 2026-09-29: show the province overview's Food demand and Food supplied
+> badges only for directly owned provinces. Independent NPCs, vassals and other
+> players' provinces show the population summary without those two badges.
+> Food demand is monthly consumption, not a net deficit; 100% supplied means all
+> requested consumption was fulfilled. NPC residents are assumed fully provisioned,
+> have no hidden food stockpile and cannot suffer famine. Their geographic food
+> deficits still determine trade import demand and scarcity prices. Player-owned
+> provinces use their owner's actual national food stock and can suffer shortages.
 
 > User override, 2026-09-27: remove Ay Khanum because its coordinate lies outside the playable atlas.
 > User override, 2026-09-28: keep at most one wonder site per province. Asia retains the Colossus
@@ -42,7 +121,7 @@
 > levels, alongside construction animation or completed artwork at close zoom. This overrides
 > the earlier site lists and unbuilt rendering options.
 
-> User override, 2026-09-28: Food Rations, Slave Labor, Noble Taxes, and Army Wages are
+> User override, 2026-09-28: Food Rations, Slave Labor, and Army Wages are
 > nationwide policies. Resource Focus and Migration Focus remain province-local.
 
 > User override, 2026-09-28: add province-local Construction Pace, Civic Spending,
@@ -54,63 +133,91 @@
 
 Province policy implementation defaults and monthly rules:
 
+- **Migration Focus:** Open / Normal / Limited / Closed retain their arrival and
+  departure multipliers. Their happiness modifiers are `0 / 0 / -1 / -2` for
+  Nobles, Citizens and Plebeians only. Recompose the modifier each month without
+  accumulation; switching to Open or Normal removes it. Show a happiness badge
+  for every option, including zero. Tooltips contain only Arrival attraction and
+  Departures; omit the shared migration-rule notes.
 - **Construction Pace:** Slow / Normal / Urgent multiply building and wonder progress
-  by `0.75 / 1.0 / 1.5`. While a project is active, divert `5% / 10% / 20%` of the
-  province's remaining productive labor from resource production. Wonder-assigned
-  slaves are excluded before this diversion, so no worker is counted twice. Idle
-  provinces have no diversion. Default: Normal. Estimates, notifications, and dated
-  construction reports use the applicable pace; capture preserves project progress.
-- **Civic Spending:** Frugal / Normal / Generous request `0 / 0.03 / 0.08` Coin per
-  resident each month, granting `0 / +1 / +3` happiness to every class at full funding.
+  by `0.75 / 1.0 / 1.25`. While any building or wonder project is active, divert
+  `5% / 10% / 20%` of the province's slave population from resource production.
+  Plebeian production is unaffected. Wonder-assigned slaves also remain excluded;
+  total excluded slaves cannot exceed the slave population. All remain resident
+  and fed. Idle provinces have no diversion. Default: Normal. Estimates,
+  notifications, and dated construction reports use the applicable pace;
+  capture preserves project progress.
+- **Civic Spending:** Frugal / Normal / Generous request `0 / 0.1 / 0.2` sestertii per
+  free resident each month, granting `-1 / 0 / +1` happiness to Nobles, Citizens and
+  Plebeians at full funding. Slaves neither incur this cost nor receive the effect.
+  These budgets do not exceed the lowest ordinary taxpayer rate of `0.2` per resident.
+  Nobles receive civic support despite being exempt from tax.
   Default: Frugal. Payment occurs after recurring trade and diplomatic support, before
   demographics and tax income. All provinces of the same owner receive proportional
-  funding from that owner's available Coin, independent of province iteration order.
-  The happiness bonus scales with funding and is recomposed each month, not accumulated.
+  funding from that owner's available Sestertius, independent of province iteration order.
+  Happiness interpolates from Frugal's `-1` to the selected policy's effect based on
+  funding and is recomposed each month, not accumulated. Frugal remains `-1` even
+  without funds. Tooltips show only the per-free-resident budget in lowercase
+  `sestertii` and the happiness effect, without current-resident totals or funding notes.
+  Display at most one decimal, omit a trailing `.0`, and omit monthly suffixes.
   NPC policies, if changed, use the local treasury; overlords do not fund NPC policies.
-- **Recruitment Effort:** Low / Normal / High give `0.75 / 1.0 / 1.5` recruitment
-  progress per month and `+1 / 0 / -2` local class happiness while a project is active.
-  Extra monthly cost is `0 / 0 / 0.10` Coin per drafted recruit in the active project.
+- **Recruitment Effort:** Low / Normal / High give `0.75 / 1 / 1.25` recruitment
+  speed and `+1 / 0 / -1` happiness to Citizens and Plebeians while a project is active.
+  Nobles and Slaves receive no recruitment-effort happiness modifier. Monthly cost is
+  `0.1 / 0.2 / 0.3` sestertii per drafted recruit in the active project. Normal's `0.2`
+  is the baseline cost; Low costs less and High costs more. Policy tooltips contain
+  exactly three bullets: Recruitment speed, Recruitment cost and affected happiness.
+  Cost badges contain only the number, without `/pop` or monthly suffixes. Costs and
+  other policy values use at most one decimal and omit trailing zeros; the explicitly
+  specified `0.75` and `1.25` speed multipliers remain exact.
   Default: Normal. Pay before recruitment progresses, so completing cohorts still
-  receive that month's food. Each owner's active projects share available Coin
-  proportionally. Partial High funding scales extra speed and happiness pressure
-  toward Normal; no funding gives Normal speed and no extra happiness pressure.
+  receive that month's food. Each owner's active projects share available Sestertius
+  proportionally. Partial funding scales recruitment speed and happiness effects
+  by the funded fraction; no funding pauses recruitment and grants no happiness effect.
   Inactive and ownership-invalidated projects incur no effort expense or happiness
   effect. Completion months include the effect; the next inactive month clears it.
   Existing upfront population and Metal costs, draft penalties and cancellation rules
   remain in force. Effort does not start recruitment automatically.
-- **Manumission:** Restricted / Normal / Encouraged multiply the existing monthly
-  slave-to-plebeian rate by `0.25 / 1.0 / 4.0`. Default: Normal. At the existing base
-  rate, this frees `0.0125% / 0.05% / 0.2%` of surviving slaves per month. Conversion
+- **Manumission:** Enslave / Normal / Free use explicit monthly conversion rates.
+  Enslave converts `0.2%` of plebeians to slaves and reduces plebeian happiness by `1`.
+  Normal causes no policy conversion or happiness effect and remains the default.
+  Free converts `0.2%` of slaves to plebeians and reduces noble happiness by `1`.
+  There is no baseline slave-to-plebeian conversion or ordinary-rate multiplier.
+  Tooltips show only the conversion percentage and affected class's happiness;
+  omit shared rule notes and trailing percentage zeros. Other classes are unaffected
+  by these happiness modifiers, which are recomposed each month. Conversion
   preserves total population, uses the same pre-conversion class snapshot as other
-  promotions, and never promotes a newly freed plebeian again in that month. Clamp
+  promotions, and never promotes a newly freed plebeian again in that month.
+  Enslaved plebeians are excluded from that month's citizenship promotions. Clamp
   wonder assignments to the slaves remaining after demographics and conversion.
 
 All rates, costs, labor fractions and happiness modifiers live in `EconomyConfig`.
-The Coin outflow panel includes Civic Spending and active Recruitment Effort budgets.
-New policy values are included in the existing second-month economic spy report;
-construction pace is also captured with third-month operations to keep dated estimates
-independent of later policy changes.
+The Sestertius outflow panel includes Civic Spending and active Recruitment Effort budgets.
+All local policy values and construction pace are public current province facts.
+Foreign construction estimates use the current pace, independent of spy reports.
 
 > Implementation baseline for the restored nationwide controls:
 > Nationwide rations/labor apply to directly owned provinces, including newly acquired ones;
-> independent provinces and vassals keep their own policies. Noble Taxes use the configured
-> noble rate multiplied by 0.5/1.0/1.5 and add +1/0/-1 noble happiness. Restored Army Wages
+> independent provinces and vassals keep their own policies. Restored Army Wages
 > use the retained 0.75/1.0/1.25 wage factors and -2/0/+1 peaceful morale-target modifiers.
-> The initial configurable normal wage is 0.05 Coin per surviving soldier per month;
+> Full-strength wages vary by unit type as listed in the balance update above;
 > partial payment reduces morale support. Wages cover stationed, moving, and fighting troops.
 
 > User override, 2026-09-28: Trade is nationwide and accessed from the left menu, with no
 > province Trade tab. NPC routes can be cancelled immediately with a relation penalty, or
 > after six months' notice without a penalty. Player agreements end immediately without
 > political effects. New agreements may be monthly or single-time; NPC single-time offers
-> retain the existing worse terms. The open market provides immediate goods/Coin exchange,
-> with worse unit prices for larger transactions, so several smaller exchanges are better.
+> retain the existing worse terms. The open market provides immediate goods/Sestertius exchange,
+> with worse unit prices as a player's monthly volume on each resource and side grows.
 >
 > Initial configurable balance: immediate NPC cancellation loses 10 relation; notice retains
-> six deliveries and ends after the sixth. Open-market prices use base values and a margin
-> of `0.10 + quantity / depth`, with Food/Metal/Stone depth `1000/400/600`. Buy cost is
-> `quantity × base × (1 + margin)`; sale proceeds are `quantity × base / (1 + margin)`.
-> Each exchange has its own size impact; no diplomatic relation or Control is awarded.
+> six deliveries and ends after the sixth. Open-market prices integrate a marginal
+> curve over cumulative monthly volume, with Food/Metal/Stone depth `1000/400/600`.
+> Buy marginal price is `base × (1 + 0.10 + volume / depth)`; sell marginal
+> price is `base / (1 + 0.10 + volume / depth)`. Splitting an order yields the
+> same total price as one combined order. Each resource and Buy/Sell side tracks
+> its own volume, reset at the start of the next month. No diplomatic relation
+> or Control is awarded.
 
 ---
 
@@ -129,7 +236,7 @@ This specification defines:
 - global player resources and storage;
 - resource production;
 - buildings relevant to these systems;
-- coin and influence;
+- sestertius and influence;
 - province relation toward players;
 - independent-province control;
 - peaceful and hostile ways to change control;
@@ -141,7 +248,7 @@ This specification defines:
 - recurring diplomatic spending;
 - player-to-player trade;
 - player-to-NPC trade;
-- NPC resource needs, supply, pricing, and coin budgets;
+- NPC resource needs, supply, pricing, and sestertius budgets;
 - route validation and distance penalties;
 - recurring and one-time trade;
 - trade effects on relation and control;
@@ -258,7 +365,7 @@ These are global per player.
 The non-physical currencies are:
 
 ```text
-Coin
+Sestertius
 Influence
 ```
 
@@ -962,7 +1069,7 @@ Player economy:
 Food     1,250 / 1,800
 Metal      340 /   500
 Stone      620 /   900
-Coin     3,250
+Sestertius     3,250
 Influence   87
 ```
 
@@ -1011,7 +1118,7 @@ Excess is lost.
 
 This is intentional and prevents effectively infinite accumulation.
 
-Coin and influence do not use physical storage limits.
+Sestertius and influence do not use physical storage limits.
 
 ---
 
@@ -1199,18 +1306,18 @@ No artificial civilian monthly consumption is needed.
 
 ---
 
-# 22. Coin
+# 22. Sestertius
 
-Coin is a global player currency.
+Sestertius is a global player currency.
 
-Player coin enters through:
+Player sestertius enters through:
 
 - taxes from owned provinces;
 - vassal tribute;
 - selling goods;
 - events/rewards.
 
-Player coin leaves through:
+Player sestertius leaves through:
 
 - buildings;
 - army costs;
@@ -1222,9 +1329,9 @@ Player coin leaves through:
 - vassal subsidies;
 - recurring relation support.
 
-World coin is **not conserved**.
+World sestertius is **not conserved**.
 
-NPC economies generate abstract monthly coin income.
+NPC economies generate abstract monthly sestertius income.
 
 This is intentional.
 
@@ -1232,17 +1339,16 @@ This is intentional.
 
 # 23. Player taxes
 
-A simple initial owned-province coin-income model:
+A simple initial owned-province sestertius-income model:
 
 ```text
 province_tax_income =
-    nobles    × noble_tax_rate
-    + citizens   × citizen_tax_rate
+    citizens   × citizen_tax_rate
     + plebeians  × plebeian_tax_rate
     + modifiers
 ```
 
-Slaves need not pay direct tax because their contribution is already represented through production.
+Nobles are exempt from taxes. Slaves pay no direct tax because their contribution is already represented through production.
 
 Exact rates are configurable.
 
@@ -1269,7 +1375,7 @@ Primary uses:
 - espionage;
 - political actions.
 
-Influence is deliberately scarcer than coin.
+Influence is deliberately scarcer than sestertius.
 
 ---
 
@@ -1293,6 +1399,12 @@ Recommended labels:
 
 `50` is neutral.
 
+Friendly NPC provinces (`60–79`) offer better trade terms and permit troop passage,
+but troops cannot end a movement order and station there. Very Friendly NPC
+provinces (`80–100`) offer still better trade terms and permit both passage and
+stationing. Direct ownership, own-vassal access, player invitations, and declared
+hostility retain their separate movement rules.
+
 Relation affects:
 
 - NPC willingness to trade;
@@ -1314,15 +1426,15 @@ There must be passive ways to improve relation besides trade.
 For any independent province or vassal, a player may enable:
 
 ```text
-Monthly Coin Support
+Monthly Sestertius Support
 Monthly Influence Mission
 ```
 
 Recommended initial behavior:
 
 ```text
-Monthly Coin Support:
-    pay configured coin cost each month
+Monthly Sestertius Support:
+    pay configured sestertius cost each month
     +1 relation/month
 
 Monthly Influence Mission:
@@ -1355,7 +1467,7 @@ Do not auto-debt.
 The player can also use:
 
 ```text
-Gift Coin
+Gift Sestertius
 Spend Influence
 ```
 
@@ -1460,7 +1572,7 @@ Players 0
 
 ---
 
-# 31. Gaining control with coin
+# 31. Gaining control with sestertius
 
 Action:
 
@@ -1468,7 +1580,7 @@ Action:
 Buy Support
 ```
 
-The player spends coin to gain control.
+The player spends sestertius to gain control.
 
 While `Local > 0`, control should normally come from Local first.
 
@@ -1782,12 +1894,12 @@ Military  → coercive control
 
 # 41. Direct vassal-control support
 
-The overlord may also spend influence/coin to maintain control.
+The overlord may also spend influence/sestertius to maintain control.
 
 Recommended supported actions:
 
 ```text
-Support Government with Coin
+Support Government with Sestertius
 Support Government with Influence
 ```
 
@@ -1884,11 +1996,11 @@ Exact tribute values depend on NPC economic output and should be configured.
 
 Tribute may contain:
 
-- coin;
+- sestertius;
 - resources;
 - or a mix.
 
-For initial implementation, coin-only tribute is simplest.
+For initial implementation, sestertius-only tribute is simplest.
 
 High tribute indirectly threatens vassal stability:
 
@@ -1908,7 +2020,7 @@ Rival players cannot gain independent control while the province remains a vassa
 Instead they may:
 
 ```text
-Fund Opposition with Coin
+Fund Opposition with Sestertius
 Political Agitation with Influence
 Espionage
 ```
@@ -1940,7 +2052,7 @@ high relation
 ## Political rule
 
 ```text
-spend coin/influence monthly
+spend sestertius/influence monthly
 → improve relation and/or control
 ```
 
@@ -2023,7 +2135,7 @@ Trade can exchange:
 Food
 Metal
 Stone
-Coin
+Sestertius
 Influence
 ```
 
@@ -2130,7 +2242,7 @@ The lost amount represents:
 - merchants;
 - friction.
 
-For simplicity, apply the same efficiency to coin and influence initially as well.
+For simplicity, apply the same efficiency to sestertius and influence initially as well.
 
 ---
 
@@ -2143,7 +2255,7 @@ Example:
 ```text
 Player A gives:
     100 Food
-    50 Coin
+    50 sestertii
 
 Player B gives:
     20 Metal
@@ -2172,7 +2284,7 @@ Every month:
 
 A gives:
     20 Food
-    30 Coin
+    30 sestertii
 
 B gives:
     5 Metal
@@ -2454,9 +2566,9 @@ Thus distant trade is inherently worse.
 
 ---
 
-# 61. NPC coin treasury
+# 61. NPC sestertius treasury
 
-Unlike physical resources, NPC coin is tracked as a treasury because NPCs must be able to pay for imports.
+Unlike physical resources, NPC sestertius is tracked as a treasury because NPCs must be able to pay for imports.
 
 Each NPC province has:
 
@@ -2466,12 +2578,11 @@ monthly_coin_income
 monthly_coin_expenses
 ```
 
-Monthly coin income may be abstractly estimated:
+Monthly sestertius income may be abstractly estimated:
 
 ```text
 monthly_coin_income =
-    nobles × noble_tax_value
-    + citizens × citizen_tax_value
+    citizens × citizen_tax_value
     + plebeians × plebeian_tax_value
     + city_bonus
     + prosperity_bonus
@@ -2480,7 +2591,7 @@ monthly_coin_income =
 
 No complete hidden fiscal simulation is needed.
 
-NPC coin is intentionally created from this abstract internal economy.
+NPC sestertius is intentionally created from this abstract internal economy.
 
 ---
 
@@ -2508,15 +2619,15 @@ NPC_TREASURY_SPEND_SHARE = 0.05
 
 Exact values configurable.
 
-Recurring trade is accepted only if monthly coin payments are sustainable within trade budget.
+Recurring trade is accepted only if monthly sestertius payments are sustainable within trade budget.
 
 One-time trades may draw more heavily from treasury.
 
 ---
 
-# 63. Coin in NPC trade
+# 63. Sestertius in NPC trade
 
-Coin has stable nominal value.
+Sestertius has stable nominal value.
 
 Physical resources fluctuate with scarcity.
 
@@ -2527,20 +2638,20 @@ Player gives:
     30 Food
 
 NPC gives:
-    20 Coin
+    20 sestertii
 ```
 
 or:
 
 ```text
 Player gives:
-    40 Coin
+    40 sestertii
 
 NPC gives:
     12 Stone
 ```
 
-Coin is the common denominator when resource barter does not align.
+Sestertius is the common denominator when resource barter does not align.
 
 ---
 
@@ -2566,7 +2677,7 @@ The NPC accepts only if:
 - relation allows trade;
 - value test passes;
 - promised exports are within sustainable export capacity;
-- promised coin payment is within trade budget;
+- promised sestertius payment is within trade budget;
 - imported quantities do not exceed a reasonable multiple of import demand.
 
 Recalculate NPC economy monthly.
@@ -2836,7 +2947,7 @@ Recommended exact order:
    - import demand
    - export capacity
    - scarcity valuation
-   - monthly coin income
+   - monthly sestertius income
    - trade budget
 
 6. Validate recurring trade routes.
@@ -2850,7 +2961,7 @@ Recommended exact order:
    - update consecutive-failure counters
 
 8. Apply one-month recurring diplomatic programs:
-   - monthly coin relation support
+   - monthly sestertius relation support
    - monthly influence relation support
    - vassal control-support spending
 
@@ -2904,7 +3015,7 @@ Recommended exact order:
 
 24. Apply player tax income.
 
-25. Apply NPC monthly coin income/expenses.
+25. Apply NPC monthly sestertius income/expenses.
 
 26. Recalculate player global storage maxima from surviving buildings.
 
@@ -3028,7 +3139,7 @@ player physical resource stock >= 0
 
 player physical resource stock <= max storage after final monthly clamp
 
-coin >= 0 unless debt is explicitly added later
+sestertius >= 0 unless debt is explicitly added later
 
 influence >= 0
 
@@ -3110,7 +3221,7 @@ Show:
 Food      current / max     monthly expected change
 Metal     current / max     monthly expected change
 Stone     current / max     monthly expected change
-Coin                      monthly expected change
+Sestertius                      monthly expected change
 Influence
 ```
 
@@ -3156,7 +3267,7 @@ Breakdown:
 Tribute policy
 
 Recurring diplomatic support:
-    Coin support on/off
+    Sestertius support on/off
     Influence mission on/off
 
 Trade
@@ -3221,7 +3332,7 @@ relation gift costs
 relation influence costs
 recurring relation-support costs
 
-independent control coin costs
+independent control sestertius costs
 independent control influence costs
 entrenchment multipliers
 
@@ -3300,7 +3411,7 @@ Stationed army control:
     max +3/month
 
 Recurring relation support:
-    Coin program      +1 relation/month
+    Sestertius program      +1 relation/month
     Influence program +1 relation/month
     combined max      +2/month
 
@@ -3416,7 +3527,7 @@ After month:
 Control 58 → 57
 ```
 
-If the overlord also runs monthly Coin Support for relation:
+If the overlord also runs monthly Sestertius Support for relation:
 
 ```text
 Relation 25 → 26
@@ -3573,7 +3684,7 @@ Trade / Gifts / Influence
           ↓
        Relation
 
-Coin / Influence / Trade / War
+Sestertius / Influence / Trade / War
           ↓
         Control
       ↙        ↘
@@ -3613,7 +3724,7 @@ Do not implement these unless separately requested:
 - province-local player stockpiles;
 - internal player trade routes between owned provinces;
 - full NPC physical-resource stockpiles;
-- global conserved coin supply;
+- global conserved sestertius supply;
 - Victoria-style market clearing;
 - individual migrant pathfinding across many provinces;
 - hidden control values;
@@ -3685,14 +3796,14 @@ Deployment has:
 
 ```text
 one-time influence cost
-monthly coin maintenance
+monthly sestertius maintenance
 ```
 
 Recommended initial defaults:
 
 ```text
 Deploy spy:        10 influence
-Maintenance:        5 coin/month
+Maintenance:        5 sestertius/month
 ```
 
 Keep these values configurable.
@@ -4202,7 +4313,7 @@ Fund Opposition
 Recommended resource:
 
 ```text
-Coin
+Sestertius
 ```
 
 Effect:
@@ -4217,7 +4328,7 @@ The acting player gains no control.
 Recommended initial action:
 
 ```text
-Base cost:       100 coin
+Base cost:       100 sestertius
 Base effect:       -5 target control
 ```
 
@@ -4249,7 +4360,7 @@ A          50
 B          35
 ```
 
-This is the coin-based equivalent of the influence-based `Undermine Rival` action already defined earlier.
+This is the sestertius-based equivalent of the influence-based `Undermine Rival` action already defined earlier.
 
 Implementation may merge both into one generic control-reduction action with different payment methods, but the player-facing distinction should remain clear.
 
@@ -4327,7 +4438,7 @@ Fund Dissidents
 Recommended cost:
 
 ```text
-Coin
+Sestertius
 ```
 
 Effect:
@@ -4339,7 +4450,7 @@ relation[overlord] -= amount
 Recommended initial values:
 
 ```text
-Base cost:      100 coin
+Base cost:      100 sestertius
 Base effect:     -5 relation
 ```
 
@@ -4555,7 +4666,7 @@ one active spy per player per target province
 
 spy deployment costs influence once
 
-active spy costs coin every month
+active spy costs sestertius every month
 
 unpaid spy is withdrawn
 
@@ -4702,7 +4813,7 @@ some buildings:
 
 A building may have `0` Metal cost.
 
-Do not require Coin unless a future design explicitly adds it.
+Do not require Sestertius unless a future design explicitly adds it.
 
 Construction costs are paid from the player's global resource stockpile.
 
@@ -4983,7 +5094,7 @@ Suggested roles:
 ## Market
 
 ```text
-+province tax / Coin generation
++province tax / Sestertius generation
 +trade-related modifier
 ```
 
@@ -5671,7 +5782,7 @@ Do not implement unless separately requested:
 multiple parallel construction slots in one province
 construction queues longer than the single active project
 worker assignment to normal buildings
-Coin cost for normal buildings
+Sestertius cost for normal buildings
 maintenance cost for buildings
 building decay
 hard maximum building levels
@@ -5883,7 +5994,7 @@ Once a province is a vassal, the overlord may increase Vassal Control through th
 
 ```text
 stationed armies
-direct control support with Coin
+direct control support with Sestertius
 direct control support with Influence
 positive relation reducing/ending passive decay
 events
@@ -6120,7 +6231,7 @@ For the initial system, Citizens + Plebeians is sufficient.
 
 # 155. Fund Unrest in owned provinces
 
-A Coin-based alternative is:
+A Sestertius-based alternative is:
 
 ```text
 Fund Unrest
@@ -6129,7 +6240,7 @@ Fund Unrest
 Recommended initial effect:
 
 ```text
-Base cost: 100 Coin
+Base cost: 100 sestertii
 Effect:    -5 happiness to Plebeians
 ```
 
@@ -7349,6 +7460,11 @@ without needing a rank, Influence or senator threshold. Peaceful military entry 
 The capital begins with 50 cohorts: 32 Heavy Infantry, 10 Archers and 8 Heavy Cavalry.
 The Roman state funds their full military supply separately; waiting for civilian
 shortages cannot starve the capital's army. Battle casualties remain permanent.
+While defending Rome, the capital's local cohorts do not rout when their shared
+Morale would reach zero. Their Morale remains at least 1, and the attacker must
+destroy every local defending cohort to take the capital. The normal six-month
+battle deadline does not end this defense; an attacker may still retreat under
+the ordinary rules. Visiting armies do not gain this protection.
 
 # 189. Offices, costs and supporters
 
@@ -7396,7 +7512,7 @@ Senators can switch player, remain loyal or return to gray. Their preferences ar
 
 - Aristocrats: Noble population and happiness, current political office, Influence
   prestige, completed wonders and political buildings such as Forums.
-- Merchants: profitable recurring Coin income, delivered recurring trade, fulfilled
+- Merchants: profitable recurring Sestertius income, delivered recurring trade, fulfilled
   contracts, Markets and resource security.
 - Provincials: happy free populations, friendly stable vassals and provincial trade;
   high tribute weakens support.
@@ -7420,7 +7536,7 @@ take effect at the next monthly review, making sustainable performance the prima
 source of support.
 
 A bribe buys exactly one unleased senator in a chosen faction, immediately switching
-their loyalty for six months. The cost is 80 Coin plus 20 Coin per currently active bribe.
+their loyalty for six months. The cost is 80 sestertii plus 20 sestertii per currently active bribe.
 A player can have at most ten active bribes and buy one per faction per month.
 Another player cannot overwrite an active lease. After expiry the senator immediately
 returns to normal monthly preference comparison; bribery alone cannot meet the
@@ -7726,23 +7842,23 @@ recruit Citizens
 
 # 252. Example initial manpower requirements
 
-Recommended balancing defaults:
+Current balancing defaults (whole people; separate economy population recruitment cost in parentheses):
 
 ```text
-Light Infantry       100 Plebeians
-Heavy Infantry       100 Plebeians
-Archers               80 Plebeians
+Light Infantry       1,000 people (1 Plebeian population unit)
+Heavy Infantry       1,000 people (1 Plebeian population unit)
+Archers                800 people (1 Plebeian population unit)
 
-Light Cavalry         50 Citizens
-Heavy Cavalry         40 Citizens
-Horse Archers         50 Citizens
+Light Cavalry          500 people (1 Citizen population unit)
+Heavy Cavalry          400 people (1 Citizen population unit)
+Horse Archers          500 people (1 Citizen population unit)
 
-War Chariots          30 Citizens
-War Camels            40 Citizens
-War Elephants         20 Citizens
+War Chariots           300 people (1 Citizen population unit)
+War Camels             400 people (1 Citizen population unit)
+War Elephants          200 people (1 Citizen population unit)
 
-Ballista              30 Plebeians
-Catapult              30 Plebeians                30 Plebeians
+Ballista               300 people (1 Plebeian population unit)
+Catapult               300 people (1 Plebeian population unit)
 ```
 
 These are configuration values, not architectural constants.
@@ -7759,7 +7875,7 @@ Recommended structure:
 
 ```text
 draft_fraction =
-    recruited_manpower / class_population_before_draft
+    population_cost / class_population_before_draft
 
 draft_penalty =
     min(MAX_DRAFT_PENALTY,
@@ -7791,6 +7907,7 @@ Recommended definition:
 struct UnitDefinition {
     manpower_class: PopClass,
     manpower: f32,
+    population_cost: f32,
 
     metal_cost: f32,
     recruitment_months: f32,
@@ -7983,7 +8100,10 @@ Own vassal
 → allowed
 
 Friendly NPC province
-→ allowed only with military access / sufficient Relation
+→ passage only at Relation 60–79; cannot station troops
+
+Very Friendly NPC province
+→ passage and stationing allowed at Relation 80–100
 
 Other player's province
 → allowed only when invited / granted military access
@@ -8028,6 +8148,16 @@ For a player-owned province:
 ```text
 province owner explicitly grants/invites military access
 ```
+
+Access is granted separately for each owned province and guest player. Changing
+access immediately notifies the guest with the province name. Revoking access
+automatically orders foreign units stationed there to march back to their home
+province using normal travel times, with peaceful transit for that fixed return
+route. They are not teleported or expelled instantly. The revocation notification
+also names their homeward destination when units are present. If the original
+home has been lost, use another directly owned province. A return route waits
+for any active battle ahead to finish. If no home or geographic return route is
+available, retain access and report why the change could not be completed.
 
 ---
 
@@ -8235,7 +8365,7 @@ Example:
 
 ```text
 Heavy Infantry
-Manpower: 34 / 100
+Manpower: 340 / 1,000 people
 Training: 82
 ```
 
@@ -8247,7 +8377,7 @@ The player decides whether to preserve, use, move, or disband it.
 
 # 273. Morale
 
-Morale is unit-specific:
+Morale is stored on cohorts but shared by all cohorts of one owner in an army:
 
 ```text
 0..100
@@ -8697,7 +8827,8 @@ Destination state should read clearly:
 ```text
 Owned          → Move
 Own Vassal     → Move
-Friendly NPC   → Military Access
+Friendly NPC   → Passage Only
+Very Friendly NPC → Passage / Stationing
 Other Player   → Invited / Access
 Hostile NPC    → Invade
 Enemy Player   → Invade
@@ -8843,7 +8974,7 @@ Military Rank modifies Vassal/occupation Control effectiveness
 
 Training is per unit
 
-Morale is per unit
+Morale is shared by an owner's cohorts in an army
 
 Military Rank is:
 Centurion → Military Tribune → Legate → Imperator
@@ -9116,8 +9247,6 @@ struct UnitCombatStats {
     defense: f32,
     movement_speed: f32,
     maneuver: u8,
-    morale_damage_taken: f32,
-    manpower_damage_taken: f32,
     role: UnitRole,
 }
 ```
@@ -9125,22 +9254,22 @@ struct UnitCombatStats {
 Recommended initial values:
 
 ```text
-Unit              Off   Def   Speed  Maneuver  MoraleTaken  ManpowerTaken
+Unit              Off   Def   Speed  Maneuver
 
-Light Infantry    0.80  0.85   2.5      1        0.80          1.10
-Heavy Infantry    1.15  1.25   2.5      1        0.90          0.90
-Archers           1.00  0.75   2.5      2        1.25          1.00
+Light Infantry    0.80  0.85   2.5      1
+Heavy Infantry    1.15  1.25   2.5      1
+Archers           1.00  0.75   2.5      2
 
-Light Cavalry     1.00  0.90   4.0      3        1.00          1.00
-Heavy Cavalry     1.30  1.20   3.5      2        1.00          0.90
-Horse Archers     1.15  0.90   4.0      5        1.15          1.00
+Light Cavalry     1.00  0.90   4.0      3
+Heavy Cavalry     1.30  1.20   3.5      2
+Horse Archers     1.15  0.90   4.0      5
 
-War Chariots      1.00  0.90   2.5      1        1.00          1.00
-War Camels        1.05  0.95   3.5      4        1.00          1.00
-War Elephants     1.60  1.50   2.5      0        1.15          0.60
+War Chariots      1.00  0.90   2.5      1
+War Camels        1.05  0.95   3.5      4
+War Elephants     1.60  1.50   2.5      0
 
-Ballista          0.70  0.30   2.0      0        1.30          1.50
-Catapult          0.80  0.25   1.5      0        1.30          1.50            0.90  0.20   1.5      0        1.30          1.50
+Ballista          0.70  0.30   2.0      0
+Catapult          0.80  0.25   1.5      0
 ```
 
 These are balancing defaults.
@@ -9264,12 +9393,13 @@ Each battle has a front-line width determined mainly by terrain.
 Recommended initial widths:
 
 ```text
-Farmland       8
-Plains         8
-Desert         8
-Forest         6
-Hills          6
-Mountains      4
+Farmland      30
+Plains        30
+Desert        30
+Forest        24
+Hills         24
+Mountains     18
+Marsh         18
 ```
 
 Each side can deploy up to:
@@ -9590,22 +9720,10 @@ Range:
 100        → ×1.25
 ```
 
-Recommended morale-damage output modifier:
-
-```text
-morale_attack_factor =
-    0.50 + 1.00 × morale/100
-```
-
-Range:
-
-```text
-0 Morale   → ×0.50
-50         → ×1.00
-100        → ×1.50
-```
-
-High-Morale formations therefore break enemies faster.
+Morale modifies attack once through this factor. Higher morale increases the same
+combat pressure that causes casualties and morale loss. Defense provides resistance
+to both. Unit types have no separate morale-damage or manpower-damage multipliers.
+Stored morale still governs recovery, supply penalties, and routing at zero.
 
 ---
 
@@ -9668,27 +9786,46 @@ damage_ratio =
     raw_attack / effective_defense
 ```
 
+Both losses use one combat pressure:
+
+```text
+combat_pressure =
+    damage_ratio
+    × tactic_casualty_modifier
+    × exposed_support_modifier
+```
+
+The exposure modifier is `1.50` for unprotected support and `1.00` otherwise.
+
 Manpower loss:
 
 ```text
 manpower_loss =
     BASE_MANPOWER_DAMAGE
-    × damage_ratio
-    × target.manpower_damage_taken
-    × tactic_casualty_modifier
+    × target.max_manpower
+    × combat_pressure
 ```
+
+After all attackers' losses against a cohort are summed for the round, round
+that cohort's casualty total to the nearest whole person. In internal cohort
+strength points this means increments of `0.01`. The game displays whole people.
+Recruitment population cost is tracked separately.
 
 Morale loss:
 
 ```text
 morale_loss =
     BASE_MORALE_DAMAGE
-    × damage_ratio
-    × morale_attack_factor
-    × target.morale_damage_taken
+    × combat_pressure
 ```
 
 Both base constants are configuration.
+
+The recruitment hover card shows a four-row icon table for Offense, Defense,
+Speed, and Maneuver. Below it, Cohort capabilities lists only non-neutral matchup
+bonuses and penalties, colored green and red respectively. Costs use bare Food
+amounts; monthly upkeep is implicit. The card has no payment, upkeep, funding,
+or queue-instruction footer.
 
 ---
 
@@ -9745,6 +9882,8 @@ If still unresolved after the cap:
 attacker must withdraw
 ```
 
+The cap does not apply while Rome's local defenders are fighting in the capital.
+
 Keep configurable.
 
 ---
@@ -9756,6 +9895,9 @@ A unit routes when:
 ```text
 Morale <= 0
 ```
+
+Rome's local defenders are the exception while defending the capital: their
+Morale cannot fall below 1, so they fight until their cohorts are destroyed.
 
 A routed unit:
 
@@ -10321,52 +10463,13 @@ A Province Force may contain many units.
 
 Do not render one map sprite per actual unit.
 
-Instead determine composition by surviving effective manpower.
-
-For each owner in province:
-
-```text
-type_share =
-    effective manpower of type
-    / total effective manpower
-```
-
-At close zoom:
-
-```text
-show dominant unit-type sprite
-```
-
-Example:
-
-```text
-8 Heavy Infantry
-2 Archers
-1 Light Cavalry
-```
-
-should visually show:
-
-```text
-animated Heavy Infantry
-```
-
-because Heavy Infantry dominates the force.
-
-Optional:
-
-```text
-show up to 3 representative sprites
-```
-
-when several unit types each exceed a configured share threshold.
-
-Recommended:
-
-```text
-secondary type shown if >=25% of force
-maximum 3 representative sprites per owner
-```
+At close zoom, show up to three distinct surviving unit types per owner,
+ordered left to right by the force's saved Frontline, Rear line, and Flanks
+preferences. Show a preferred type whenever the force actually contains it,
+regardless of its share of total manpower. Fill an absent preferred role with
+another surviving type suited to that formation role. A role without an
+available distinct type adds no sprite. Never show a selected type that has
+no surviving manpower.
 
 ---
 
@@ -10535,8 +10638,6 @@ unit offense
 unit defense
 unit movement speed
 unit maneuver
-unit morale-damage-taken
-unit manpower-damage-taken
 
 full unit matchup matrix
 
@@ -10742,7 +10843,7 @@ Center deployment order:
 3. best remaining eligible front-line unit
 ```
 
-Secondary units also preferentially replace routed/destroyed center units from reserve.
+Once a center slot opens, available Secondary units replace routed/destroyed center units before unused Primary units in reserve. This makes the second-line choice a deliberate change in the unit type fighting after the opening line breaks. If Primary and Secondary are the same type, that type continues to refill the center.
 
 ---
 
@@ -10782,6 +10883,8 @@ Initial options:
 1
 2
 3
+4
+5
 ```
 
 Thus:
@@ -10790,24 +10893,24 @@ Thus:
 total flank slots = flank_size × 2
 ```
 
-Example at combat width `8`.
+Example at open-terrain combat width `16`.
 
 Flank size `1`:
 
 ```text
-[LC][HI][HI][HI][HI][HI][HI][LC]
+1 LC | 14 center | 1 LC
 ```
 
 Flank size `2`:
 
 ```text
-[LC][LC][HI][HI][HI][HI][LC][LC]
+2 LC | 12 center | 2 LC
 ```
 
-Flank size `3`:
+Flank size `5`:
 
 ```text
-[LC][LC][LC][HI][HI][LC][LC][LC]
+5 LC | 6 center | 5 LC
 ```
 
 A larger flank is not automatically better: it activates more mobile troops immediately but weakens the center by consuming frontage.
@@ -10817,27 +10920,28 @@ A larger flank is not automatically better: it activates more mobile troops imme
 # 357. Flank size and narrow terrain
 
 Actual deployed flank size is constrained by combat width.
+Combat width is 16 in open terrain, 12 in forest and hills, and 10 in mountains and marshes.
 
 Recommended:
 
 ```text
-MIN_CENTER_SLOTS = 2
-
 effective_flank_size =
     min(
         requested_flank_size,
-        floor((combat_width - MIN_CENTER_SLOTS) / 2)
+        floor(combat_width / 3)
     )
 ```
+
+This preserves a center at least as wide as either wing. Choosing five per wing on open ground devotes ten of the sixteen slots to mobile troops and leaves six center slots.
 
 Example:
 
 ```text
-Mountain combat width = 4
-Requested flank size = 3
-Effective flank size = 1
+Mountain combat width = 10
+Requested flank size = 5
+Effective flank size = 3
 
-[Flank][Center][Center][Flank]
+3 flank | 4 center | 3 flank
 ```
 
 The pre-combat UI must show the expected effective flank size when terrain is known.
@@ -10936,7 +11040,7 @@ Example:
 Primary: Heavy Infantry
 Secondary: Light Infantry
 Flank: Light Cavalry
-Flank size: 3
+Flank size: 2
 Tactic: Envelopment
 ```
 
@@ -11168,3 +11272,103 @@ saved Province Force BattlePlans are supported
 
 MovementOrders may snapshot or override Province Force default BattlePlan
 ```
+
+# Province diplomacy revision — 29 September 2026
+
+This revision supersedes direct province-panel purchases of Control and Relation.
+Foreign diplomacy repeats the Overview Control and Relation cards below its image.
+The image carries a Political distance badge displaying only the cost multiplier.
+Hover explanation: the farther a province is from controlled territory, the more
+expensive diplomacy becomes. Distance uses the existing valid province graph.
+
+Cost tiers: 0–1 steps ×1; 2–3 ×1.25; 4–5 ×1.5; 6–7 ×1.75; 8–9 ×2;
+10–11 ×2.25; 12 or more ×2.5. An unreachable target cannot receive a spy.
+
+The Control card offers Vassalize above 50 Control for the unique leading player,
+and Integrate at 100 Control. An independent province at 100 offers both choices;
+a player's existing vassal at 100 offers Integrate. Both actions require a Yes/No
+confirmation before changing state. Integration applies the existing Relation-based
+population happiness shift exactly once and updates economic ownership immediately.
+
+Foreign diplomacy shows Spy Network above Spy Missions. With no deployment, Spy
+Network reads "No spy deployed." An active network shows its mission, total launch
+Influence and paid upkeep since deployment, cumulative mission results, and the
+current monthly detection chance based on the target's Noble happiness. Relation
+and happiness totals record actual changes after clamping; control totals record
+pressure contributed to the simultaneous political pool. Discovered-scandal totals
+remain even when evidence is spent or expires. Recall spy has an icon, no hover
+tooltip, and sits beside the mission in the network section. Recall or a new launch
+resets this deployment's history.
+Spy Missions contains four illustrated
+mission buttons in a 2×2 grid: Build control, Improve relations, Uncover scandals,
+and Undermine opponents. Each button shows its one-time Influence cost and monthly
+coin upkeep; there is no separate spy-status or shared-cost line. Explanations
+appear on hover. One spy network per player per target performs one mission at a
+time. Initial Influence costs are 10 for Build control, 5 for Improve relations,
+15 for Uncover scandals, and 20 for Undermine opponents. All missions have a base
+upkeep of 5 sestertii per month. Multiply both the mission's one-time Influence
+cost and its monthly upkeep by the current political-distance tier, then round
+to a whole number before charging or displaying the amount. For example, Build
+control costs 20 Influence and 10 sestertii per month at ×2 distance. A usable
+political route remains required; changes to the route change later monthly
+upkeep, while the paid launch cost stays in the deployment history.
+Detection, unpaid maintenance, loss of a route, or acquisition of the target ends
+the network. While deployed, all mission buttons retain the same hatched unavailable
+style used for buildings and military purchases. Mission hover text contains only
+the brief effect description; costs remain on the cards. Recall spy ends upkeep and permits a fresh deployment
+with a new one-time cost; a deployed spy cannot switch missions.
+
+After paying upkeep and surviving detection, Build Control contributes 1 Control
+pressure to the same month's simultaneous independent-control resolution; Improve
+Relations adds 1 Relation; Uncover Scandals performs the existing evidence-discovery
+check. Player-owned provinces show only Uncover scandals and Undermine opponents;
+they hide Build control and Improve relations. In foreign player-owned land,
+Undermine opponents reduces Happiness by 1 each surviving monthly tick in one
+randomly selected population class, clamped at zero. There is no additional success
+roll in player-owned land. Losses persist as temporary happiness
+modifiers and recover through the existing monthly decay. In NPC independent
+or vassal provinces, each surviving month has a 25% chance to select a random other
+player with positive Control or Relation, then reduce one positive stat by 1.
+Independent Control losses resolve with the same monthly pressure pool; vassal
+Control losses reduce the overlord's stability. With both stats positive, the choice
+is random; without eligible rivals there is no effect. The chance and loss are
+configurable. Political missions do not also discover scandals. Monthly gains remain
+configurable. Control building is restricted to independent provinces; relation
+building is restricted to NPC independent or vassal provinces. Foreign player-owned
+provinces support scandal discovery and population undermining. Existing local
+ownership and vassal rules, evidence expiry, and detection consequences continue
+to apply.
+
+The foreign panel removes direct spending, monthly support toggles, rival
+interference actions, and immediate evidence spending. The national treasury is
+already visible in the map HUD and is not repeated in this panel.
+
+The Sestertius outflow breakdown lists Wages, Civic spending, Recruitment effort,
+Army maintenance, Spy upkeep, and Trade deals. Spy upkeep is the number of the
+sum of the viewing player's active networks' current distance-adjusted monthly costs; recalling
+a spy immediately removes its projected upkeep. Trade deals remains a placeholder
+until its breakdown is designed. Outflow amounts and totals display a minus sign;
+displayed zero is always `0`, without either sign, and uses the neutral color.
+The same unsigned-zero convention applies to shared HUD and provincial numbers.
+
+## Class-specific unhappiness consequences
+
+A province's Noble, Citizen, Plebeian, and Slave output starts to fall below
+40%, 30%, 20%, and 10% happiness respectively. Each class's affected output
+is multiplied by `1 - 0.5 × clamp((threshold - happiness) / threshold, 0, 1)`.
+The penalty grows continuously from zero at the threshold to 50% at zero
+happiness. Noble population-derived Influence, Citizen taxes, and each of the
+Plebeian and Slave shares of Food, Metal, and Stone production scale separately.
+The maximum output loss and the two revolt probabilities live in `EconomyConfig`.
+Flat building and wonder Influence, political rank income, and Plebeian taxes
+remain unaffected by other classes' unhappiness.
+
+When an owned province has at least one Slave population unit and Slave
+happiness is at most 5%, it has a monthly revolt chance of 10% at 5%
+happiness, rising linearly to 50% at 0%. On revolt, all remaining Slaves
+leave the civilian population and 1 to 8 hostile Light Infantry cohorts
+appear, with the maximum capped by the whole Slave population before the
+revolt. They immediately attack the owner's stationed army if present;
+otherwise they remain in the province until encountered. The owner receives
+a province-linked warning. A province already containing rebel troops cannot
+generate another revolt from the same remaining population.

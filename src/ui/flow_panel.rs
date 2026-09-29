@@ -1,4 +1,4 @@
-//! Shared income and outflow card for coin and influence.
+//! Shared income and outflow card for sestertii and influence.
 
 use super::{
     format_hud_number, hud_delta_color, hud_resource_positions, HUD_RESOURCE_GROUP_PADDING,
@@ -207,7 +207,7 @@ fn flow_section(
         painter.text(
             row.right_center() - egui::vec2(10.0 * scale, 0.0),
             egui::Align2::RIGHT_CENTER,
-            format_hud_number(value),
+            flow_number(value, income),
             egui::FontId::proportional(13.0 * scale),
             flow_color(value, income, muted),
         );
@@ -235,20 +235,33 @@ fn flow_section(
     painter.text(
         row.right_center() - egui::vec2(10.0 * scale, 0.0),
         egui::Align2::RIGHT_CENTER,
-        format_hud_number(total),
+        flow_number(total, income),
         egui::FontId::proportional(13.0 * scale),
         flow_color(total, income, muted),
     );
 }
 
 fn flow_color(value: f64, income: bool, muted: egui::Color32) -> egui::Color32 {
-    if value == 0.0 {
+    if format_hud_number(value.abs()) == "0" {
         muted
     } else {
         hud_delta_color(if income {
             value
         } else {
-            -value
+            -value.abs()
         })
     }
 }
+
+fn flow_number(value: f64, income: bool) -> String {
+    let number = format_hud_number(value.abs());
+    if income || number == "0" {
+        number
+    } else {
+        format!("-{number}")
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/flow_ui.rs"]
+mod tests;

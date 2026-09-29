@@ -742,7 +742,7 @@ fn structural_reasons(
             ("Political city buildings", 4.0 * diminishing(p.political_buildings, 4.0)),
         ],
         Bloc::Merchants => vec![
-            ("Coin income", 8.0 * diminishing(p.coin_income, 30.0)),
+            ("Sestertius income", 8.0 * diminishing(p.coin_income, 30.0)),
             ("Recurring trade", 7.0 * diminishing(p.trade_volume, 60.0)),
             ("Trade reliability", (p.trade_reliability - 0.8) * 15.0),
             ("Urban Markets", 4.0 * diminishing(p.markets, 5.0)),

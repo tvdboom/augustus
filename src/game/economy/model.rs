@@ -88,15 +88,15 @@ pub enum ConstructionPace {
     Urgent,
 }
 
-/// Monthly local Coin budget for civilian wellbeing.
+/// Monthly local Coin budget for free-class wellbeing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CivicSpending {
-    /// No discretionary spending or happiness bonus.
+    /// No spending, with lower free-class happiness.
     #[default]
     Frugal,
-    /// Modest spending and happiness support.
+    /// Modest spending, maintaining neutral free-class happiness.
     Normal,
-    /// Greater spending and happiness support.
+    /// Greater spending, raising free-class happiness.
     Generous,
 }
 
@@ -105,23 +105,23 @@ pub enum CivicSpending {
 pub enum RecruitmentEffort {
     /// Slower recruitment with less pressure on residents.
     Low,
-    /// Ordinary recruitment without an extra Coin budget.
+    /// Ordinary recruitment speed and cost without a happiness change.
     #[default]
     Normal,
     /// Pay for faster recruitment at a local happiness cost.
     High,
 }
 
-/// Gradual slave-to-plebeian conversion; total population is conserved.
+/// Local conversion between slaves and plebeians, with class happiness tradeoffs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ManumissionPolicy {
-    /// Reduce the ordinary emancipation rate.
-    Restricted,
-    /// Ordinary emancipation rate.
+    /// Enslave a share of plebeians, reducing plebeian happiness.
+    Enslave,
+    /// No policy conversion or happiness effect.
     #[default]
     Normal,
-    /// Encourage emancipation into the free workforce.
-    Encouraged,
+    /// Free a share of slaves, reducing noble happiness.
+    Free,
 }
 
 /// Nationwide rations/labor and six province-local policy values.
@@ -141,7 +141,7 @@ pub struct ProvincePolicies {
     pub civic_spending: CivicSpending,
     /// Effort applied only to an active recruitment project.
     pub recruitment: RecruitmentEffort,
-    /// Rate at which slaves become plebeians.
+    /// Local enslavement or freeing of residents and its happiness tradeoff.
     pub manumission: ManumissionPolicy,
 }
 
@@ -152,6 +152,8 @@ pub struct PlayerEconomy {
     pub resources: [f64; 3],
     /// Food, Metal, Stone storage maxima.
     pub storage: [f64; 3],
+    /// Extra capacity granted by the local practice shortcut.
+    pub practice_storage_bonus: [f64; 3],
     /// Currency without a physical storage limit.
     pub coin: f64,
     /// Scarce political currency without a physical storage limit.
@@ -164,6 +166,7 @@ impl PlayerEconomy {
         Self {
             resources: config.starting_stock,
             storage: config.base_storage,
+            practice_storage_bonus: [0.0; 3],
             coin: 201.0,
             influence: 40.0,
         }
@@ -216,16 +219,14 @@ pub struct EconomicProvince {
     pub buildings: [u32; BuildingType::COUNT],
     /// The single local construction slot.
     pub construction: Option<ConstructionProject>,
+    /// Fully paid upgrades waiting for construction.
+    pub construction_queue: std::collections::VecDeque<ConstructionProject>,
     /// Canonical wonder indexes whose existing coordinates lie in this province.
     pub wonder_sites: Vec<usize>,
     /// The province's one completed wonder, if any.
     pub completed_wonder: Option<usize>,
     /// Persistent externally managed class happiness modifiers, e.g. unrest.
     pub happiness_modifiers: [f64; 4],
-    /// Nationwide noble-tax rate multiplier, projected by the owning campaign.
-    pub noble_tax_multiplier: f64,
-    /// Nationwide noble-tax happiness effect, recomposed each month.
-    pub noble_tax_happiness: f64,
     /// Happiness support actually funded in the latest economic month.
     pub civic_happiness: f64,
     /// Non-accumulating recruitment-effort effect for the current month.
@@ -237,6 +238,15 @@ pub struct EconomicProvince {
 }
 
 impl EconomicProvince {
+    /// Maximum construction orders per province, including the active project.
+    pub const MAX_CONSTRUCTION_ORDERS: usize = 10;
+
+    /// Whether the active project and waiting orders fill all construction slots.
+    pub fn construction_queue_full(&self) -> bool {
+        self.construction_queue.len() + usize::from(self.construction.is_some())
+            >= Self::MAX_CONSTRUCTION_ORDERS
+    }
+
     /// Build economic state from existing map/population data without changing its art.
     pub fn new(
         name: impl Into<String>,
@@ -262,11 +272,10 @@ impl EconomicProvince {
             policies: ProvincePolicies::default(),
             buildings: [0; BuildingType::COUNT],
             construction: None,
+            construction_queue: Default::default(),
             wonder_sites: Vec::new(),
             completed_wonder: None,
             happiness_modifiers: [0.0; 4],
-            noble_tax_multiplier: 1.0,
-            noble_tax_happiness: 0.0,
             civic_happiness: 0.0,
             recruitment_happiness: 0.0,
             temporary_happiness: [0.0; 4],
@@ -284,9 +293,26 @@ impl EconomicProvince {
         self.buildings[building as usize]
     }
 
+    /// Quote the next level after all already paid upgrades.
+    pub fn planned_building_level(&self, building: BuildingType) -> u32 {
+        self.construction
+            .iter()
+            .chain(self.construction_queue.iter())
+            .filter_map(|project| {
+                if let ConstructionProject::Building(p) = project {
+                    (p.building == building).then_some(p.target_level)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(self.level(building))
+    }
+
     /// Preserve buildings/projects on capture while resetting forced labor assignment.
     pub fn change_owner(&mut self, owner: Option<usize>, overlord: Option<usize>) {
         if self.owner != owner || self.overlord != overlord {
+            self.construction_queue.clear();
             self.civic_happiness = 0.0;
             self.recruitment_happiness = 0.0;
             if let Some(ConstructionProject::Wonder(project)) = &mut self.construction {
@@ -319,7 +345,7 @@ impl EconomicProvince {
 /// External military/diplomatic facts consumed during this economic month.
 #[derive(Clone, Debug, Default)]
 pub struct MonthlyInputs {
-    /// Total current military food demand by player, already adjusted for manpower.
+    /// Military food demand charged to each player: all hosted armies plus their marching troops.
     pub army_food: Vec<f64>,
     /// Local NPC military food demand by province.
     pub npc_army_food: Vec<f64>,
@@ -365,6 +391,8 @@ pub struct ProvinceMonth {
     pub happiness_delta: [f64; 4],
     /// Net immigrants minus emigrants by class.
     pub migration: [f64; 4],
+    /// Enslaved residents who left this province in a revolt after demographics.
+    pub slave_revolt_loss: f64,
     /// Tax income paid to the direct owner.
     pub tax_income: f64,
     /// Coin actually paid for local civic spending before taxes arrive.
@@ -459,6 +487,8 @@ pub struct EconomyWorld {
     pub(super) next_trade_id: u64,
     /// Per-turn one-time relation rewards, preventing split-deal relation farming.
     pub(super) one_time_relation_awarded: std::collections::BTreeMap<(usize, usize), f64>,
+    /// This month's open-market Buy/Sell volume by player and resource.
+    pub(super) open_market_volume: Vec<[[f64; 3]; 2]>,
 }
 
 impl EconomyWorld {
@@ -480,6 +510,7 @@ impl EconomyWorld {
             last_report: MonthlyReport::default(),
             next_trade_id: 1,
             one_time_relation_awarded: std::collections::BTreeMap::new(),
+            open_market_volume: vec![[[0.0; 3]; 2]; player_count],
         };
         world.refresh_npc_markets(&MonthlyInputs::default());
         world

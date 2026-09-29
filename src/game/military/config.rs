@@ -1,5 +1,4 @@
-//! Central balance data. Defaults follow specification v10; the population scale
-//! is one tenth of its illustrative soldier counts to match the existing map.
+//! Central balance data. Cohort size and recruitment population cost are separate.
 
 use super::*;
 
@@ -8,14 +7,18 @@ use super::*;
 pub struct UnitDefinition {
     /// Index into Nobles, Citizens, Plebeians, Slaves; only 1 or 2 is used.
     pub manpower_class: usize,
-    /// Population drafted for a full cohort.
+    /// Nominal cohort strength in hundred-person blocks.
     pub manpower: f64,
+    /// Economy population units removed from the source province on recruitment.
+    pub population_cost: f64,
     /// One-time metal equipment expense.
     pub metal_cost: f64,
     /// Work required before the cohort appears.
     pub recruitment_months: f64,
     /// Monthly request for a full-strength cohort.
     pub food_per_month: f64,
+    /// Monthly Coin wages for a full-strength cohort.
+    pub coin_per_month: f64,
     /// Strength multiplier used for political occupation.
     pub political_strength: f64,
     /// Optional explicit province requirement.
@@ -28,12 +31,15 @@ pub struct UnitDefinition {
     pub movement_speed: f64,
     /// Maximum sideways target reach.
     pub maneuver: usize,
-    /// Incoming morale-loss multiplier.
-    pub morale_damage_taken: f64,
-    /// Incoming casualty multiplier.
-    pub manpower_damage_taken: f64,
     /// Fort suppression contributed by an active surviving cohort.
     pub siege_power: f64,
+}
+
+impl UnitDefinition {
+    /// Whole people in a newly recruited cohort.
+    pub fn cohort_people(&self) -> u64 {
+        (self.manpower * PEOPLE_PER_POPULATION).round() as u64
+    }
 }
 
 /// Editable balance configuration; matrices are indexed by enum discriminants.
@@ -67,7 +73,7 @@ pub struct MilitaryConfig {
     pub terrain_defense: [f64; 7],
     /// Attack multiplier while protected behind the front.
     pub support_effectiveness: f64,
-    /// Additional manpower loss when exposed.
+    /// Combat pressure multiplier when support is exposed.
     pub exposed_support_casualties: f64,
     /// Defense bonus per fort/wall level.
     pub fort_defense_per_level: f64,
@@ -81,14 +87,10 @@ pub struct MilitaryConfig {
     pub training_attack: f64,
     /// Training defensive gain at 100 experience.
     pub training_defense: f64,
-    /// Strength-damage output at zero Morale.
+    /// Attack output at zero Morale.
     pub strength_morale_base: f64,
-    /// Additional strength-damage output at 100 Morale.
+    /// Additional attack output at 100 Morale.
     pub strength_morale_scale: f64,
-    /// Morale-damage output at zero Morale.
-    pub morale_attack_base: f64,
-    /// Additional morale-damage output at 100 Morale.
-    pub morale_attack_scale: f64,
     /// Inclusive random multiplier bounds.
     pub random_range: [f64; 2],
     /// Fraction of target nominal manpower lost per equal-strength attack.
@@ -109,8 +111,6 @@ pub struct MilitaryConfig {
     pub training_supply_threshold: f64,
     /// Morale baseline before rank/training effects.
     pub base_morale: f64,
-    /// Normal monthly wages per current soldier in the campaign's population scale.
-    pub coin_per_manpower: f64,
     /// Maximum recovery toward baseline per peaceful month.
     pub morale_recovery: f64,
     /// Morale lost for a fully unsupplied month.
@@ -125,12 +125,16 @@ pub struct MilitaryConfig {
     pub victory_morale: f64,
     /// Draft penalty proportionality constant.
     pub draft_happiness_scale: f64,
+    /// Flat local happiness cost of raising one cohort.
+    pub base_draft_penalty: f64,
     /// Maximum penalty from one draft.
     pub maximum_draft_penalty: f64,
     /// Draft penalty points removed per month.
     pub draft_penalty_decay: f64,
-    /// Minimum NPC relation for peaceful military access.
+    /// Minimum NPC relation for peaceful troop passage.
     pub npc_access_relation: f64,
+    /// Minimum NPC relation for peaceful troop stationing.
+    pub npc_stationing_relation: f64,
     /// Rank renown thresholds.
     pub rank_thresholds: [f64; 4],
     /// Rank bonuses to combat morale.
@@ -180,21 +184,24 @@ impl Default for MilitaryConfig {
         use RecruitmentTag as Tag;
         use UnitType::*;
         let manpower = [10., 10., 8., 5., 4., 5., 3., 4., 2., 3., 3.];
+        let population_cost = [1.; 11];
         let metal = [12., 40., 16., 28., 48., 40., 24., 36., 100., 60., 80.];
         let months = [2., 3., 2., 3., 4., 3., 3., 3., 5., 4., 5.];
-        let food = [5., 8., 6., 12., 14., 12., 12., 10., 30., 6., 6.];
-        let stats: [[f64; 6]; 11] = [
-            [0.80, 0.85, 2.5, 1., 0.80, 1.10],
-            [1.15, 1.25, 2.5, 1., 0.90, 0.90],
-            [1.00, 0.75, 2.5, 2., 1.25, 1.00],
-            [1.00, 0.90, 4.0, 3., 1.00, 1.00],
-            [1.30, 1.20, 3.5, 2., 1.00, 0.90],
-            [1.15, 0.90, 4.0, 5., 1.15, 1.00],
-            [1.00, 0.90, 2.5, 1., 1.00, 1.00],
-            [1.05, 0.95, 3.5, 4., 1.00, 1.00],
-            [1.60, 1.50, 2.5, 0., 1.15, 0.60],
-            [0.70, 0.30, 2.0, 0., 1.30, 1.50],
-            [0.80, 0.25, 1.5, 0., 1.30, 1.50],
+        // Aggregate population scale: infantry < cavalry < elephants.
+        let food = [1.5, 2.5, 1.5, 3., 4., 3., 3., 2.5, 6., 1.5, 2.];
+        let wages = [1., 2., 1., 2., 3., 2.5, 2.5, 2.5, 5., 2., 2.];
+        let stats: [[f64; 4]; 11] = [
+            [0.80, 0.85, 2.5, 1.],
+            [1.15, 1.25, 2.5, 1.],
+            [1.00, 0.75, 2.5, 2.],
+            [1.00, 0.90, 4.0, 3.],
+            [1.30, 1.20, 3.5, 2.],
+            [1.15, 0.90, 4.0, 5.],
+            [1.00, 0.90, 2.5, 1.],
+            [1.05, 0.95, 3.5, 4.],
+            [1.60, 1.50, 2.5, 0.],
+            [0.70, 0.30, 2.0, 0.],
+            [0.80, 0.25, 1.5, 0.],
         ];
         let units = std::array::from_fn(|i| UnitDefinition {
             manpower_class: if matches!(
@@ -206,9 +213,11 @@ impl Default for MilitaryConfig {
                 2
             },
             manpower: manpower[i],
+            population_cost: population_cost[i],
             metal_cost: metal[i],
             recruitment_months: months[i],
             food_per_month: food[i],
+            coin_per_month: wages[i],
             political_strength: [0.8, 1.25, 0.8, 1.4, 1.8, 1.7, 1.5, 1.6, 4., 0.4, 0.4][i],
             special_tag: match UnitType::ALL[i] {
                 HorseArchers => Some(Tag::HorseArchers),
@@ -221,8 +230,6 @@ impl Default for MilitaryConfig {
             defense: stats[i][1],
             movement_speed: stats[i][2],
             maneuver: stats[i][3] as usize,
-            morale_damage_taken: stats[i][4],
-            manpower_damage_taken: stats[i][5],
             siege_power: if i == 9 {
                 1.
             } else if i == 10 {
@@ -312,7 +319,7 @@ impl Default for MilitaryConfig {
             tactic_bonus: 0.20,
             countered_multiplier: 0.90,
             casualty_intensity: [1., 1.10, 1., 1., 0.90, 1.],
-            combat_widths: [8, 8, 6, 6, 4, 8, 4],
+            combat_widths: [16, 16, 12, 12, 10, 16, 10],
             center_priority: [
                 WarElephants,
                 HeavyInfantry,
@@ -351,8 +358,6 @@ impl Default for MilitaryConfig {
             training_defense: 0.25,
             strength_morale_base: 0.75,
             strength_morale_scale: 0.50,
-            morale_attack_base: 0.50,
-            morale_attack_scale: 1.00,
             random_range: [0.90, 1.10],
             base_manpower_damage: 0.055,
             base_morale_damage: 8.0,
@@ -363,17 +368,18 @@ impl Default for MilitaryConfig {
             passive_training: 1.,
             training_supply_threshold: 0.95,
             base_morale: 50.,
-            coin_per_manpower: 0.05,
             morale_recovery: 5.,
             shortage_morale_penalty: 25.,
             participation_training: 2.,
             victory_training: 1.,
             maximum_battle_training: 6.,
             victory_morale: 10.,
-            draft_happiness_scale: 40.,
+            draft_happiness_scale: 100.,
+            base_draft_penalty: 2.,
             maximum_draft_penalty: 20.,
-            draft_penalty_decay: 2.,
-            npc_access_relation: 70.,
+            draft_penalty_decay: 1.,
+            npc_access_relation: 60.,
+            npc_stationing_relation: 80.,
             rank_thresholds: [0., 150., 400., 900.],
             rank_morale: [0., 5., 10., 15.],
             rank_control: [1., 1.10, 1.20, 1.30],

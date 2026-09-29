@@ -1,12 +1,15 @@
 //! Explicit deterministic month stages and the convenience all-in-one monthly tick.
 
-use super::{EconomyEvent, EconomyWorld, MonthlyInputs, MonthlyReport, ProvinceMonth};
+use super::{
+    CivicSpending, EconomyEvent, EconomyWorld, MonthlyInputs, MonthlyReport, ProvinceMonth,
+};
 
 impl EconomyWorld {
     /// Production and recurring trade stage. Apply recurring diplomatic payments between
     /// this and `finish_month` so they compete for the same authoritative wallets.
     pub fn begin_month(&mut self, inputs: &MonthlyInputs) -> MonthlyReport {
         self.one_time_relation_awarded.clear();
+        self.open_market_volume.iter_mut().for_each(|volume| *volume = [[0.0; 3]; 2]);
         let mut report = MonthlyReport {
             month: self.month.saturating_add(1),
             player_delta: self
@@ -100,7 +103,9 @@ impl EconomyWorld {
                     })
                     .map(|definition| definition.monthly_influence)
                     .unwrap_or(0.0);
-                summary.influence_income = province.population[0] * self.config.influence_per_noble
+                summary.influence_income = province.population[0]
+                    * self.config.influence_per_noble
+                    * super::happiness_output_multiplier(0, province.happiness[0], &self.config)
                     + effects.influence
                     + wonder_income;
                 owner.coin += summary.tax_income;
@@ -164,8 +169,11 @@ impl EconomyWorld {
                 1.0
             };
             summary.civic_spending = requested * funded;
+            let frugal_happiness = self.config.civic_happiness[CivicSpending::Frugal as usize];
+            let full_happiness =
+                self.config.civic_happiness[province.policies.civic_spending as usize];
             province.civic_happiness =
-                self.config.civic_happiness[province.policies.civic_spending as usize] * funded;
+                frugal_happiness + (full_happiness - frugal_happiness) * funded;
         }
     }
 
@@ -183,7 +191,9 @@ impl EconomyWorld {
     /// Rebuild global capacity from directly owned storage buildings; vassals do not count.
     pub fn recalculate_storage(&mut self) {
         for account in &mut self.players {
-            account.storage = self.config.base_storage;
+            account.storage = std::array::from_fn(|index| {
+                self.config.base_storage[index] + account.practice_storage_bonus[index]
+            });
         }
         for province in &self.provinces {
             if let Some(account) = province.owner.and_then(|owner| self.players.get_mut(owner)) {

@@ -302,6 +302,7 @@ pub(in crate::app) fn augustus_ui_style() -> egui::Style {
     style.interaction.selectable_labels = false;
 
     let visuals = &mut style.visuals;
+    visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
     visuals.dark_mode = true;
     visuals.override_text_color = Some(CREAM);
     visuals.selection.bg_fill = egui::Color32::from_rgb(136, 65, 46);

@@ -23,6 +23,24 @@ use crate::app::{
 #[path = "military_visuals.rs"]
 mod military_visuals;
 
+/// Clickable troop artwork retains its actual owner and marching order identity.
+#[derive(Clone, Copy)]
+pub(crate) struct ArmyHit {
+    pub rect: egui::Rect,
+    pub province: usize,
+    pub owner: crate::game::military::ForceOwner,
+    pub movement: Option<u64>,
+}
+
+pub(crate) fn take_army_click(ctx: &egui::Context) -> Option<ArmyHit> {
+    ctx.data_mut(|data| {
+        let id = egui::Id::new("map-army-click");
+        let hit = data.get_temp::<ArmyHit>(id);
+        data.remove::<ArmyHit>(id);
+        hit
+    })
+}
+
 /// Reuse the generated military sheets in province-panel icon cells.
 pub(crate) fn military_unit_icon(
     context: &egui::Context,
@@ -82,7 +100,7 @@ pub(crate) fn city_name_for_province(name: &str) -> Option<&'static str> {
 
 const INFLUENCE_PER_NOBLE: f64 = 1.0;
 // Extra residents at a resource-poor start favor productive labor. The small
-// upper-class share also gives a modest coin and influence compensation.
+// citizen and noble shares also give modest tax and influence compensation.
 const START_BONUS_SHARES: [f64; 4] = [0.05, 0.10, 0.35, 0.50];
 
 #[derive(Default, Resource)]
@@ -225,14 +243,14 @@ fn monthly_output(base: [i32; 3], population: ProvincePopulation) -> [f64; 3] {
     base.map(|yield_per_worker| f64::from(yield_per_worker) * workers)
 }
 
-/// One balance point per unit of monthly net food, metal, stone, coin, or
+/// One balance point per unit of monthly net food, metal, stone, sestertii, or
 /// influence at default governance. This is only used to size opening bonuses;
 /// the province's real resource yields and the economy rules remain intact.
 fn starting_economy_score(base: [i32; 3], population: ProvincePopulation) -> f64 {
     monthly_output(base, population).into_iter().sum::<f64>() - population.food_upkeep()
         + population.plebeians
         + population.citizens * 1.5
-        + population.nobles * (1.0 + INFLUENCE_PER_NOBLE)
+        + population.nobles * INFLUENCE_PER_NOBLE
 }
 
 fn balanced_starting_population(
@@ -502,6 +520,18 @@ impl ProvinceOwnership {
         self.population_for(player).into_iter().sum()
     }
 
+    pub(crate) fn multiply_owned_population(&mut self, player: usize, factor: f64) {
+        for (index, owner) in self.owners.iter().enumerate() {
+            if *owner == Some(player) {
+                let population = &mut self.populations[index];
+                population.nobles *= factor;
+                population.citizens *= factor;
+                population.plebeians *= factor;
+                population.slaves *= factor;
+            }
+        }
+    }
+
     pub(crate) fn population_sources(&self, player: usize, class: usize) -> Vec<(&str, f64)> {
         self.owners
             .iter()
@@ -515,9 +545,7 @@ impl ProvinceOwnership {
 
     pub(crate) fn coin_taxes_for(&self, player: usize) -> f64 {
         let population = self.population_for(player);
-        population[2]
-            + population[1] * 1.5
-            + population[0] * self.governance_for(player).noble_tax_per_person()
+        population[2] + population[1] * 1.5
     }
 
     pub(crate) fn coin_delta_for(&self, player: usize) -> f64 {
@@ -701,6 +729,7 @@ pub(crate) struct MapView {
     label_fit: f32,
     label_candidates: Vec<Vec<Vec<LabelPlacement>>>,
     label_anchors: Vec<Option<LabelPlacement>>,
+    military_anchors: military_visuals::Anchors,
     anchor_relocated: Vec<bool>,
     anchor_candidates: Vec<Vec<LabelPlacement>>,
     anchor_level: Option<usize>,
@@ -728,6 +757,7 @@ impl Default for MapView {
             label_fit: 0.0,
             label_candidates: Vec::new(),
             label_anchors: Vec::new(),
+            military_anchors: military_visuals::Anchors::default(),
             anchor_relocated: Vec::new(),
             anchor_candidates: Vec::new(),
             anchor_level: None,
@@ -758,7 +788,7 @@ struct WildlifeSighting {
     velocity: [f32; 2],
     age: f32,
     duration: f32,
-    size: f32,
+    map_size: f32,
     rotation: f32,
     frame_offset: f32,
 }
@@ -824,10 +854,10 @@ struct CityAsset {
 // Ancient names at present-day sites. Lutetia is included for the requested Paris location.
 const CITIES: [CityAsset; 8] = [
     CityAsset {
-        // Rome
+        // Rome's display anchor sits just south of the simplified Etruria border.
         province: "Latium",
-        position: [12.50, 41.90],
-        hotspot: [0.5, 0.5],
+        position: [12.75, 41.63],
+        hotspot: [0.2, 0.2],
     },
     CityAsset {
         // Lutetia (present-day Paris)
@@ -959,7 +989,7 @@ const WONDERS: [WonderAsset; 7] = [
         )),
     },
     WonderAsset {
-        name: "Temple of Zeus at Olympia",
+        name: "Temple of Zeus",
         position: [21.63, 37.64],
         png: include_bytes!("../../assets/images/wonders/zeus_temple.png"),
         construction: include_bytes!(concat!(
@@ -1240,8 +1270,8 @@ fn province_adjacency(provinces: &[Province]) -> Vec<Vec<usize>> {
     adjacency
 }
 
-/// Paints the same explicit sea edges that routing uses, with readable coast terminals.
-fn paint_sea_crossings(painter: &egui::Painter, projection: &Projection) {
+/// Paints the same explicit sea edges that routing uses, beneath land and terrain.
+fn paint_sea_crossing_lines(painter: &egui::Painter, projection: &Projection) {
     let gold = egui::Color32::from_rgb(239, 220, 172);
     for crossing in &SEA_CROSSINGS {
         let [a, b] = crossing.shores.map(|point| projection.point(point));
@@ -1260,6 +1290,17 @@ fn paint_sea_crossings(painter: &egui::Painter, projection: &Projection) {
             );
             painter.line_segment([start, end], egui::Stroke::new(1.7, gold));
             offset += 10.0;
+        }
+    }
+}
+
+/// Paints shore terminals above terrain and province borders.
+fn paint_sea_crossing_terminals(painter: &egui::Painter, projection: &Projection) {
+    let gold = egui::Color32::from_rgb(239, 220, 172);
+    for crossing in &SEA_CROSSINGS {
+        let [a, b] = crossing.shores.map(|point| projection.point(point));
+        if a.distance(b) < 1.0 {
+            continue;
         }
         for point in [a, b] {
             painter.circle_filled(point, 3.4, egui::Color32::from_rgb(68, 62, 49));
@@ -1390,6 +1431,7 @@ pub(crate) fn draw_map(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     state: Res<State<crate::app::AppState>>,
+    campaign_ui: Res<crate::app::CampaignUi>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -1414,7 +1456,8 @@ pub(crate) fn draw_map(
         })
     });
     let rect = ctx.content_rect();
-    let interactions_enabled = *state.get() == crate::app::AppState::Map;
+    let interactions_enabled =
+        *state.get() == crate::app::AppState::Map && !campaign_ui.confirmation_open();
     egui::Area::new(egui::Id::new("augustus_province_map"))
         .order(egui::Order::Background)
         .fixed_pos(rect.min)
@@ -1555,15 +1598,15 @@ fn paint_map(
         center,
     };
     view.animation_clock += dt.clamp(0.0, 0.1);
-    if view.zoom >= 2.6 {
+    let spawn_wildlife = view.zoom >= 2.6;
+    if spawn_wildlife {
         if view.water_ripples.is_empty() {
             view.water_ripples = generate_water_ripples(&atlas.land, &mut view.wildlife_rng);
         }
-        update_wildlife(view, &atlas.land, &projection, rect, dt);
     } else {
-        view.wildlife.clear();
         view.wildlife_spawn_timer = 2.0;
     }
+    update_wildlife(view, &atlas.land, &projection, rect, dt, spawn_wildlife);
     advance_texture_offset(&mut view.cloud_offset, [4.5, 0.7], [84.0, 32.0], scale, dt);
     let city_markers = layout_cities(&projection, rect, view.zoom);
     let mut wonder_markers = layout_wonders(&projection, rect, view.zoom);
@@ -1606,6 +1649,8 @@ fn paint_map(
             smoothstep((view.zoom - 2.6) / 1.2),
         );
     }
+    // Land and terrain mask the lines at the shores and any islands along a sea lane.
+    paint_sea_crossing_lines(painter, &projection);
     paint_meshes(painter, &atlas.land, &projection, LAND);
 
     let pointer = if interactions_enabled && !pointer_over_menu {
@@ -1727,7 +1772,6 @@ fn paint_map(
 
     paint_dead_sea(painter, view, &projection, sea_color);
     paint_rivers(painter, |point| projection.point(point), view.zoom, sea_color);
-    paint_sea_crossings(painter, &projection);
 
     paint_wildlife(painter, &view.wildlife, &view.environment_textures, &projection);
 
@@ -1769,6 +1813,7 @@ fn paint_map(
         }
     }
 
+    paint_sea_crossing_terminals(painter, &projection);
     paint_cities(painter, &city_markers, view.zoom, &view.city_textures);
     paint_wonders(
         painter,
@@ -1782,25 +1827,13 @@ fn paint_map(
         Vec::with_capacity(wonder_markers.len() + city_markers.len() + atlas.provinces.len());
     occupied.extend(wonder_markers.iter().map(|marker| marker.bounds(view.zoom).expand(1.0)));
     occupied.extend(city_markers.iter().map(|marker| marker.bounds));
-    if let Some(campaign) = campaign {
-        let world = campaign.military_view(player, false);
-        let military_markers = military_visuals::paint(
-            painter,
-            &world,
-            ownership,
-            &projection,
-            view.zoom,
-            view.animation_clock,
-            rect,
-            &occupied,
-        );
-        occupied.extend(military_markers);
-    }
+    let landmarks = occupied.clone();
     let marker_count = occupied.len();
 
     // Choose one geographic position and angle from the detailed map, then
     // refit only the text at each zoom level. A marker may force one lasting
-    // relocation; ordinary zoom and label collisions never rotate the name.
+    // relocation for a city or wonder; armies never influence name placement.
+    // Ordinary zoom and label collisions never rotate the name.
     let label_level = label_level(view.zoom, fit, view.label_fit);
     if view.label_anchors.len() != atlas.provinces.len() {
         view.label_anchors = stable_label_anchors(&view.label_candidates, atlas.provinces.len());
@@ -1910,6 +1943,8 @@ fn paint_map(
             }
         }
     }
+    let mut label_areas: Vec<_> =
+        visible_labels.iter().map(|label| label.map(|(rect, _)| rect)).collect();
     if view.zoom >= 2.8 {
         for (index, province) in atlas.provinces.iter().enumerate() {
             if !projection.bounds_rect(province.bounds).intersects(rect) {
@@ -1982,6 +2017,64 @@ fn paint_map(
                 x += text_size.x + 5.0 * scale;
             }
             occupied.push(badge);
+            label_areas[index] = Some(label_rect.union(badge));
+        }
+    }
+    // Immediate-mode paint order is the map's Z order: troops and their owner
+    // badges sit above province names/resources without reserving label space.
+    if let Some(campaign) = campaign {
+        let world = campaign.military_view(player, false);
+        military_visuals::paint(
+            painter,
+            &world,
+            ownership,
+            &projection,
+            view.zoom,
+            view.animation_clock,
+            rect,
+            &landmarks,
+            &view.label_anchors,
+            &label_areas,
+            &mut view.military_anchors,
+        );
+        if interactions_enabled && !pointer_over_menu && !foreground_control {
+            if let Some(position) = painter.ctx().input(|input| input.pointer.hover_pos()) {
+                let hovered = painter
+                    .ctx()
+                    .data(|data| {
+                        data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets"))
+                    })
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|hit| hit.rect.contains(position));
+                if hovered && !response.dragged() {
+                    painter.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+        }
+        if interactions_enabled
+            && !pointer_over_menu
+            && !drag_started_on_menu
+            && !foreground_control
+            && response.clicked_by(egui::PointerButton::Primary)
+        {
+            if let Some(position) = response.interact_pointer_pos() {
+                let hit = painter
+                    .ctx()
+                    .data(|data| {
+                        data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets"))
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .rev()
+                    .find(|hit| hit.rect.contains(position));
+                if let Some(hit) = hit {
+                    painter
+                        .ctx()
+                        .data_mut(|data| data.insert_temp(egui::Id::new("map-army-click"), hit));
+                    return None;
+                }
+            }
         }
     }
     clicked_detail
@@ -2032,14 +2125,12 @@ fn label_candidates(
             }
         }
     }
-    centers.sort_by(|a, b| {
-        let distance = |point: &[f32; 2]| {
-            let dx = (point[0] - province.visual_center[0]) * LONGITUDE_SCALE;
-            let dy = point[1] - province.visual_center[1];
-            dx * dx + dy * dy
-        };
-        distance(a).total_cmp(&distance(b))
-    });
+    let center_distance = |point: &[f32; 2]| {
+        let dx = (point[0] - province.visual_center[0]) * LONGITUDE_SCALE;
+        let dy = point[1] - province.visual_center[1];
+        dx * dx + dy * dy
+    };
+    centers.sort_by(|a, b| center_distance(a).total_cmp(&center_distance(b)));
 
     let angles = [
         0.0,
@@ -2053,67 +2144,83 @@ fn label_candidates(
         -std::f32::consts::FRAC_PI_2,
     ];
     let preferred_size = (10.5 * zoom.sqrt()).clamp(9.0, 18.0);
+    // Prefer a centered, horizontal name even if it needs a modest reduction
+    // (e.g. Umbria fits straight at 14.25px rather than rotated at 18px).
+    // Keep substantially smaller options behind readable ones.
+    let steps_per_band = if preferred_size >= 13.0 {
+        4
+    } else {
+        2
+    };
+    let band = |candidate: &LabelPlacement| {
+        ((preferred_size - candidate.font_size) / (1.25 * steps_per_band as f32)).floor() as i32
+    };
+    let order = |a: &LabelPlacement, b: &LabelPlacement| {
+        band(a)
+            .cmp(&band(b))
+            .then_with(|| center_distance(&a.center).total_cmp(&center_distance(&b.center)))
+            .then_with(|| b.full_name.cmp(&a.full_name))
+            .then_with(|| a.angle.abs().total_cmp(&b.angle.abs()))
+            .then_with(|| b.font_size.total_cmp(&a.font_size))
+    };
     let mut choices = Vec::new();
     let names = if province.name == province.short {
         vec![true]
     } else {
         vec![true, false]
     };
-    'sizes: for step in 0..12 {
-        let font_size = preferred_size - step as f32 * 1.25;
-        if font_size < 6.5 {
+    // Search in ranking order: size band, then distance from the center.
+    // Once 32 choices are filled, more distant centers and smaller bands
+    // cannot improve them. Finish tied distances to preserve stable ordering.
+    'bands: for first_step in (0..12).step_by(steps_per_band) {
+        let mut sizes = Vec::new();
+        for step in first_step..first_step + steps_per_band {
+            let font_size = preferred_size - step as f32 * 1.25;
+            if font_size < 6.5 {
+                break;
+            }
+            for &full_name in &names {
+                let name = if full_name {
+                    &province.name
+                } else {
+                    &province.short
+                };
+                let galley = painter.layout_no_wrap(
+                    name.clone(),
+                    egui::FontId::proportional(font_size),
+                    INK,
+                );
+                sizes.push((font_size, full_name, label_fit_size(galley.size())));
+            }
+        }
+        if sizes.is_empty() {
             break;
         }
-        for &full_name in &names {
-            let name = if full_name {
-                &province.name
-            } else {
-                &province.short
-            };
-            let galley =
-                painter.layout_no_wrap(name.clone(), egui::FontId::proportional(font_size), INK);
-            let size = label_fit_size(galley.size());
-            for &center in &centers {
-                for &angle in &angles {
-                    if label_fits_province(province, projection, center, size, angle) {
-                        choices.push(LabelPlacement {
-                            center,
-                            angle,
-                            font_size,
-                            full_name,
-                        });
-                        if choices.len() >= 16 {
-                            break 'sizes;
+        for group in centers.chunk_by(|a, b| center_distance(a) == center_distance(b)) {
+            let mut group_choices = Vec::new();
+            for &(font_size, full_name, size) in &sizes {
+                for &center in group {
+                    for &angle in &angles {
+                        if label_fits_province(province, projection, center, size, angle) {
+                            group_choices.push(LabelPlacement {
+                                center,
+                                angle,
+                                font_size,
+                                full_name,
+                            });
+                            break;
                         }
-                        break;
                     }
                 }
             }
+            group_choices.sort_by(&order);
+            choices.extend(group_choices);
+            if choices.len() >= 32 {
+                choices.truncate(32);
+                break 'bands;
+            }
         }
     }
-    // A slight size reduction is preferable to pushing a name to the edge of
-    // its province. Keep widely smaller options behind all readable ones.
-    let steps_per_band = if preferred_size >= 13.0 {
-        3.0
-    } else {
-        2.0
-    };
-    let band = |candidate: &LabelPlacement| {
-        ((preferred_size - candidate.font_size) / (1.25 * steps_per_band)).floor() as i32
-    };
-    let center_distance = |candidate: &LabelPlacement| {
-        let dx = (candidate.center[0] - province.visual_center[0]) * LONGITUDE_SCALE;
-        let dy = candidate.center[1] - province.visual_center[1];
-        dx * dx + dy * dy
-    };
-    choices.sort_by(|a, b| {
-        band(a)
-            .cmp(&band(b))
-            .then_with(|| center_distance(a).total_cmp(&center_distance(b)))
-            .then_with(|| b.full_name.cmp(&a.full_name))
-            .then_with(|| b.font_size.total_cmp(&a.font_size))
-            .then_with(|| a.angle.abs().total_cmp(&b.angle.abs()))
-    });
     choices
 }
 
@@ -2278,7 +2385,9 @@ fn city_rect(anchor: egui::Pos2, size: f32, hotspot: [f32; 2]) -> egui::Rect {
 fn layout_cities(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> Vec<CityMarker> {
     let blend = city_blend(zoom);
     let icon_size = 24.0 + 1.2 * (zoom - MIN_ZOOM).max(0.0);
-    let image_size = (30.0 + 8.0 * (zoom - 2.0)).max(24.0) * CITY_IMAGE_SCALE;
+    // Artwork has a fixed footprint on the map; zoom only projects that footprint.
+    // The blend controls opacity independently, without growing the sprite as it appears.
+    let image_size = 10.0 * zoom * CITY_IMAGE_SCALE;
     CITIES
         .iter()
         .enumerate()
@@ -2354,15 +2463,15 @@ struct WonderMarker {
     image: Option<egui::Rect>,
 }
 
-enum WonderState<'a> {
-    Building(&'a crate::game::economy::WonderProject),
+enum WonderState {
+    Building,
     Completed,
 }
 
 fn wonder_state(
     economy: Option<&crate::game::economy::EconomyWorld>,
     index: usize,
-) -> Option<WonderState<'_>> {
+) -> Option<WonderState> {
     use crate::game::economy::ConstructionProject;
     let province = economy?.provinces.iter().find(|p| p.wonder_sites.contains(&index))?;
     if province.completed_wonder == Some(index) {
@@ -2370,7 +2479,7 @@ fn wonder_state(
     }
     match &province.construction {
         Some(ConstructionProject::Wonder(project)) if project.wonder_id == index => {
-            Some(WonderState::Building(project))
+            Some(WonderState::Building)
         },
         _ => None,
     }
@@ -2415,14 +2524,20 @@ fn wonder_art() -> &'static [WonderArt] {
 
 impl WonderMarker {
     fn bounds(&self, zoom: f32) -> egui::Rect {
-        let blend = city_blend(zoom);
         if let Some(image) = self.image {
-            if blend > 0.0 {
-                return self.icon.union(image);
+            if wonder_illustrated(zoom) {
+                return image.union(egui::Rect::from_center_size(
+                    image.center(),
+                    egui::Vec2::splat(image.height()),
+                ));
             }
         }
         self.icon
     }
+}
+
+fn wonder_illustrated(zoom: f32) -> bool {
+    zoom >= (CITY_BLEND_START + CITY_BLEND_END) * 0.5
 }
 
 fn layout_wonders(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> Vec<WonderMarker> {
@@ -2447,17 +2562,7 @@ fn layout_wonders(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> V
             .chain(&atlas().land)
             .any(|part| part.contains(wonder.position));
         let image = on_land.then_some(image_rect);
-        // Keep the icon visible above the artwork as it fades in, leaving
-        // the illustration anchored to the historical site.
-        let icon_offset = if image.is_some() {
-            ((height + icon_size) * 0.5 + 4.0) * city_blend(zoom)
-        } else {
-            0.0
-        };
-        let icon = egui::Rect::from_center_size(
-            anchor - egui::vec2(0.0, icon_offset),
-            egui::vec2(icon_size, icon_size),
-        );
+        let icon = egui::Rect::from_center_size(anchor, egui::vec2(icon_size, icon_size));
         markers.push(WonderMarker {
             index,
             icon,
@@ -2479,46 +2584,49 @@ fn paint_wonders(
         let Some(state) = wonder_state(economy, marker.index) else {
             continue;
         };
-        let blend = if marker.image.is_some() {
-            city_blend(zoom)
-        } else {
-            0.0
-        };
-        paint_marker_icon(painter, marker.icon, MarkerIcon::Wonder, egui::Color32::WHITE);
+        if !wonder_illustrated(zoom) || marker.image.is_none() {
+            paint_marker_icon(painter, marker.icon, MarkerIcon::Wonder, egui::Color32::WHITE);
+            continue;
+        }
         if let (Some(image), Some(texture)) = (marker.image, textures.get(marker.index)) {
-            if blend > 0.0 {
-                let tint = egui::Color32::from_white_alpha((blend * 255.0).round() as u8);
-                if let WonderState::Building(project) = state {
-                    let texture = wonder_construction_texture(painter.ctx(), marker.index);
-                    let fraction = (project.progress / project.required_progress.max(1.0))
-                        .clamp(0.0, 0.999) as f32;
-                    let frame = (clock * 2.0).floor().rem_euclid(4.0);
-                    let row = (frame / 2.0).floor();
-                    let column = frame.rem_euclid(2.0);
-                    let uv = egui::Rect::from_min_max(
-                        egui::pos2(column / 2.0, row / 2.0),
-                        egui::pos2((column + 1.0) / 2.0, (row + 1.0) / 2.0),
-                    );
-                    painter.image(texture.id(), image, uv, tint);
-                    let bar = egui::Rect::from_min_size(
-                        image.left_bottom(),
-                        egui::vec2(image.width(), 3.0),
-                    );
-                    painter.rect_filled(bar, 1.0, egui::Color32::from_rgb(83, 61, 38));
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * fraction, 3.0)),
-                        1.0,
-                        egui::Color32::from_rgb(205, 173, 91),
-                    );
-                } else {
-                    painter.image(texture.id(), image, wonder_art()[marker.index].uv, tint);
-                }
+            if let WonderState::Building = state {
+                let texture = wonder_construction_texture(painter.ctx(), marker.index);
+                let square =
+                    egui::Rect::from_center_size(image.center(), egui::Vec2::splat(image.height()));
+                painter.image(
+                    texture.id(),
+                    square,
+                    wonder_construction_uv(clock),
+                    egui::Color32::WHITE,
+                );
+            } else {
+                painter.image(
+                    texture.id(),
+                    image,
+                    wonder_art()[marker.index].uv,
+                    egui::Color32::WHITE,
+                );
             }
         }
     }
 }
 
-/// Load each canonical wonder's own four-frame worker animation only when needed.
+fn wonder_construction_uv(clock: f32) -> egui::Rect {
+    use super::wonder_frames::{COLUMNS, COUNT, ROWS, SIZE};
+    let frame = (clock * 8.0).floor().rem_euclid(COUNT as f32) as u32;
+    let (column, row) = (frame % COLUMNS, frame / COLUMNS);
+    // Half a texel prevents linear sampling from leaking into an adjacent pose.
+    let inset = 0.5 / SIZE as f32;
+    egui::Rect::from_min_max(
+        egui::pos2((column as f32 + inset) / COLUMNS as f32, (row as f32 + inset) / ROWS as f32),
+        egui::pos2(
+            (column as f32 + 1.0 - inset) / COLUMNS as f32,
+            (row as f32 + 1.0 - inset) / ROWS as f32,
+        ),
+    )
+}
+
+/// Load each canonical wonder's twelve-frame worker animation only when needed.
 fn wonder_construction_texture(ctx: &egui::Context, wonder: usize) -> egui::TextureHandle {
     let key = egui::Id::new(("wonder-construction-sheet", wonder));
     if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
@@ -2529,7 +2637,10 @@ fn wonder_construction_texture(ctx: &egui::Context, wonder: usize) -> egui::Text
         .to_rgba8();
     let texture = ctx.load_texture(
         format!("wonder construction {wonder}"),
-        egui::ColorImage::from_rgba_unmultiplied([512, 512], image.as_raw()),
+        egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        ),
         egui::TextureOptions::LINEAR,
     );
     ctx.data_mut(|d| d.insert_temp(key, texture.clone()));
@@ -2741,6 +2852,7 @@ fn update_wildlife(
     projection: &Projection,
     rect: egui::Rect,
     dt: f32,
+    allow_spawn: bool,
 ) {
     let dt = dt.clamp(0.0, 0.1);
     for sighting in &mut view.wildlife {
@@ -2749,6 +2861,9 @@ fn update_wildlife(
         sighting.position[1] += sighting.velocity[1] * dt;
     }
     view.wildlife.retain(|sighting| sighting.age < sighting.duration);
+    if !allow_spawn {
+        return;
+    }
     // Let each sighting finish before starting the next quiet interval.
     if !view.wildlife.is_empty() {
         return;
@@ -2802,7 +2917,7 @@ fn update_wildlife(
         velocity,
         age: 0.0,
         duration,
-        size,
+        map_size: size / projection.scale,
         rotation: 0.0,
         frame_offset: 0.0,
     });
@@ -2884,11 +2999,11 @@ fn spawn_birds(view: &mut MapView, projection: &Projection, rect: egui::Rect) {
             velocity,
             age: 0.0,
             duration: duration + (next_random(&mut view.wildlife_rng) - 0.5) * 0.7,
-            size: if texture == EAGLE_TEXTURE {
+            map_size: if texture == EAGLE_TEXTURE {
                 28.0
             } else {
                 23.0
-            },
+            } / projection.scale,
             rotation,
             frame_offset: next_random(&mut view.wildlife_rng) * 16.0,
         });
@@ -2917,8 +3032,8 @@ fn paint_wildlife(
             egui::pos2((column + 1) as f32 * 0.25, (row + 1) as f32 * 0.25),
         );
         let center = projection.point(sighting.position);
-        let image_rect =
-            egui::Rect::from_center_size(center, egui::vec2(sighting.size, sighting.size));
+        let size = sighting.map_size * projection.scale;
+        let image_rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
         if !image_rect.intersects(painter.clip_rect()) {
             continue;
         }
@@ -2931,7 +3046,7 @@ fn paint_wildlife(
         };
         let tint = egui::Color32::from_white_alpha((fade * 255.0) as u8);
         if is_bird_texture(sighting.texture) {
-            let half = sighting.size * 0.5;
+            let half = size * 0.5;
             let corners = [
                 egui::vec2(-half, -half),
                 egui::vec2(half, -half),
@@ -3291,3 +3406,7 @@ fn province_color(index: usize) -> egui::Color32 {
 #[cfg(test)]
 #[path = "../../tests/unit/map.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/map_labels.rs"]
+mod label_loading_tests;

@@ -52,7 +52,7 @@ pub struct BattlePlan {
     pub secondary_unit_type: UnitType,
     /// Preferred wing type.
     pub flank_unit_type: UnitType,
-    /// Reserved front slots per side, in 1..3.
+    /// Requested front slots on each wing: 1 through 5.
     pub flank_size: u8,
     /// Tactic for this force.
     pub tactic: CombatTactic,
@@ -71,9 +71,17 @@ impl Default for BattlePlan {
 }
 
 impl BattlePlan {
-    /// Clamp UI preferences while preserving at least two center slots.
+    /// Normalize a saved choice to the nearest supported wing size.
+    pub fn normalized_flank_size(&self) -> u8 {
+        [1_u8, 2, 3, 4, 5]
+            .into_iter()
+            .min_by_key(|&choice| (choice.abs_diff(self.flank_size), choice))
+            .unwrap()
+    }
+
+    /// Narrow terrain limits each wing to one third of frontage.
     pub fn effective_flank_size(&self, width: usize) -> usize {
-        usize::from(self.flank_size.clamp(1, 3)).min(width.saturating_sub(2) / 2)
+        usize::from(self.normalized_flank_size()).min(width / 3)
     }
 }
 
@@ -86,7 +94,7 @@ pub struct Formation {
     pub support: Vec<Option<UnitId>>,
     /// Uncommitted surviving units.
     pub reserves: Vec<UnitId>,
-    /// Slots reserved on each side for flanking.
+    /// Front slots on each wing.
     pub flank_size: usize,
 }
 
@@ -120,12 +128,8 @@ pub fn deploy_formation(
     routed: &BTreeSet<UnitId>,
     config: &MilitaryConfig,
 ) -> Formation {
-    let flank_size = plans
-        .values()
-        .map(|p| p.effective_flank_size(width))
-        .max()
-        .unwrap_or(1)
-        .min(width.saturating_sub(2) / 2);
+    let flank_size =
+        plans.values().map(|p| p.effective_flank_size(width)).max().unwrap_or(1).min(width / 3);
     let mut formation = Formation {
         front: vec![None; width],
         support: vec![None; width],
@@ -142,18 +146,18 @@ pub fn deploy_formation(
     let occupied_width = available.len().min(width);
     let left = width.saturating_sub(occupied_width) / 2;
     let right = left + occupied_width;
-    let occupied_flanks = flank_size.min(occupied_width.saturating_sub(2) / 2);
+    let occupied_flanks = flank_size.min(occupied_width / 3);
     // Wings receive their preferred mobile type before the center is populated.
     for slot in (left..left + occupied_flanks).chain(right.saturating_sub(occupied_flanks)..right) {
-        formation.front[slot] = take_best(&mut available, plans, true, false, config);
+        formation.front[slot] = take_best(&mut available, plans, true, false, false, config);
     }
     for slot in left + occupied_flanks..right.saturating_sub(occupied_flanks) {
-        formation.front[slot] = take_best(&mut available, plans, false, false, config);
+        formation.front[slot] = take_best(&mut available, plans, false, false, false, config);
     }
     let mut support_slots: Vec<_> = (0..width).collect();
     support_slots.sort_by_key(|&slot| (formation.front[slot].is_none(), slot));
     for slot in support_slots {
-        formation.support[slot] = take_best(&mut available, plans, false, true, config);
+        formation.support[slot] = take_best(&mut available, plans, false, true, false, config);
     }
     available.sort_by_key(|u| u.id);
     formation.reserves = available.iter().map(|u| u.id).collect();
@@ -191,12 +195,12 @@ pub fn refill_formation(
         if formation.front[slot].is_none() {
             let flank =
                 slot < formation.flank_size || slot >= width.saturating_sub(formation.flank_size);
-            formation.front[slot] = take_best(&mut available, plans, flank, false, config);
+            formation.front[slot] = take_best(&mut available, plans, flank, false, true, config);
         }
     }
     for slot in &mut formation.support {
         if slot.is_none() {
-            *slot = take_best(&mut available, plans, false, true, config);
+            *slot = take_best(&mut available, plans, false, true, true, config);
         }
     }
     available.sort_by_key(|u| u.id);
@@ -209,6 +213,7 @@ fn take_best(
     plans: &BTreeMap<ForceOwner, BattlePlan>,
     flank: bool,
     support: bool,
+    replacement: bool,
     config: &MilitaryConfig,
 ) -> Option<UnitId> {
     let score = |u: &Unit| {
@@ -221,6 +226,10 @@ fn take_best(
             } else {
                 1 + config.flank_priority.iter().position(|&k| k == u.unit_type).unwrap_or(11)
             }
+        } else if replacement && u.unit_type == plan.secondary_unit_type {
+            0
+        } else if replacement && u.unit_type == plan.primary_unit_type {
+            1
         } else if u.unit_type == plan.primary_unit_type {
             0
         } else if u.unit_type == plan.secondary_unit_type {

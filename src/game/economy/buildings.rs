@@ -246,6 +246,10 @@ pub struct BuildingProject {
     pub progress: f64,
     /// Total work requirement.
     pub required_progress: f64,
+    /// Upfront payment retained for refunding an order that has not started.
+    pub paid_stone: f64,
+    /// Upfront Metal payment; independent of later config or level changes.
+    pub paid_metal: f64,
 }
 
 /// Monument construction attached permanently to its canonical province.
@@ -259,6 +263,10 @@ pub struct WonderProject {
     pub required_progress: f64,
     /// Slaves retained in population/food accounting but excluded from production.
     pub assigned_slaves: f64,
+    /// Original Stone payment, refundable while the monument is waiting.
+    pub paid_stone: f64,
+    /// Original Metal payment, refundable while the monument is waiting.
+    pub paid_metal: f64,
 }
 
 /// Mutually exclusive construction slot contents.
@@ -302,6 +310,18 @@ impl ConstructionProject {
 }
 
 impl EconomicProvince {
+    /// Preserve paid orders after cancellation without skipping a building level.
+    fn resequence_construction(&mut self) {
+        let mut levels = self.buildings;
+        for project in self.construction.iter_mut().chain(self.construction_queue.iter_mut()) {
+            if let ConstructionProject::Building(project) = project {
+                let level = &mut levels[project.building as usize];
+                *level = level.saturating_add(1);
+                project.target_level = *level;
+            }
+        }
+    }
+
     /// Sum linear building effects for capacity, production, UI explanations, and storage.
     pub fn building_effects(&self, config: &EconomyConfig) -> BuildingEffects {
         let mut result = BuildingEffects::default();
@@ -355,8 +375,8 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can construct buildings".into());
         }
-        if p.construction.is_some() {
-            return Err("The province's construction slot is occupied".into());
+        if p.construction_queue_full() {
+            return Err("Construction queue is full (maximum 10 orders)".into());
         }
         let definition = self
             .config
@@ -367,22 +387,29 @@ impl EconomyWorld {
         if definition.requires_city && !p.has_city {
             return Err("This building requires a city".into());
         }
-        let current = p.level(building);
+        let current = p.planned_building_level(building);
         let target =
             current.checked_add(1).ok_or("Building level exceeds numeric representation")?;
         let quote = definition.quote(current);
         self.pay_construction(player, quote.stone, quote.metal)?;
-        self.provinces[province].construction =
-            Some(ConstructionProject::Building(BuildingProject {
-                building,
-                target_level: target,
-                progress: 0.0,
-                required_progress: quote.required_progress,
-            }));
+        let project = ConstructionProject::Building(BuildingProject {
+            building,
+            target_level: target,
+            progress: 0.0,
+            required_progress: quote.required_progress,
+            paid_stone: quote.stone,
+            paid_metal: quote.metal,
+        });
+        let p = &mut self.provinces[province];
+        if p.construction.is_none() {
+            p.construction = Some(project);
+        } else {
+            p.construction_queue.push_back(project);
+        }
         Ok(())
     }
 
-    /// Begin a canonical-site wonder, paying all costs without a cancellation refund.
+    /// Pay for a canonical-site wonder and place it in the shared construction queue.
     pub fn start_wonder(
         &mut self,
         player: usize,
@@ -393,8 +420,15 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can begin a wonder".into());
         }
-        if p.construction.is_some() {
-            return Err("The province's construction slot is occupied".into());
+        if p.construction_queue_full() {
+            return Err("Construction queue is full (maximum 10 orders)".into());
+        }
+        if p.construction
+            .iter()
+            .chain(p.construction_queue.iter())
+            .any(|project| matches!(project, ConstructionProject::Wonder(_)))
+        {
+            return Err("A wonder is already under construction or queued".into());
         }
         if p.completed_wonder.is_some() {
             return Err("Only one completed wonder is allowed per province".into());
@@ -410,12 +444,20 @@ impl EconomyWorld {
             .ok_or("Unknown canonical wonder")?
             .clone();
         self.pay_construction(player, definition.stone_cost, definition.metal_cost)?;
-        self.provinces[province].construction = Some(ConstructionProject::Wonder(WonderProject {
+        let project = ConstructionProject::Wonder(WonderProject {
             wonder_id: wonder,
             progress: 0.0,
             required_progress: definition.required_progress,
             assigned_slaves: 0.0,
-        }));
+            paid_stone: definition.stone_cost,
+            paid_metal: definition.metal_cost,
+        });
+        let p = &mut self.provinces[province];
+        if p.construction.is_none() {
+            p.construction = Some(project);
+        } else {
+            p.construction_queue.push_back(project);
+        }
         Ok(())
     }
 
@@ -450,7 +492,38 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can cancel construction".into());
         }
-        p.construction = None;
+        if p.construction.take().is_none() {
+            return Err("No construction is in progress".into());
+        }
+        p.resequence_construction();
+        p.construction = p.construction_queue.pop_front();
+        Ok(())
+    }
+
+    /// Remove only the selected waiting building or wonder and return its original payment.
+    pub fn cancel_queued_construction(
+        &mut self,
+        player: usize,
+        province: usize,
+        index: usize,
+    ) -> Result<(), String> {
+        let p = self.provinces.get(province).ok_or("Unknown province")?;
+        if p.owner != Some(player) {
+            return Err("Only the direct owner can cancel construction".into());
+        }
+        if p.construction_queue.get(index).is_none() {
+            return Err("Unknown queued construction".into());
+        }
+        let wallet = self.players.get_mut(player).ok_or("Unknown player")?;
+        let p = &mut self.provinces[province];
+        let project = p.construction_queue.remove(index).ok_or("Unknown queued construction")?;
+        let (stone, metal) = match project {
+            ConstructionProject::Building(project) => (project.paid_stone, project.paid_metal),
+            ConstructionProject::Wonder(project) => (project.paid_stone, project.paid_metal),
+        };
+        wallet.resources[2] += stone;
+        wallet.resources[1] += metal;
+        p.resequence_construction();
         Ok(())
     }
 
@@ -514,6 +587,7 @@ impl EconomyWorld {
                     });
                 },
             }
+            state.construction = state.construction_queue.pop_front();
         }
     }
 }

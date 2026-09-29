@@ -176,6 +176,41 @@ pub(crate) fn map_hud_contains(screen: egui::Rect, pointer: egui::Pos2) -> bool 
             && local.y < MAP_RESOURCE_STRIP_HEIGHT)
 }
 
+/// Follow the flag's opaque face and lower hem, excluding the folded cloth below it.
+fn map_flag_contains(screen: egui::Rect, scale: f32, pointer: egui::Pos2) -> bool {
+    let local = (pointer - screen.min) / scale;
+    if !(0.0..MAP_STANDARD_WIDTH).contains(&local.x) || local.y < 0.0 {
+        return false;
+    }
+    // Invert the top segment of the mesh in paint_map_edge_frame.
+    let x = 7.0 + local.x / MAP_STANDARD_WIDTH * 213.0;
+    let y = 20.0 + local.y / map_standard_height(screen, scale) * 1664.0;
+    const HEM: [(f32, f32); 10] = [
+        (7.0, 277.0),
+        (20.0, 278.0),
+        (40.0, 280.0),
+        (70.0, 282.0),
+        (100.0, 283.0),
+        (140.0, 282.0),
+        (160.0, 277.0),
+        (180.0, 269.0),
+        (190.0, 261.0),
+        (220.0, 244.0),
+    ];
+    let edge = HEM.windows(2).find(|edge| x < edge[1].0).unwrap();
+    let bottom = edge[0].1 + (edge[1].1 - edge[0].1) * (x - edge[0].0) / (edge[1].0 - edge[0].0);
+    if y >= bottom {
+        return false;
+    }
+    static FLAG: std::sync::OnceLock<image::RgbaImage> = std::sync::OnceLock::new();
+    let flag = FLAG.get_or_init(|| {
+        image::load_from_memory(PLAYER_STANDARD_PNG)
+            .expect("player standard PNG must be valid")
+            .to_rgba8()
+    });
+    flag.get_pixel(x as u32, y as u32)[3] > 8
+}
+
 pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) -> bool {
     let screen = ctx.content_rect();
     let rail_height = map_standard_height(screen, scale) - MAP_STANDARD_FLAG_HEIGHT;
@@ -205,10 +240,31 @@ pub(in crate::app) fn draw_map_menu_hitboxes(ctx: &egui::Context, scale: f32) ->
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Main province")
                     });
-                    banner_clicked = response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Open your main province")
-                        .clicked();
+                    let on_flag = ui.input(|input| {
+                        input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pointer| map_flag_contains(screen, scale, pointer))
+                    });
+                    let response = response.on_hover_cursor(if on_flag {
+                        egui::CursorIcon::PointingHand
+                    } else {
+                        egui::CursorIcon::Default
+                    });
+                    let press_id = response.id.with("pressed_on_flag");
+                    // egui clears press_origin on release, so retain it while held.
+                    if response.is_pointer_button_down_on() {
+                        let started_on_flag = ui.input(|input| {
+                            input
+                                .pointer
+                                .press_origin()
+                                .is_some_and(|pointer| map_flag_contains(screen, scale, pointer))
+                        });
+                        ui.ctx().data_mut(|data| data.insert_temp(press_id, started_on_flag));
+                    }
+                    banner_clicked = response.clicked()
+                        && on_flag
+                        && ui.ctx().data(|data| data.get_temp::<bool>(press_id).unwrap_or(false));
                 } else {
                     response.on_hover_cursor(egui::CursorIcon::Default);
                 }

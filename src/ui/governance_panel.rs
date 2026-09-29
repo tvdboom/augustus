@@ -345,25 +345,6 @@ pub(in crate::app) fn show(
                     changed |= edict_row(
                         list,
                         scale,
-                        "noble_taxes",
-                        "Noble Taxes",
-                        &mut governance.noble_taxes,
-                        effect_icons,
-                        header_color,
-                        [
-                            &["Noble tax: 0.5 sestertius per noble", "Nobles: +1 happiness"],
-                            &["Noble tax: 1 sestertius per noble", "Nobles: +0 happiness"],
-                            &["Noble tax: 1.5 sestertii per noble", "Nobles: -1 happiness"],
-                        ],
-                        [
-                            [badge(SESTERTIUS, "0.5"), badge(HAPPINESS, "+1"), None, None],
-                            [badge(SESTERTIUS, "1.0"), badge(HAPPINESS, "0"), None, None],
-                            [badge(SESTERTIUS, "1.5"), badge(HAPPINESS, "-1"), None, None],
-                        ],
-                    );
-                    changed |= edict_row(
-                        list,
-                        scale,
                         "army_wages",
                         "Army Wages",
                         &mut governance.army_wages,
@@ -383,22 +364,6 @@ pub(in crate::app) fn show(
                 });
         });
     (changed, close_clicked)
-}
-
-fn hover_effects(response: egui::Response, scale: f32, effects: &[&str]) -> egui::Response {
-    if effects.is_empty() {
-        return response;
-    }
-    response.on_hover_ui(|ui| {
-        ui.set_max_width(310.0 * scale);
-        ui.spacing_mut().item_spacing.y = 3.0 * scale;
-        for effect in effects {
-            ui.add(
-                egui::Label::new(egui::RichText::new(format!("• {effect}")).size(12.5 * scale))
-                    .wrap(),
-            );
-        }
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,7 +436,7 @@ fn edict_row(
             scale,
         );
         changed |= choice_changed;
-        hover_effects(response, scale, descriptions[index]);
+        policy_widgets::hover_effects(response, scale, descriptions[index]);
     }
     changed
 }

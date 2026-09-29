@@ -13,7 +13,7 @@ use bevy_kira_audio::prelude::{Audio, AudioControl};
 
 const TOAST_SECONDS: f32 = 5.0;
 const MAX_TOASTS: usize = 7;
-const HAPPINESS_LIMITS: [f64; 4] = [40.0, 30.0, 20.0, 10.0];
+use crate::game::economy::UNHAPPINESS_THRESHOLDS;
 const FORECAST_MONTHS: f64 = 3.0;
 const LOW_FOOD: f64 = 10.0;
 const LOW_COIN: f64 = 25.0;
@@ -198,7 +198,7 @@ fn almost_empty(stock: HudResource, low_stock: f64) -> bool {
 fn warning_conditions(resources: [HudResource; 7], happiness: [HudResource; 4]) -> [bool; 6] {
     let mut warnings = [false; 6];
     for class in 0..4 {
-        warnings[class] = happiness[class].amount < HAPPINESS_LIMITS[class];
+        warnings[class] = happiness[class].amount < UNHAPPINESS_THRESHOLDS[class];
     }
     warnings[4] = almost_empty(resources[0], LOW_FOOD);
     warnings[5] = almost_empty(resources[3], LOW_COIN);

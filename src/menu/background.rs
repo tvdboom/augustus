@@ -345,7 +345,7 @@ pub(in crate::app) fn advance_loading_wallpaper(
             sequence.slide_index = sequence.incoming_index;
             sequence.fade_progress = None;
         }
-    } else if sequence.slide_elapsed >= 5.0 && wallpapers.0.len() > 1 {
+    } else if sequence.slide_elapsed >= 3.0 && wallpapers.0.len() > 1 {
         sequence.incoming_index = (sequence.slide_index + 1) % wallpapers.0.len();
         for (layer, mut sprite, mut transform) in &mut backgrounds {
             if layer.0 == sequence.active_layer {

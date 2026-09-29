@@ -1,13 +1,15 @@
 //! National route ledger, agreement composer, and immediate open market.
 
 use super::campaign::Campaign;
-use super::campaign_widgets::{icon, paint_icon, Icon};
+use super::campaign_widgets::{
+    icon, paint_icon, portrait, sestertius_unit, Icon, ProvinceLandscape,
+};
 use super::province_panel::{INK, PAPER, RULE, TABLE_STRIPE};
 use crate::game::economy::*;
 use bevy_egui::egui;
 
 const SYMBOLS: [Icon; 5] = [Icon::Food, Icon::Metal, Icon::Stone, Icon::Coin, Icon::Influence];
-const NAMES: [&str; 5] = ["Food", "Metal", "Stone", "Coin", "Influence"];
+const NAMES: [&str; 5] = ["Food", "Metal", "Stone", "Sestertius", "Influence"];
 
 #[cfg(test)]
 #[path = "../../tests/unit/province_trade_ui.rs"]
@@ -218,15 +220,19 @@ pub(in crate::app) fn show_province(
     }
     let partner = selected.owner.map_or(TradeParty::Npc(province), TradeParty::Player);
     let key = egui::Id::new(("province-trade-view", player, province));
-    let mut view =
-        ui.ctx().data_mut(|data| data.get_temp::<TradeView>(key)).unwrap_or_else(|| TradeView {
-            page: 1,
-            ..Default::default()
-        });
+    let mut view = ui.ctx().data_mut(|data| data.get_temp::<TradeView>(key)).unwrap_or_default();
     view.partner = Some(partner);
-    ui.label(format!("Trading with {}", selected.name));
-    let result =
-        ui.push_id(key, |ui| page(ui, campaign, player, scale, &mut view, Some(partner))).inner;
+    let result = ui
+        .push_id(key, |ui| {
+            portrait(ui, ProvinceLandscape::Trade, 76.0 * scale);
+            ui.add_space(8.0 * scale);
+            let route_message = routes(ui, campaign, player, scale, Some(partner), true);
+            ui.add_space(8.0 * scale);
+            let agreement_message =
+                composer(ui, campaign, player, scale, &mut view, Some(partner), "NEW AGREEMENT");
+            agreement_message.or(route_message)
+        })
+        .inner;
     ui.ctx().data_mut(|data| data.insert_temp(key, view));
     result
 }
@@ -287,9 +293,9 @@ fn page(
     });
     ui.add_space(7.0 * scale);
     match view.page {
-        1 => composer(ui, campaign, player, scale, view, partner),
+        1 => composer(ui, campaign, player, scale, view, partner, "NEW TRADE AGREEMENT"),
         2 if partner.is_none() => market(ui, campaign, player, scale, view),
-        _ => routes(ui, campaign, player, scale, partner),
+        _ => routes(ui, campaign, player, scale, partner, false),
     }
 }
 
@@ -299,6 +305,7 @@ fn routes(
     player: usize,
     scale: f32,
     partner: Option<TradeParty>,
+    provincial: bool,
 ) -> Option<String> {
     let trades: Vec<_> = campaign
         .economy
@@ -314,10 +321,22 @@ fn routes(
         .iter()
         .filter(|t| matches!(t.status, TradeStatus::Active | TradeStatus::Suspended))
         .collect();
-    section(ui, &format!("OPEN ROUTES · {}", active.len()), scale);
+    let heading = if provincial {
+        "OPEN ROUTES".to_owned()
+    } else {
+        format!("OPEN ROUTES · {}", active.len())
+    };
+    section(ui, &heading, scale);
     let mut result = None;
     if active.is_empty() {
-        ui.label("No open routes. Create an agreement to start trading.");
+        if provincial {
+            ui.horizontal(|ui| {
+                ui.add_space(6.0 * scale);
+                ui.label("No open route with this province.");
+            });
+        } else {
+            ui.label("No open routes. Create an agreement to start trading.");
+        }
     }
     for trade in active {
         ui.push_id(trade.id, |ui| {
@@ -352,7 +371,7 @@ fn routes(
         });
     }
     let pending: Vec<_> = trades.iter().filter(|t| t.status == TradeStatus::Proposed).collect();
-    if !pending.is_empty() {
+    if !pending.is_empty() && !provincial {
         section(ui, "PENDING OFFERS", scale);
     }
     for trade in pending {
@@ -360,7 +379,7 @@ fn routes(
             ui.horizontal(|ui| {
                 let partner = if trade.party_a == TradeParty::Player(player) { trade.party_b } else { trade.party_a };
                 let available = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
-                ui.add_sized([available, 30.0 * scale], egui::Label::new(format!("#{} · {} · {:?}", trade.id, party_name(&campaign.economy, partner), trade.frequency)).truncate());
+                ui.add_sized([available, 30.0 * scale], egui::Label::new(format!("{}#{} · {} · {:?}", if provincial { "Pending offer " } else { "" }, trade.id, party_name(&campaign.economy, partner), trade.frequency)).truncate());
                 let invited = trade.party_b == TradeParty::Player(player);
                 let quote = quote(&campaign.economy, trade, &campaign.inputs());
                 let tip = quote.as_ref().err().map(String::as_str).unwrap_or(if invited { "Accept this offer. One-time goods exchange immediately; monthly delivery starts next month." } else { "Waiting for the other player's acceptance." });
@@ -383,8 +402,9 @@ fn composer(
     scale: f32,
     view: &mut TradeView,
     fixed_partner: Option<TradeParty>,
+    heading: &str,
 ) -> Option<String> {
-    section(ui, "NEW TRADE AGREEMENT", scale);
+    section(ui, heading, scale);
     let mut parties: Vec<_> = (0..campaign.economy.players.len())
         .filter(|&id| id != player)
         .map(TradeParty::Player)
@@ -436,7 +456,11 @@ fn composer(
             let p = &campaign.economy.provinces[id];
             ui.small(format!("Relation {:.0}", p.relation_by_player[player]));
             if campaign.administers_province(player, id) {
-                ui.small(format!("Local Coin {:.1}", p.market.coin_treasury));
+                ui.small(format!(
+                    "Local treasury: {:.1} {}",
+                    p.market.coin_treasury,
+                    sestertius_unit(p.market.coin_treasury)
+                ));
             }
             for (resource, symbol) in SYMBOLS.iter().copied().enumerate().take(3) {
                 let m = p.market.resources[resource];
@@ -445,10 +469,11 @@ fn composer(
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!(
-                                "Offers {:.1} exports / seeks {:.1} imports · {:.2} Coin/unit",
+                                "Offers {:.1} exports / seeks {:.1} imports · {:.2} {}/unit",
                                 (m.export_capacity - m.exported).max(0.0),
                                 (m.import_demand - m.imported).max(0.0),
-                                m.local_unit_value
+                                m.local_unit_value,
+                                sestertius_unit(m.local_unit_value)
                             ))
                             .small(),
                         )
@@ -592,8 +617,11 @@ fn market(
         });
         let wallet = &campaign.economy.players[player];
         ui.small(format!(
-            "Stock {:.1} / {:.1} · Coin {:.1}",
-            wallet.resources[view.resource], wallet.storage[view.resource], wallet.coin
+            "Stock {:.1} / {:.1} · Treasury {:.1} {}",
+            wallet.resources[view.resource],
+            wallet.storage[view.resource],
+            wallet.coin,
+            sestertius_unit(wallet.coin)
         ));
         let quote = campaign.economy.quote_open_market(
             player,
@@ -603,35 +631,22 @@ fn market(
         );
         match &quote {
             Ok(q) => {
-                ui.small(format!("{:.3} Coin per unit · {:.1} Coin total", q.unit_price, q.coin));
-                let half = campaign.economy.quote_open_market(
-                    player,
-                    view.resource,
-                    view.market_side,
-                    view.quantity * 0.5,
-                );
-                if let Ok(half) = half {
-                    let benefit = if view.market_side == MarketSide::Buy {
-                        q.coin - 2.0 * half.coin
+                ui.small(format!(
+                    "{:.3} {} per unit · {:.1} {} total",
+                    q.unit_price,
+                    sestertius_unit(q.unit_price),
+                    q.coin,
+                    sestertius_unit(q.coin)
+                ));
+                ui.small(format!(
+                    "Prices include {:.1} units already {} this month.",
+                    q.prior_volume,
+                    if view.market_side == MarketSide::Buy {
+                        "bought"
                     } else {
-                        2.0 * half.coin - q.coin
-                    };
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!(
-                                "Two half-size exchanges {} {:.1} Coin.",
-                                if view.market_side == MarketSide::Buy {
-                                    "save"
-                                } else {
-                                    "earn an extra"
-                                },
-                                benefit
-                            ))
-                            .small(),
-                        )
-                        .wrap(),
-                    );
-                }
+                        "sold"
+                    }
+                ));
             },
             Err(reason) => {
                 ui.add(egui::Label::new(egui::RichText::new(reason).small()).wrap());
@@ -653,7 +668,7 @@ fn market(
                     Ok(q) => {
                         campaign.pull_wallets();
                         format!(
-                            "{} {:.1} {} for {:.1} Coin.",
+                            "{} {:.1} {} for {:.1} {}.",
                             if view.market_side == MarketSide::Buy {
                                 "Bought"
                             } else {
@@ -661,7 +676,8 @@ fn market(
                             },
                             q.quantity,
                             NAMES[view.resource],
-                            q.coin
+                            q.coin,
+                            sestertius_unit(q.coin)
                         )
                     },
                     Err(reason) => reason,

@@ -4,16 +4,20 @@ use super::{
     format_hud_delta, format_hud_number, hud_resource_positions, HudResource,
     HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT, POP_CLASS_NAMES,
 };
+use crate::game::economy::UNHAPPINESS_THRESHOLDS;
 use bevy_egui::egui;
 
 const WIDTH: f32 = 350.0;
 const HEADER_HEIGHT: f32 = 78.0;
 const SUMMARY_HEIGHT: f32 = 42.0;
-const ROW_HEIGHT: f32 = 38.0;
+const ROW_HEIGHT: f32 = 46.0;
+
+const LOW_EFFECTS: [&str; 4] =
+    ["less Influence", "less Citizen tax", "less resource output", "less resources · revolt at 5%"];
 
 fn happiness_color(value: f64) -> egui::Color32 {
     if value < 50.0 {
-        egui::Color32::from_rgb(170, 53, 45)
+        egui::Color32::from_rgb(51, 46, 39)
     } else if value > 50.0 {
         egui::Color32::from_rgb(42, 125, 63)
     } else {
@@ -156,16 +160,26 @@ fn paint(
                 );
                 painter.image(
                     class_icons[class].id(),
-                    egui::Rect::from_min_size(p(19.0, y + 5.0), egui::vec2(28.0, 28.0) * scale),
+                    egui::Rect::from_min_size(p(19.0, y + 9.0), egui::vec2(28.0, 28.0) * scale),
                     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,
                 );
                 painter.text(
-                    p(56.0, y + ROW_HEIGHT / 2.0),
+                    p(56.0, y + 15.0),
                     egui::Align2::LEFT_CENTER,
-                    POP_CLASS_NAMES[class],
+                    format!(
+                        "{} · below {:.0}%",
+                        POP_CLASS_NAMES[class], UNHAPPINESS_THRESHOLDS[class]
+                    ),
                     egui::FontId::proportional(13.0 * scale),
                     ink,
+                );
+                painter.text(
+                    p(56.0, y + 33.0),
+                    egui::Align2::LEFT_CENTER,
+                    LOW_EFFECTS[class],
+                    egui::FontId::proportional(10.0 * scale),
+                    muted,
                 );
                 painter.text(
                     p(WIDTH - 20.0, y + ROW_HEIGHT / 2.0),
@@ -176,7 +190,11 @@ fn paint(
                         format_hud_delta(value.monthly_delta)
                     ),
                     egui::FontId::proportional(12.0 * scale),
-                    happiness_color(value.amount),
+                    if value.amount < UNHAPPINESS_THRESHOLDS[class] {
+                        egui::Color32::from_rgb(170, 53, 45)
+                    } else {
+                        happiness_color(value.amount)
+                    },
                 );
             }
         });

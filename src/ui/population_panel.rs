@@ -224,10 +224,6 @@ fn paint(
                 } else if class % 2 == 0 {
                     painter.rect_filled(row, 0.0, egui::Color32::from_rgb(244, 239, 225));
                 }
-                painter.line_segment(
-                    [row.left_bottom(), row.right_bottom()],
-                    egui::Stroke::new(0.6 * scale, rule),
-                );
                 painter.image(
                     class_icons[class].id(),
                     egui::Rect::from_min_size(p(19.0, y + 5.0), egui::vec2(28.0, 28.0) * scale),
@@ -293,10 +289,6 @@ fn paint(
                                     egui::Color32::from_rgb(244, 239, 225),
                                 );
                             }
-                            row_painter.line_segment(
-                                [row.left_bottom(), row.right_bottom()],
-                                egui::Stroke::new(0.6 * scale, rule),
-                            );
                             row_painter.text(
                                 row.left_center() + egui::vec2(5.0 * scale, 0.0),
                                 egui::Align2::LEFT_CENTER,

@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) fn handle_escape(
+    mut contexts: Query<&mut bevy_egui::EguiContext, With<bevy_egui::PrimaryEguiContext>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
@@ -10,6 +11,20 @@ pub(super) fn handle_escape(
     mut panels: MapPanelParams,
 ) {
     if !keyboard.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if panels.campaign_ui.dismiss_confirmation() {
+        return;
+    }
+    if *state.get() == AppState::Map
+        && contexts
+            .single_mut()
+            .is_ok_and(|mut context| campaign_military::dismiss_army_panel(context.get_mut()))
+    {
+        panels.campaign_ui.open = None;
+        panels.campaign_ui.close_province_selector();
+        panels.province.0 = None;
+        panels.governance.0 = false;
         return;
     }
     if panels.campaign_ui.close_province_selector() {
@@ -60,7 +75,15 @@ pub(super) fn handle_game_shortcuts(
     mut paused: ResMut<GamePaused>,
     mut clock: ResMut<GameClock>,
     mut next: ResMut<NextState<AppState>>,
+    campaign_ui: Res<campaign_panel::CampaignUi>,
+    practice: Res<LocalPractice>,
+    mut campaign: ResMut<campaign::Campaign>,
+    mut resources: ResMut<HudResources>,
+    mut ownership: ResMut<ProvinceOwnership>,
 ) {
+    if campaign_ui.confirmation_open() {
+        return;
+    }
     if contexts.ctx_mut().is_ok_and(|ctx| ctx.egui_wants_keyboard_input()) {
         return;
     }
@@ -69,6 +92,13 @@ pub(super) fn handle_game_shortcuts(
     {
         next.set(game.screen());
         return;
+    }
+    if matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
+        && keyboard.just_pressed(KeyCode::ArrowUp)
+        && (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
+        && (keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight))
+    {
+        apply_practice_boost(practice.active_player, &mut campaign, &mut resources, &mut ownership);
     }
     if matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
         && (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
@@ -95,6 +125,45 @@ pub(super) fn handle_game_shortcuts(
         AppState::Map | AppState::EmptyScreen => paused.0 = !paused.0,
         AppState::GameMenu => next.set(game.screen()),
         _ => {},
+    }
+}
+
+pub(super) fn apply_practice_boost(
+    player: usize,
+    campaign: &mut campaign::Campaign,
+    resources: &mut HudResources,
+    ownership: &mut ProvinceOwnership,
+) {
+    if campaign.active {
+        let Some(wallet) = campaign.economy.players.get_mut(player) else {
+            return;
+        };
+        for index in 0..3 {
+            wallet.resources[index] += 5_000.0;
+            wallet.storage[index] += 5_000.0;
+            wallet.practice_storage_bonus[index] += 5_000.0;
+        }
+        wallet.coin += 5_000.0;
+        wallet.influence += 1_000.0;
+        for province in &mut campaign.economy.provinces {
+            if province.owner == Some(player) {
+                for population in &mut province.population {
+                    *population *= 10.0;
+                }
+            }
+        }
+        campaign.pull_wallets();
+    } else {
+        let Some(balances) = resources.players.get_mut(player) else {
+            return;
+        };
+        for balance in &mut balances[..4] {
+            balance.amount += 5_000.0;
+        }
+        balances[4].amount += 1_000.0;
+        ownership.multiply_owned_population(player, 10.0);
+        balances[5].amount = ownership.total_population_for(player);
+        resources.refresh_player_rates(player, ownership);
     }
 }
 

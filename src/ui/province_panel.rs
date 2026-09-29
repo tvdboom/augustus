@@ -200,6 +200,7 @@ pub(in crate::app) fn show(
     egui::Area::new(egui::Id::new("augustus_province_panel"))
         .fixed_pos(rect.min)
         .order(egui::Order::Foreground)
+        .sense(egui::Sense::hover())
         .show(context, |ui| {
             let (panel, _) = ui.allocate_exact_size(rect.size(), egui::Sense::hover());
             let painter = ui.painter_at(panel);

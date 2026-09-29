@@ -384,6 +384,33 @@ fn city_markers_target_their_provinces() {
         assert!(city_name_for_province(city.province).is_some());
         assert!(atlas.provinces.iter().any(|province| province.name == city.province));
     }
+    let rome = &CITIES[0];
+    let latium = atlas.provinces.iter().find(|p| p.name == rome.province).unwrap();
+    assert!(latium.contains(rome.position), "Rome must be anchored inside Latium");
+}
+
+#[test]
+fn city_artwork_keeps_the_same_map_footprint_through_its_fade() {
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0));
+    for city in &CITIES {
+        let mut previous: Option<f32> = None;
+        for zoom in [CITY_BLEND_START, 1.7, CITY_BLEND_END, 4.0, MAX_ZOOM] {
+            let projection = Projection {
+                origin: rect.center(),
+                scale: 14.7 * zoom,
+                center: city.position,
+            };
+            let marker = layout_cities(&projection, rect, zoom)
+                .into_iter()
+                .find(|marker| CITIES[marker.city_index].province == city.province)
+                .unwrap();
+            let footprint = marker.image.width() / projection.scale;
+            if let Some(previous) = previous {
+                assert!((footprint - previous).abs() < 0.001, "{} changed map size", city.province);
+            }
+            previous = Some(footprint);
+        }
+    }
 }
 
 #[test]
@@ -545,7 +572,7 @@ fn province_sources_reconcile_with_all_resource_deltas() {
 }
 
 #[test]
-fn coin_taxes_use_owned_population_and_reconcile_with_monthly_delta() {
+fn taxes_use_only_owned_citizens_and_plebeians_and_reconcile_with_monthly_delta() {
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
     let aegyptus =
@@ -560,7 +587,7 @@ fn coin_taxes_use_owned_population_and_reconcile_with_monthly_delta() {
     };
 
     let opening_taxes = ownership.coin_taxes_for(0);
-    assert_eq!(opening_taxes, 38.0);
+    assert_eq!(opening_taxes, 35.0);
     assert_eq!(ownership.coin_delta_for(0), opening_taxes);
     assert_eq!(ownership.influence_delta_for(0), 3.0);
     assert_eq!(ownership.coin_taxes_for(1), 0.0);
@@ -590,7 +617,7 @@ fn governance_edicts_change_only_the_owning_players_monthly_rates() {
     let baseline_output = ownership.output_for(province);
     assert_eq!(baseline_output[0], 150.0);
     assert_eq!(ownership.net_production_for(0)[0], 100.0);
-    assert_eq!(ownership.coin_taxes_for(0), 50.0);
+    assert_eq!(ownership.coin_taxes_for(0), 40.0);
     assert_eq!(ownership.influence_delta_for(0), 10.0);
 
     let mut edicts = Governance {
@@ -617,17 +644,10 @@ fn governance_edicts_change_only_the_owning_players_monthly_rates() {
     ownership.set_governance_for(0, edicts);
     assert_eq!(ownership.output_for(province)[0], 195.0);
 
-    edicts.noble_taxes = EdictLevel::Low;
-    ownership.set_governance_for(0, edicts);
-    assert_eq!(ownership.coin_taxes_for(0), 45.0);
-    edicts.noble_taxes = EdictLevel::High;
-    ownership.set_governance_for(0, edicts);
-    assert_eq!(ownership.coin_taxes_for(0), 55.0);
-
     edicts.army_wages = EdictLevel::High;
     ownership.set_governance_for(0, edicts);
     assert_eq!(ownership.military_wages_for(0), 0.0);
-    assert_eq!(ownership.coin_delta_for(0), 55.0);
+    assert_eq!(ownership.coin_delta_for(0), 40.0);
 }
 
 #[test]
@@ -806,6 +826,33 @@ fn achaia_keeps_its_anchor_across_zoom_levels() {
 }
 
 #[test]
+fn latium_and_umbria_prefer_centered_horizontal_names() {
+    let context = egui::Context::default();
+    context.begin_pass(Default::default());
+    let painter = context.layer_painter(egui::LayerId::background());
+    for name in ["Latium", "Umbria"] {
+        let province = atlas().provinces.iter().find(|province| province.name == name).unwrap();
+        let projection = Projection {
+            origin: egui::Pos2::ZERO,
+            scale: 18. * MAX_ZOOM,
+            center: province.visual_center,
+        };
+        let candidates = label_candidates(&painter, province, &projection, MAX_ZOOM);
+        let anchor = candidates.first().expect("province name must fit");
+        assert_eq!(anchor.angle, 0., "{name} must prefer horizontal text");
+        assert_eq!(anchor.center, province.visual_center, "{name} must stay centered");
+        assert!(anchor.full_name);
+        let label =
+            rotated_bounds(projection.point(anchor.center), egui::vec2(60., 18.), anchor.angle);
+        let viewport = egui::Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(1000., 800.));
+        let badge = resource_badge_below(label, egui::vec2(65., 20.), viewport).unwrap();
+        assert_eq!(badge.center().x, label.center().x, "resources must center beneath {name}");
+    }
+    let mut output = context.end_pass();
+    output.textures_delta.clear();
+}
+
+#[test]
 fn tarraconensis_has_readable_placements_away_from_its_marker() {
     let province =
         atlas().provinces.iter().find(|province| province.name == "Tarraconensis").unwrap();
@@ -958,9 +1005,7 @@ fn every_wonder_has_illustration_at_close_zoom() {
                 .unwrap_or_else(|| panic!("{} needs its illustration at zoom {zoom}", wonder.name));
             let site = projection.point(wonder.position);
             assert!(image.center().distance(site) < 0.001, "{} art moved", wonder.name);
-            assert_eq!(marker.icon.center().x, site.x);
-            assert!(marker.icon.bottom() < image.top(), "{} icon overlaps its art", wonder.name);
-            assert!(marker.bounds(zoom).contains_rect(marker.icon));
+            assert_eq!(marker.icon.center(), site);
             assert!(marker.bounds(zoom).contains_rect(image));
             assert!(
                 (image.height() / zoom - 18.0).abs() < 0.001,
@@ -986,7 +1031,7 @@ fn wonders_do_not_share_city_sites() {
 }
 
 #[test]
-fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_completed_art() {
+fn wonders_show_only_an_icon_or_artwork_without_map_progress_bars() {
     use crate::game::economy::{
         ConstructionProject, EconomicProvince, EconomyWorld, Terrain, WonderProject,
     };
@@ -1015,8 +1060,13 @@ fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_com
                     progress: 12.0,
                     required_progress: 36.0,
                     assigned_slaves: 0.0,
+                    paid_stone: 0.0,
+                    paid_metal: 0.0,
                 }));
-            for zoom in [MIN_ZOOM, CITY_BLEND_END, MAX_ZOOM] {
+            let switch = (CITY_BLEND_START + CITY_BLEND_END) * 0.5;
+            for zoom in
+                [MIN_ZOOM, CITY_BLEND_START, switch - 0.01, switch, CITY_BLEND_END, MAX_ZOOM]
+            {
                 let projection = Projection {
                     origin: rect.center(),
                     scale: 14.7 * zoom,
@@ -1030,7 +1080,8 @@ fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_com
                     },
                     |ui| paint_wonders(ui.painter(), &markers, zoom, &textures, Some(&world), 1.5),
                 );
-                let expected_texture = if state == 1 && zoom > MIN_ZOOM {
+                let illustrated = zoom >= switch;
+                let expected_texture = if state == 1 && illustrated {
                     wonder_construction_texture(&ctx, index).id()
                 } else {
                     textures[index].id()
@@ -1047,7 +1098,7 @@ fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_com
                     .collect();
                 assert_eq!(
                     artwork.len(),
-                    usize::from(state != 0 && zoom > MIN_ZOOM),
+                    usize::from(state != 0 && illustrated),
                     "{} art missing in construction state {state} at zoom {zoom}",
                     wonder.name
                 );
@@ -1060,7 +1111,7 @@ fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_com
                 }).count();
                 assert_eq!(
                     icons,
-                    if state == 0 {
+                    if state == 0 || illustrated {
                         0
                     } else {
                         3
@@ -1068,6 +1119,18 @@ fn wonders_are_hidden_until_started_and_keep_their_icon_with_construction_or_com
                     "{} icon visibility in construction state {state} at zoom {zoom}",
                     wonder.name
                 );
+                assert!(
+                    output.shapes.iter().all(|shape| !matches!(shape.shape, egui::Shape::Rect(_))),
+                    "{} must never show a map progress bar",
+                    wonder.name
+                );
+                if state != 0 && illustrated {
+                    assert_eq!(
+                        output.shapes.len(),
+                        1,
+                        "close view must contain only the wonder artwork"
+                    );
+                }
                 if state == 0 {
                     assert!(output.shapes.is_empty(), "Unbuilt wonders must draw nothing");
                 }
@@ -1101,7 +1164,7 @@ fn every_canonical_wonder_has_one_province_and_no_province_has_multiple_wonders(
         assert!(province.wonder_sites.len() <= 1, "{} has multiple wonder sites", province.name);
     }
     for (province_name, wonder_name) in
-        [("Asia", "Colossus of Rhodes"), ("Achaia", "Temple of Zeus at Olympia")]
+        [("Asia", "Colossus of Rhodes"), ("Achaia", "Temple of Zeus")]
     {
         let province = seeds.iter().find(|p| p.name == province_name).unwrap();
         assert_eq!(province.wonder_sites.len(), 1);
@@ -1110,32 +1173,110 @@ fn every_canonical_wonder_has_one_province_and_no_province_has_multiple_wonders(
 }
 
 #[test]
-fn every_canonical_wonder_has_four_visible_transparent_construction_frames() {
-    for wonder in &WONDERS {
-        let completed = image::load_from_memory(wonder.png).expect("completed wonder art");
-        assert!(completed.width() > 0 && completed.height() > 0);
-        let sheet =
-            image::load_from_memory(wonder.construction).expect("construction art").to_rgba8();
-        assert_eq!(sheet.dimensions(), (512, 512), "{} runtime normalization", wonder.name);
-        assert!(sheet.pixels().any(|p| p[3] == 0), "{} needs transparent padding", wonder.name);
-        let frames: Vec<_> = (0..4)
+fn all_ten_wonders_have_twelve_animated_frames_with_pixel_identical_architecture() {
+    use super::super::wonder_frames::{
+        ACTIVITY_TOP, COLUMNS, COUNT, ROWS, SIZE, WORKER_CENTERS, WORKER_FEET, WORKER_HEIGHT,
+        WORKER_WIDTH,
+    };
+    let mut assets: Vec<(&str, &[u8])> = WONDERS.iter().map(|w| (w.name, w.construction)).collect();
+    assets.extend([
+        (
+            "Mausoleum",
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/wonders/construction/mausoleum_halicar.png"
+            ))
+            .as_slice(),
+        ),
+        (
+            "Oracle",
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/wonders/construction/oracle_dodona.png"
+            ))
+            .as_slice(),
+        ),
+        (
+            "Pergamon",
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/wonders/construction/pergamon_acropolis.png"
+            ))
+            .as_slice(),
+        ),
+    ]);
+    assert_eq!(assets.len(), 10);
+    assert!(COUNT >= 12);
+    for (name, bytes) in assets {
+        let sheet = image::load_from_memory(bytes).expect("construction art").to_rgba8();
+        assert_eq!(sheet.dimensions(), (COLUMNS * SIZE, ROWS * SIZE), "{name} runtime geometry");
+        let frames: Vec<_> = (0..COUNT)
             .map(|frame| {
-                image::imageops::crop_imm(&sheet, (frame % 2) * 256, (frame / 2) * 256, 256, 256)
-                    .to_image()
+                image::imageops::crop_imm(
+                    &sheet,
+                    (frame % COLUMNS) * SIZE,
+                    (frame / COLUMNS) * SIZE,
+                    SIZE,
+                    SIZE,
+                )
+                .to_image()
             })
             .collect();
-        for frame in &frames {
+        let architecture =
+            image::imageops::crop_imm(&frames[0], 0, 0, SIZE, ACTIVITY_TOP).to_image();
+        let mut activities = std::collections::HashSet::new();
+        for (index, frame) in frames.iter().enumerate() {
             assert!(
                 frame.pixels().filter(|p| p[3] > 64).count() > 1000,
-                "{} has an empty frame",
-                wonder.name
+                "{name} has an empty frame"
+            );
+            assert_eq!(
+                image::imageops::crop_imm(frame, 0, 0, SIZE, ACTIVITY_TOP).to_image(),
+                architecture,
+                "{name} architecture moved or resized in frame {index}"
+            );
+            for (x, y, pixel) in frame.enumerate_pixels() {
+                let foreground = WORKER_CENTERS.iter().zip(WORKER_FEET).any(|(&center, feet)| {
+                    x >= center - WORKER_WIDTH / 2
+                        && x <= center + WORKER_WIDTH / 2
+                        && y >= feet - WORKER_HEIGHT
+                        && y < feet
+                });
+                if !foreground {
+                    assert_eq!(
+                        pixel,
+                        &frames[0][(x, y)],
+                        "{name} changed outside the worker area at {x},{y}"
+                    );
+                }
+            }
+            activities.insert(
+                image::imageops::crop_imm(frame, 0, ACTIVITY_TOP, SIZE, SIZE - ACTIVITY_TOP)
+                    .to_image()
+                    .into_raw(),
+            );
+            assert!(
+                (0..SIZE).all(|i| frame[(i, 0)][3] == 0
+                    && frame[(i, SIZE - 1)][3] == 0
+                    && frame[(0, i)][3] == 0
+                    && frame[(SIZE - 1, i)][3] == 0),
+                "{name} frame {index} is clipped at its edge"
             );
         }
-        assert!(
-            frames.windows(2).any(|pair| pair[0] != pair[1]),
-            "{} requires actual animation",
-            wonder.name
-        );
+        assert_eq!(activities.len(), COUNT as usize, "{name} needs twelve distinct activity poses");
+    }
+}
+
+#[test]
+fn construction_animation_visits_all_twelve_cells_and_loops_without_bleeding() {
+    use super::super::wonder_frames::{COLUMNS, COUNT, ROWS};
+    for frame in 0..COUNT {
+        let uv = wonder_construction_uv(frame as f32 / 8.0);
+        let x = (frame % COLUMNS) as f32 / COLUMNS as f32;
+        let y = (frame / COLUMNS) as f32 / ROWS as f32;
+        assert!(uv.left() > x && uv.right() < x + 1.0 / COLUMNS as f32);
+        assert!(uv.top() > y && uv.bottom() < y + 1.0 / ROWS as f32);
+        assert_eq!(uv, wonder_construction_uv((frame + COUNT) as f32 / 8.0));
     }
 }
 

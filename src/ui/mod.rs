@@ -5,6 +5,8 @@ use super::*;
 
 #[path = "audio_controls.rs"]
 pub(super) mod audio_controls;
+#[path = "campaign_confirmation.rs"]
+pub(super) mod campaign_confirmation;
 #[path = "campaign_economy.rs"]
 pub(super) mod campaign_economy;
 #[path = "campaign_military.rs"]

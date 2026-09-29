@@ -5,6 +5,7 @@ mod menu;
 #[path = "ui/mod.rs"]
 mod ui;
 use menu::*;
+pub(crate) use ui::campaign_panel::CampaignUi;
 use ui::*;
 
 #[path = "game/campaign.rs"]
@@ -354,7 +355,7 @@ impl GameClock {
 }
 
 const HUD_RESOURCE_NAMES: [&str; 7] =
-    ["Food", "Metal", "Stone", "Coin", "Influence", "Civilians", "Happiness"];
+    ["Food", "Metal", "Stone", "Sestertius", "Influence", "Civilians", "Happiness"];
 const POP_CLASS_NAMES: [&str; 4] = ["Nobles", "Citizens", "Plebeians", "Slaves"];
 const HUD_RESOURCE_WIDTH: f32 = 104.0;
 const HUD_RESOURCE_GROUP_PADDING: f32 = 12.0;
@@ -441,7 +442,7 @@ impl Plugin for AugustusPlugin {
                     .chain(),
             )
             .add_systems(Update, handle_escape)
-            .add_systems(Update, handle_game_shortcuts)
+            .add_systems(Update, handle_game_shortcuts.before(advance_game_time))
             .add_systems(
                 Update,
                 (
@@ -473,6 +474,7 @@ impl Plugin for AugustusPlugin {
                     draw_governance_panel,
                     draw_province_panel,
                     campaign_panel::draw,
+                    campaign_panel::draw_army_panel,
                     draw_map_resources,
                 )
                     .chain()
@@ -483,6 +485,13 @@ impl Plugin for AugustusPlugin {
                 draw_map.run_if(map_visible).after(draw_map_resources),
             )
             .add_systems(EguiPrimaryContextPass, toasts::draw.after(draw_map_resources))
+            .add_systems(
+                EguiPrimaryContextPass,
+                campaign_confirmation::draw
+                    .after(draw_map)
+                    .after(toasts::draw)
+                    .after(draw_audio_controls),
+            )
             .add_systems(
                 EguiPrimaryContextPass,
                 draw_loading_reveal.run_if(in_state(AppState::Loading)),

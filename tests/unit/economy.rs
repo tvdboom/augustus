@@ -40,39 +40,140 @@ fn close(a: f64, b: f64) {
 }
 
 #[test]
-fn construction_pace_diverts_labor_only_during_work_and_updates_completion_estimates() {
-    for pace in [ConstructionPace::Slow, ConstructionPace::Normal, ConstructionPace::Urgent] {
+fn class_unhappiness_scales_only_its_own_output() {
+    let mut w = world(1, 1);
+    w.config.food_output_saturation = 0.0;
+    let p = &mut w.provinces[0];
+    p.population = [10.0, 20.0, 30.0, 40.0];
+    p.potential = [1.0; 3];
+    p.happiness = UNHAPPINESS_THRESHOLDS;
+    let full_production = p.production(&w.config).1;
+    let full_tax = p.tax_income(&w.config);
+    p.happiness = [20.0, 15.0, 10.0, 5.0];
+    close(happiness_output_multiplier(0, 20.0, &w.config), 0.75);
+    close(happiness_output_multiplier(1, 30.0, &w.config), 1.0);
+    close(happiness_output_multiplier(2, 0.0, &w.config), 0.5);
+    for (reduced, full) in p.production(&w.config).1.into_iter().zip(full_production) {
+        close(reduced, full * 0.75);
+    }
+    // Plebeian tax remains full; only the Citizen component is reduced.
+    close(p.tax_income(&w.config), full_tax - 20.0 * w.config.tax_rates[1] * 0.25);
+}
+
+#[test]
+fn only_citizens_and_plebeians_fund_monthly_taxes() {
+    let mut w = world(1, 1);
+    w.config.food_output_saturation = 0.0;
+    w.config.food_per_class = [0.0; 4];
+    w.config.overcrowding_scale = 0.0;
+    w.config.birth_rates = [0.0; 4];
+    w.config.death_rates = [0.0; 4];
+    w.config.class_change_rates = [0.0; 2];
+    assert_eq!(w.config.tax_rates, [0.0, 0.5, 0.2, 0.0]);
+    // Even a stale configuration cannot reintroduce exempt classes as taxpayers.
+    w.config.tax_rates[0] = 10.0;
+    w.config.tax_rates[3] = 10.0;
+    w.provinces[0].population = [100.0, 26.0, 50.0, 100.0];
+    close(w.provinces[0].tax_income(&w.config), 23.0);
+    w.provinces[0].buildings[BuildingType::UrbanMarket as usize] = 1;
+    close(w.provinces[0].tax_income(&w.config), 25.3);
+    let report = w.advance_month(&MonthlyInputs::default());
+    let expected = w.provinces[0].tax_income(&w.config);
+    close(report.province_reports[0].tax_income, expected);
+    close(report.player_delta[0][3], expected);
+    w.provinces[0].population[1] = 0.0;
+    w.provinces[0].population[2] = 0.0;
+    close(w.provinces[0].tax_income(&w.config), 0.0);
+}
+
+#[test]
+fn production_worker_counts_exclude_construction_and_are_not_productivity_units() {
+    let mut w = world(1, 1);
+    w.provinces[0].potential = [1.0, 1.0, 0.0];
+    w.provinces[0].construction = Some(ConstructionProject::Wonder(WonderProject {
+        wonder_id: 0,
+        progress: 0.0,
+        required_progress: 100.0,
+        assigned_slaves: 5.0,
+        paid_stone: 0.0,
+        paid_metal: 0.0,
+    }));
+    w.provinces[0].policies.construction = ConstructionPace::Normal;
+    let workers = w.provinces[0].production_workers(&w.config);
+    assert_eq!(workers, [[0.0, 0.0, 10.0, 4.25], [0.0, 0.0, 10.0, 4.25], [0.0; 4]]);
+    w.config.productivity = [2.0, 3.0];
+    w.provinces[0].policies.slave_labor = SlaveLabor::Harsh;
+    assert_eq!(w.provinces[0].production_workers(&w.config), workers);
+    let expected_labor =
+        20.0 * 2.0 + 8.5 * 3.0 * w.config.slave_policy[SlaveLabor::Harsh as usize].productivity;
+    close(w.provinces[0].production(&w.config).0.iter().sum(), expected_labor);
+    w.provinces[0].potential = [0.0; 3];
+    assert_eq!(w.provinces[0].production_workers(&w.config), [[0.0; 4]; 3]);
+}
+
+#[test]
+fn construction_pace_diverts_only_slaves_during_work_and_updates_completion_estimates() {
+    for (pace, speed, diversion) in [
+        (ConstructionPace::Slow, 0.75, 0.05),
+        (ConstructionPace::Normal, 1.0, 0.10),
+        (ConstructionPace::Urgent, 1.25, 0.20),
+    ] {
         let mut w = world(1, 1);
         w.config.birth_rates = [0.0; 4];
         w.config.death_rates = [0.0; 4];
-        w.config.class_change_rates = [0.0; 3];
+        w.config.class_change_rates = [0.0; 2];
         w.provinces[0].policies.construction = pace;
         let idle_labor: f64 = w.provinces[0].production(&w.config).0.iter().sum();
+        let slave_productivity = w.config.productivity[1]
+            * w.config.slave_policy[w.provinces[0].policies.slave_labor as usize].productivity;
+        let diverted_labor = 15.0 * diversion * slave_productivity;
+        close(w.config.construction_speed[pace as usize], speed);
+        close(w.config.construction_labor[pace as usize], diversion);
         w.start_building(0, 0, BuildingType::Granary).unwrap();
         let project = w.provinces[0].construction.as_ref().unwrap();
-        let speed = w.config.construction_speed[pace as usize];
         assert_eq!(project.months_remaining(&w.config, pace), (3.0 / speed).ceil() as u32);
         let report = w.advance_month(&MonthlyInputs::default());
-        close(
-            report.province_reports[0].labor.iter().sum(),
-            idle_labor * (1.0 - w.config.construction_labor[pace as usize]),
-        );
+        close(report.province_reports[0].labor.iter().sum(), idle_labor - diverted_labor);
+        close(report.province_reports[0].food_requested, 50.0);
         close(w.provinces[0].construction.as_ref().unwrap().progress().0, speed);
         w.cancel_construction(0, 0).unwrap();
         close(w.provinces[0].production(&w.config).0.iter().sum(), idle_labor);
 
-        w.provinces[0].construction = Some(ConstructionProject::Wonder(WonderProject {
-            wonder_id: 0,
-            progress: 0.0,
-            required_progress: 100.0,
-            assigned_slaves: 15.0,
-        }));
-        close(
-            w.provinces[0].production(&w.config).0.iter().sum(),
-            20.0 * w.config.productivity[0] * (1.0 - w.config.construction_labor[pace as usize]),
-        );
-        let project = w.provinces[0].construction.as_ref().unwrap();
-        close(project.speed(&w.config, pace), speed);
+        // The same diversion applies to wonders, without reducing plebeian production
+        // even when additional wonder workers occupy the entire slave population.
+        for assigned_slaves in [0.0, 5.0, 15.0] {
+            w.provinces[0].construction = Some(ConstructionProject::Wonder(WonderProject {
+                wonder_id: 0,
+                progress: 0.0,
+                required_progress: 100.0,
+                assigned_slaves,
+                paid_stone: 0.0,
+                paid_metal: 0.0,
+            }));
+            close(
+                w.provinces[0].production(&w.config).0.iter().sum(),
+                20.0 * w.config.productivity[0]
+                    + (15.0 - assigned_slaves - 15.0 * diversion).max(0.0) * slave_productivity,
+            );
+            close(w.provinces[0].food_request(&w.config), 50.0);
+            let project = w.provinces[0].construction.as_ref().unwrap();
+            close(project.speed(&w.config, pace), speed);
+        }
+
+        // Finishing a building restores ordinary production on the following month.
+        w.provinces[0].construction = None;
+        w.start_building(0, 0, BuildingType::Granary).unwrap();
+        while w.provinces[0].construction.is_some() {
+            let report = w.advance_month(&MonthlyInputs::default());
+            close(report.province_reports[0].labor.iter().sum(), idle_labor - diverted_labor);
+        }
+        let report = w.advance_month(&MonthlyInputs::default());
+        close(report.province_reports[0].labor.iter().sum(), idle_labor);
+
+        // A province without slaves loses no productive labor to construction.
+        w.provinces[0].population[3] = 0.0;
+        w.start_building(0, 0, BuildingType::Granary).unwrap();
+        close(w.provinces[0].production(&w.config).0.iter().sum(), 20.0 * w.config.productivity[0]);
     }
 }
 
@@ -81,7 +182,7 @@ fn civic_spending_shares_limited_coin_before_taxes_and_never_accumulates_happine
     let mut w = world(2, 1);
     w.config.birth_rates = [0.0; 4];
     w.config.death_rates = [0.0; 4];
-    w.config.class_change_rates = [0.0; 3];
+    w.config.class_change_rates = [0.0; 2];
     w.config.migration_rates = [0.0; 4];
     for p in &mut w.provinces {
         p.owner = Some(0);
@@ -89,62 +190,120 @@ fn civic_spending_shares_limited_coin_before_taxes_and_never_accumulates_happine
         p.policies.civic_spending = CivicSpending::Generous;
     }
     w.provinces[1].population = w.provinces[1].population.map(|count| count * 2.0);
-    w.players[0].coin = 6.0; // Half of the 4 + 8 Coin requested by the two provinces.
+    w.players[0].coin = 10.5; // Half of the 7 + 14 requested for free residents.
     let forecast = w.forecast_month(&MonthlyInputs::default());
-    close(w.players[0].coin, 6.0);
+    close(w.players[0].coin, 10.5);
     assert_eq!(w.provinces[0].happiness, [50.0; 4]);
     let first = w.advance_month(&MonthlyInputs::default());
-    close(first.province_reports[0].civic_spending, 2.0);
-    close(first.province_reports[1].civic_spending, 4.0);
+    close(first.province_reports[0].civic_spending, 3.5);
+    close(first.province_reports[1].civic_spending, 7.0);
     assert_eq!(first.player_delta, forecast.player_delta);
     let taxes: f64 = first.province_reports.iter().map(|r| r.tax_income).sum();
     close(w.players[0].coin, taxes);
     for p in &w.provinces {
-        assert_eq!(p.happiness, [51.5; 4]);
+        assert_eq!(p.happiness, [50.0; 4]);
     }
     w.advance_month(&MonthlyInputs::default());
     for p in &w.provinces {
-        assert_eq!(p.happiness, [53.0; 4]);
+        assert_eq!(p.happiness, [51.0, 51.0, 51.0, 50.0]);
     }
     w.advance_month(&MonthlyInputs::default());
     for p in &mut w.provinces {
-        assert_eq!(p.happiness, [53.0; 4]);
+        assert_eq!(p.happiness, [51.0, 51.0, 51.0, 50.0]);
         p.policies.civic_spending = CivicSpending::Frugal;
     }
     let last = w.advance_month(&MonthlyInputs::default());
     for (p, report) in w.provinces.iter().zip(last.province_reports) {
-        assert_eq!(p.happiness, [50.0; 4]);
+        assert_eq!(p.happiness, [49.0, 49.0, 49.0, 50.0]);
         close(report.civic_spending, 0.0);
     }
 }
 
 #[test]
-fn manumission_policy_conserves_residents_without_cascading_and_clamps_wonder_workers() {
-    for policy in
-        [ManumissionPolicy::Restricted, ManumissionPolicy::Normal, ManumissionPolicy::Encouraged]
-    {
-        for rate in [0.1, 0.5] {
-            let mut w = world(1, 1);
-            w.config.birth_rates = [0.0; 4];
-            w.config.death_rates = [0.0; 4];
-            w.config.class_change_rates = [rate, 1.0, 1.0];
-            w.provinces[0].population = [0.0, 0.0, 0.0, 40.0];
-            w.provinces[0].policies.manumission = policy;
-            w.provinces[0].construction = Some(ConstructionProject::Wonder(WonderProject {
-                wonder_id: 0,
-                progress: 0.0,
-                required_progress: 100.0,
-                assigned_slaves: 40.0,
-            }));
-            w.advance_month(&MonthlyInputs::default());
-            let freed = 40.0 * (rate * w.config.manumission_multiplier[policy as usize]).min(1.0);
-            let p = &w.provinces[0];
-            close(p.population[2], freed);
-            close(p.population[3], 40.0 - freed);
-            close(p.total_population(), 40.0);
-            close(p.population[0] + p.population[1], 0.0);
-            close(p.assigned_slaves(), p.population[3]);
+fn civic_spending_covers_free_residents_and_stays_within_taxpayer_rates() {
+    let mut w = world(1, 1);
+    w.config.birth_rates = [0.0; 4];
+    w.config.death_rates = [0.0; 4];
+    w.config.class_change_rates = [0.0; 2];
+    w.provinces[0].population[3] = 150.0;
+    w.players[0].resources[0] = 10_000.0;
+    for (policy, budget, happiness) in [
+        (CivicSpending::Frugal, 0.0, 49.0),
+        (CivicSpending::Normal, 0.10, 50.0),
+        (CivicSpending::Generous, 0.2, 51.0),
+    ] {
+        w.provinces[0].policies.civic_spending = policy;
+        close(w.config.civic_coin_per_free_resident[policy as usize], budget);
+        assert!(w.config.tax_rates[1..=2].iter().all(|tax| budget <= *tax));
+        close(w.provinces[0].civic_spending_cost(&w.config), 35.0 * budget);
+        assert!(
+            w.provinces[0].civic_spending_cost(&w.config) < w.provinces[0].tax_income(&w.config)
+        );
+        for _ in 0..2 {
+            let report = w.advance_month(&MonthlyInputs::default());
+            close(report.province_reports[0].civic_spending, 35.0 * budget);
+            assert_eq!(w.provinces[0].happiness, [happiness, happiness, happiness, 50.0]);
         }
+    }
+}
+
+#[test]
+fn unfunded_civic_spending_preserves_frugal_happiness_even_with_mixed_policies() {
+    let mut w = world(3, 1);
+    w.config.birth_rates = [0.0; 4];
+    w.config.death_rates = [0.0; 4];
+    w.config.class_change_rates = [0.0; 2];
+    w.config.migration_rates = [0.0; 4];
+    w.players[0].coin = 0.0;
+    for (p, policy) in w.provinces.iter_mut().zip([
+        CivicSpending::Frugal,
+        CivicSpending::Normal,
+        CivicSpending::Generous,
+    ]) {
+        p.owner = Some(0);
+        p.policies.civic_spending = policy;
+    }
+    let report = w.advance_month(&MonthlyInputs::default());
+    for (p, summary) in w.provinces.iter().zip(report.province_reports) {
+        close(summary.civic_spending, 0.0);
+        assert_eq!(p.happiness, [49.0, 49.0, 49.0, 50.0]);
+    }
+}
+
+#[test]
+fn manumission_converts_in_both_directions_and_changes_only_the_affected_class_happiness() {
+    for (policy, transferred, happiness) in [
+        (ManumissionPolicy::Enslave, -0.2, [49.0, 49.0, 48.0, 50.0]),
+        (ManumissionPolicy::Normal, 0.0, [49.0, 49.0, 49.0, 50.0]),
+        (ManumissionPolicy::Free, 0.08, [48.0, 49.0, 49.0, 50.0]),
+    ] {
+        let mut w = world(1, 1);
+        w.config.birth_rates = [0.0; 4];
+        w.config.death_rates = [0.0; 4];
+        w.config.class_change_rates = [0.0; 2];
+        w.provinces[0].population = [10.0, 20.0, 100.0, 40.0];
+        w.provinces[0].policies.manumission = policy;
+        w.provinces[0].construction = Some(ConstructionProject::Wonder(WonderProject {
+            wonder_id: 0,
+            progress: 0.0,
+            required_progress: 100.0,
+            assigned_slaves: 40.0,
+            paid_stone: 0.0,
+            paid_metal: 0.0,
+        }));
+        w.advance_month(&MonthlyInputs::default());
+        let p = &w.provinces[0];
+        close(p.population[2], 100.0 + transferred);
+        close(p.population[3], 40.0 - transferred);
+        close(p.total_population(), 170.0);
+        assert_eq!(p.happiness, happiness);
+        close(p.assigned_slaves(), 40.0_f64.min(p.population[3]));
+
+        w.provinces[0].policies.manumission = ManumissionPolicy::Normal;
+        let population = w.provinces[0].population;
+        w.advance_month(&MonthlyInputs::default());
+        assert_eq!(w.provinces[0].population, population);
+        assert_eq!(w.provinces[0].happiness, [49.0, 49.0, 49.0, 50.0]);
     }
 }
 
@@ -243,22 +402,38 @@ fn player_route_cancellation_changes_neither_wallets_nor_province_relations() {
 }
 
 #[test]
-fn open_market_split_exchanges_get_better_prices_and_cannot_generate_roundtrip_profit() {
-    let mut world = world(1, 1);
-    world.players[0].coin = 10_000.0;
-    world.players[0].resources = [500.0; 3];
+fn open_market_split_exchanges_pay_the_same_cumulative_price_and_cannot_generate_profit() {
+    let mut market = world(1, 1);
+    market.players[0].coin = 10_000.0;
+    market.players[0].resources = [500.0; 3];
     for resource in 0..3 {
-        let sell = world.quote_open_market(0, resource, MarketSide::Sell, 100.0).unwrap();
-        let half = world.quote_open_market(0, resource, MarketSide::Sell, 50.0).unwrap();
+        let sell = market.quote_open_market(0, resource, MarketSide::Sell, 100.0).unwrap();
+        let half = market.quote_open_market(0, resource, MarketSide::Sell, 50.0).unwrap();
         assert!(half.coin * 2.0 > sell.coin);
-        let buy = world.quote_open_market(0, resource, MarketSide::Buy, 100.0).unwrap();
-        let half = world.quote_open_market(0, resource, MarketSide::Buy, 50.0).unwrap();
+        let buy = market.quote_open_market(0, resource, MarketSide::Buy, 100.0).unwrap();
+        let half = market.quote_open_market(0, resource, MarketSide::Buy, 50.0).unwrap();
         assert!(half.coin * 2.0 < buy.coin);
-        let before = world.players[0].balances();
-        world.exchange_open_market(0, resource, MarketSide::Buy, 100.0).unwrap();
-        world.exchange_open_market(0, resource, MarketSide::Sell, 100.0).unwrap();
-        close(world.players[0].resources[resource], before[resource]);
-        assert!(world.players[0].coin < before[3]);
+        let before = market.players[0].balances();
+        market.exchange_open_market(0, resource, MarketSide::Buy, 100.0).unwrap();
+        market.exchange_open_market(0, resource, MarketSide::Sell, 100.0).unwrap();
+        close(market.players[0].resources[resource], before[resource]);
+        assert!(market.players[0].coin < before[3]);
+        for side in [MarketSide::Buy, MarketSide::Sell] {
+            let mut single = world(1, 1);
+            single.players[0].coin = 10_000.0;
+            single.players[0].resources = [500.0; 3];
+            let mut split = single.clone();
+            let whole = single.exchange_open_market(0, resource, side, 100.0).unwrap();
+            let first = split.exchange_open_market(0, resource, side, 50.0).unwrap();
+            let second = split.exchange_open_market(0, resource, side, 50.0).unwrap();
+            close(first.prior_volume, 0.0);
+            close(second.prior_volume, 50.0);
+            close(first.coin + second.coin, whole.coin);
+            close(split.players[0].coin, single.players[0].coin);
+            close(split.players[0].resources[resource], single.players[0].resources[resource]);
+            split.begin_month(&MonthlyInputs::default());
+            close(split.quote_open_market(0, resource, side, 1.0).unwrap().prior_volume, 0.0);
+        }
     }
 }
 
@@ -273,6 +448,7 @@ fn open_market_rejects_invalid_unaffordable_and_over_capacity_exchanges_atomical
         assert!(world.exchange_open_market(0, 0, MarketSide::Sell, quantity).is_err());
     }
     assert_eq!(world.players[0].balances(), before);
+    close(world.quote_open_market(0, 0, MarketSide::Sell, 1.0).unwrap().prior_volume, 0.0);
     world.players[0].coin = 10_000.0;
     world.players[0].resources[0] = world.players[0].storage[0];
     let before = world.players[0].balances();
@@ -303,6 +479,39 @@ fn npc_single_time_terms_are_worse_than_identical_monthly_terms() {
 }
 
 #[test]
+fn friendly_and_very_friendly_npcs_offer_progressively_better_trade_terms() {
+    let mut world = world(2, 1);
+    let agreement = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            coin: 5.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    let mut ratios = Vec::new();
+    for relation in [59., 60., 79., 80., 100.] {
+        world.provinces[1].relation_by_player[0] = relation;
+        ratios.push(
+            world
+                .quote_trade(&agreement, &MonthlyInputs::default())
+                .unwrap()
+                .required_value_ratio
+                .unwrap(),
+        );
+    }
+    assert!(ratios[1] < ratios[0]);
+    close(ratios[1], ratios[2]);
+    assert!(ratios[3] < ratios[2]);
+    close(ratios[3], ratios[4]);
+}
+
+#[test]
 fn happiness_report_and_player_hud_average_use_actual_class_changes() {
     let mut world = world(3, 2);
     world.provinces[1].owner = Some(0);
@@ -314,16 +523,16 @@ fn happiness_report_and_player_hud_average_use_actual_class_changes() {
     world.provinces[1].policies.food = FoodPolicy::Low;
     world.config.birth_rates = [0.0; 4];
     world.config.death_rates = [0.0; 4];
-    world.config.class_change_rates = [0.0; 3];
+    world.config.class_change_rates = [0.0; 2];
     world.config.migration_rates = [0.0; 4];
     world.players[0].resources[0] = 1000.0;
     let report = world.advance_month(&MonthlyInputs::default());
-    assert_eq!(report.province_reports[0].happiness_delta, [10.0; 4]);
-    assert_eq!(report.province_reports[1].happiness_delta, [-10.0; 4]);
+    assert_eq!(report.province_reports[0].happiness_delta, [9.0, 9.0, 9.0, 10.0]);
+    assert_eq!(report.province_reports[1].happiness_delta, [-11.0, -11.0, -11.0, -10.0]);
     for class in 0..4 {
         let (happiness, delta) = world.player_happiness(0, class);
-        close(happiness, 45.0);
-        close(delta, -5.0);
+        close(happiness, [44.0, 44.0, 44.0, 45.0][class]);
+        close(delta, [-6.0, -6.0, -6.0, -5.0][class]);
     }
     assert_eq!(world.player_happiness(2, 0), (50.0, 0.0));
 }
@@ -376,6 +585,26 @@ fn workers_are_allocated_once_and_absent_resources_receive_no_labor() {
 }
 
 #[test]
+fn food_output_has_diminishing_returns_without_creating_food_on_barren_land() {
+    let world = world(1, 1);
+    let mut province = world.provinces[0].clone();
+    let mut unlimited = world.config.clone();
+    unlimited.food_output_saturation = 0.0;
+    province.potential = [2.0, 1.0, 1.0];
+    let ordinary_raw = province.production(&unlimited).1[0];
+    let ordinary = province.production(&world.config).1[0];
+    province.potential = [5.0, 0.0, 3.0];
+    let abundant_raw = province.production(&unlimited).1[0];
+    let abundant = province.production(&world.config).1[0];
+    assert!(abundant_raw > ordinary_raw);
+    assert!(abundant > ordinary);
+    assert!(abundant / abundant_raw < ordinary / ordinary_raw);
+    assert!(abundant < world.config.food_output_saturation);
+    province.potential[0] = 0.0;
+    assert_eq!(province.production(&world.config).1[0], 0.0);
+}
+
+#[test]
 fn happiness_suppresses_births_without_directly_increasing_natural_deaths() {
     close(birth_modifier(0.0), 0.0);
     close(birth_modifier(25.0), 0.5);
@@ -420,7 +649,7 @@ fn proportional_food_supply_includes_armies_and_all_owned_provinces() {
 fn happiness_buildings_cannot_override_soft_population_equilibrium() {
     let world = world(1, 1);
     let mut config = world.config.clone();
-    config.class_change_rates = [0.0; 3];
+    config.class_change_rates = [0.0; 2];
     let mut province = world.provinces[0].clone();
     province.has_city = true;
     province.buildings[BuildingType::Temple as usize] = 50;
@@ -451,6 +680,35 @@ fn happiness_buildings_cannot_override_soft_population_equilibrium() {
 }
 
 #[test]
+fn migration_restrictions_reduce_only_free_class_happiness_without_accumulating() {
+    let mut w = world(1, 1);
+    w.config.birth_rates = [0.0; 4];
+    w.config.death_rates = [0.0; 4];
+    w.config.class_change_rates = [0.0; 2];
+    for (policy, penalty) in [
+        (MigrationPolicy::Encourage, 0.0),
+        (MigrationPolicy::Normal, 0.0),
+        (MigrationPolicy::Discourage, -1.0),
+        (MigrationPolicy::Closed, -2.0),
+    ] {
+        w.provinces[0].policies.migration = policy;
+        close(w.config.migration_happiness[policy as usize], penalty);
+        for _ in 0..3 {
+            w.advance_month(&MonthlyInputs::default());
+            assert_eq!(
+                w.provinces[0].happiness,
+                [49.0 + penalty, 49.0 + penalty, 49.0 + penalty, 50.0]
+            );
+        }
+    }
+    for policy in [MigrationPolicy::Normal, MigrationPolicy::Encourage] {
+        w.provinces[0].policies.migration = policy;
+        w.advance_month(&MonthlyInputs::default());
+        assert_eq!(w.provinces[0].happiness, [49.0, 49.0, 49.0, 50.0]);
+    }
+}
+
+#[test]
 fn closed_migration_still_conserves_population_and_slaves_never_migrate() {
     let mut world = world(2, 1);
     world.provinces[1].owner = Some(0);
@@ -458,7 +716,7 @@ fn closed_migration_still_conserves_population_and_slaves_never_migrate() {
     world.provinces[0].policies.migration = MigrationPolicy::Closed;
     world.config.birth_rates = [0.0; 4];
     world.config.death_rates = [0.0; 4];
-    world.config.class_change_rates = [0.0; 3];
+    world.config.class_change_rates = [0.0; 2];
     let before: f64 = world.provinces.iter().map(EconomicProvince::total_population).sum();
     let report = world.advance_month(&MonthlyInputs::default());
     let after: f64 = world.provinces.iter().map(EconomicProvince::total_population).sum();
@@ -494,18 +752,28 @@ fn class_changes_preserve_population_without_cascading_same_month() {
     let mut config = world.config.clone();
     config.birth_rates = [0.0; 4];
     config.death_rates = [0.0; 4];
-    config.class_change_rates = [1.0; 3];
+    config.class_change_rates = [1.0; 2];
     let mut p = world.provinces[0].clone();
     p.has_city = true;
-    p.population = [0.0, 0.0, 0.0, 10.0];
-    p.advance_demographics(
-        &mut ProvinceMonth {
-            food_supply_ratio: 1.0,
-            ..Default::default()
-        },
-        &config,
-    );
-    assert_eq!(p.population, [0.0, 0.0, 10.0, 0.0]);
+    // Full conversions also exercise rate clamping and prevent simultaneous
+    // citizenship promotion from consuming already enslaved plebeians.
+    config.manumission_rates = [-2.0, 0.0, 2.0];
+    for (policy, population, expected) in [
+        (ManumissionPolicy::Free, [0.0, 0.0, 0.0, 10.0], [0.0, 0.0, 10.0, 0.0]),
+        (ManumissionPolicy::Enslave, [0.0, 0.0, 10.0, 0.0], [0.0, 0.0, 0.0, 10.0]),
+        (ManumissionPolicy::Normal, [0.0, 0.0, 0.0, 10.0], [0.0, 0.0, 0.0, 10.0]),
+    ] {
+        p.policies.manumission = policy;
+        p.population = population;
+        p.advance_demographics(
+            &mut ProvinceMonth {
+                food_supply_ratio: 1.0,
+                ..Default::default()
+            },
+            &config,
+        );
+        assert_eq!(p.population, expected);
+    }
 }
 
 #[test]
@@ -583,15 +851,21 @@ fn completed_warehouse_stores_only_metal_and_stone_and_aqueduct_adds_capacity() 
 #[test]
 fn construction_checks_are_atomic_and_share_one_slot_with_wonders() {
     let mut world = world(1, 1);
+    world.players[0].resources = [10_000.; 3];
     let before = world.players[0].balances();
     assert!(world.start_building(0, 0, BuildingType::Forum).is_err());
     assert_eq!(world.players[0].balances(), before);
     world.start_building(0, 0, BuildingType::Granary).unwrap();
     let paid = world.players[0].balances();
-    assert!(world.start_building(0, 0, BuildingType::Warehouse).is_err());
-    assert_eq!(world.players[0].balances(), paid);
+    world.start_building(0, 0, BuildingType::Warehouse).unwrap();
+    assert_eq!(world.provinces[0].construction_queue.len(), 1);
+    assert!(world.players[0].resources[2] < paid[2]);
+    let queued_paid = world.players[0].balances();
     world.cancel_construction(0, 0).unwrap();
-    assert_eq!(world.players[0].balances(), paid);
+    assert!(
+        matches!(world.provinces[0].construction, Some(ConstructionProject::Building(ref p)) if p.building == BuildingType::Warehouse)
+    );
+    assert_eq!(world.players[0].balances(), queued_paid);
     let definition = BuildingDefinition::for_type(BuildingType::Granary);
     close(definition.quote(3).stone, 410.0);
     assert!(definition.quote(30).stone > definition.quote(29).stone);
@@ -640,6 +914,8 @@ fn ownership_changes_preserve_project_progress_but_reset_wonder_labor() {
         progress: 9.0,
         required_progress: 36.0,
         assigned_slaves: 15.0,
+        paid_stone: 0.0,
+        paid_metal: 0.0,
     }));
     world.provinces[0].change_owner(Some(1), None);
     let Some(ConstructionProject::Wonder(project)) = &world.provinces[0].construction else {
@@ -1066,4 +1342,173 @@ fn vassals_are_transit_territory_not_teleport_origins_and_npc_wars_block_routes(
         ..Default::default()
     };
     assert!(world.trade_route(TradeParty::Player(0), TradeParty::Npc(2), &input).is_err());
+}
+
+#[test]
+fn construction_queue_caps_orders_at_ten_without_charging_for_rejected_orders() {
+    let mut w = world(2, 1);
+    w.players[0].resources = [1_000_000.0; 3];
+    w.provinces[0].wonder_sites = vec![0];
+    w.provinces[1].owner = Some(0);
+    for _ in 0..10 {
+        w.start_building(0, 0, BuildingType::Granary).unwrap();
+    }
+    assert!(w.provinces[0].construction_queue_full());
+    assert_eq!(w.provinces[0].construction_queue.len(), 9);
+    let paid = w.players[0].resources;
+    assert!(w.start_building(0, 0, BuildingType::Road).unwrap_err().contains("maximum 10"));
+    assert!(w.start_wonder(0, 0, 0).unwrap_err().contains("maximum 10"));
+    assert_eq!(w.players[0].resources, paid);
+    assert_eq!(w.provinces[0].construction_queue.len(), 9);
+    w.start_building(0, 1, BuildingType::Road).unwrap();
+    w.cancel_queued_construction(0, 0, 0).unwrap();
+    assert!(!w.provinces[0].construction_queue_full());
+    w.start_wonder(0, 0, 0).unwrap();
+    assert!(w.provinces[0].construction_queue_full());
+    w.cancel_construction(0, 0).unwrap();
+    w.start_building(0, 0, BuildingType::Road).unwrap();
+    assert!(w.provinces[0].construction_queue_full());
+}
+
+#[test]
+fn paid_building_queue_quotes_future_levels_and_completes_sequentially() {
+    let mut w = world(1, 1);
+    w.players[0].resources = [10_000.; 3];
+    let definition = BuildingDefinition::for_type(BuildingType::Granary);
+    let first = definition.quote(0);
+    let second = definition.quote(1);
+    w.start_building(0, 0, BuildingType::Granary).unwrap();
+    w.start_building(0, 0, BuildingType::Granary).unwrap();
+    w.start_building(0, 0, BuildingType::Road).unwrap();
+    close(w.players[0].resources[2], 10_000. - first.stone - second.stone - 100.);
+    assert_eq!(w.provinces[0].planned_building_level(BuildingType::Granary), 2);
+    let mut events = vec![];
+    for _ in 0..3 {
+        w.advance_construction(&mut events);
+    }
+    assert_eq!(w.provinces[0].level(BuildingType::Granary), 1);
+    assert_eq!(w.provinces[0].level(BuildingType::Road), 0);
+    assert!(
+        matches!(&w.provinces[0].construction, Some(ConstructionProject::Building(p)) if p.target_level == 2 && p.progress == 0.)
+    );
+    for _ in 0..second.required_progress.ceil() as usize {
+        w.advance_construction(&mut events);
+    }
+    assert_eq!(w.provinces[0].level(BuildingType::Granary), 2);
+    for _ in 0..3 {
+        w.advance_construction(&mut events);
+    }
+    assert_eq!(w.provinces[0].level(BuildingType::Road), 1);
+    assert!(w.provinces[0].construction.is_none());
+    assert_eq!(events.len(), 3);
+}
+
+#[test]
+fn cancelling_active_upgrade_preserves_and_resequences_waiting_orders_without_refund() {
+    let mut w = world(1, 1);
+    w.players[0].resources = [10_000.; 3];
+    for building in [BuildingType::Granary, BuildingType::Granary, BuildingType::Road] {
+        w.start_building(0, 0, building).unwrap();
+    }
+    w.advance_construction(&mut vec![]);
+    assert!(w.provinces[0].construction.as_ref().unwrap().progress().0 > 0.0);
+    let paid = w.players[0].resources;
+    w.cancel_construction(0, 0).unwrap();
+    assert!(matches!(&w.provinces[0].construction,
+        Some(ConstructionProject::Building(p)) if p.building == BuildingType::Granary && p.target_level == 1 && p.progress == 0.0));
+    assert_eq!(w.provinces[0].construction_queue.len(), 1);
+    assert_eq!(w.provinces[0].planned_building_level(BuildingType::Granary), 1);
+    assert_eq!(w.players[0].resources, paid);
+}
+
+#[test]
+fn waiting_construction_refunds_original_payment_and_preserves_order_and_levels() {
+    let mut w = world(1, 2);
+    w.players[0].resources = [10_000.; 3];
+    for building in
+        [BuildingType::Granary, BuildingType::Road, BuildingType::Granary, BuildingType::Granary]
+    {
+        w.start_building(0, 0, building).unwrap();
+    }
+    let removed = match &w.provinces[0].construction_queue[1] {
+        ConstructionProject::Building(project) => project.clone(),
+        _ => unreachable!(),
+    };
+    let paid = w.players[0].resources;
+    // A refund is a receipt, not a fresh quote from the current configuration.
+    w.config
+        .buildings
+        .iter_mut()
+        .find(|d| d.building == BuildingType::Granary)
+        .unwrap()
+        .stone_cost *= 2.0;
+    assert!(w.cancel_queued_construction(1, 0, 1).is_err());
+    assert!(w.cancel_queued_construction(0, 0, 99).is_err());
+    assert_eq!(w.players[0].resources, paid);
+    assert_eq!(w.provinces[0].construction_queue.len(), 3);
+    w.cancel_queued_construction(0, 0, 1).unwrap();
+    close(w.players[0].resources[2], paid[2] + removed.paid_stone);
+    close(w.players[0].resources[1], paid[1] + removed.paid_metal);
+    assert_eq!(w.provinces[0].construction.as_ref().unwrap().progress().0, 0.0);
+    assert!(
+        matches!(&w.provinces[0].construction_queue[0], ConstructionProject::Building(p) if p.building == BuildingType::Road)
+    );
+    assert!(
+        matches!(&w.provinces[0].construction_queue[1], ConstructionProject::Building(p) if p.building == BuildingType::Granary && p.target_level == 2)
+    );
+    let mut events = vec![];
+    for _ in 0..30 {
+        w.advance_construction(&mut events);
+    }
+    assert_eq!(w.provinces[0].level(BuildingType::Granary), 2);
+    assert_eq!(w.provinces[0].level(BuildingType::Road), 1);
+    assert!(w.provinces[0].construction.is_none());
+}
+
+#[test]
+fn wonders_share_the_construction_queue_and_refund_only_while_waiting() {
+    let mut w = world(1, 1);
+    w.players[0].resources = [10_000.0; 3];
+    w.provinces[0].wonder_sites = vec![0];
+    w.start_building(0, 0, BuildingType::Granary).unwrap();
+    let before_wonder = w.players[0].resources;
+    w.start_wonder(0, 0, 0).unwrap();
+    assert!(w.start_wonder(0, 0, 0).is_err());
+    assert_eq!(w.provinces[0].construction_queue.len(), 1);
+    w.cancel_queued_construction(0, 0, 0).unwrap();
+    assert_eq!(w.players[0].resources, before_wonder);
+    w.start_wonder(0, 0, 0).unwrap();
+    w.start_building(0, 0, BuildingType::Road).unwrap();
+    let paid = w.players[0].resources;
+    w.cancel_construction(0, 0).unwrap();
+    assert!(
+        matches!(&w.provinces[0].construction, Some(ConstructionProject::Wonder(p)) if p.progress == 0.0)
+    );
+    w.cancel_construction(0, 0).unwrap();
+    assert_eq!(w.players[0].resources, paid);
+    assert!(
+        matches!(&w.provinces[0].construction, Some(ConstructionProject::Building(p)) if p.building == BuildingType::Road)
+    );
+}
+
+#[test]
+fn agricultural_province_supports_civilians_and_a_small_army_without_free_resources() {
+    let config = EconomyConfig::default();
+    let province = EconomicProvince::new(
+        "Italia",
+        60.,
+        Terrain::Farmland,
+        true,
+        [1.4, 0.8, 0.6],
+        [8., 22., 33., 37.],
+        1,
+    );
+    let output = province.production(&config).1;
+    let civilians = province.food_request(&config);
+    assert!(output[0] < civilians * 2.0);
+    let units = crate::game::military::MilitaryConfig::default();
+    let army_food = units.unit(crate::game::military::UnitType::HeavyInfantry).food_per_month * 4.
+        + units.unit(crate::game::military::UnitType::LightCavalry).food_per_month * 2.;
+    assert!(output[0] - civilians > army_food);
+    assert!(output[1] > 0. && output[2] > 0.);
 }

@@ -1,4 +1,4 @@
-//! Immediate national open-market exchanges with transaction-size price impact.
+//! Immediate national open-market exchanges with cumulative monthly price impact.
 
 use super::EconomyWorld;
 
@@ -22,10 +22,13 @@ pub struct OpenMarketQuote {
     pub unit_price: f64,
     /// Price margin from the spread and transaction size.
     pub size_margin: f64,
+    /// Same-side units of this resource already traded this month.
+    pub prior_volume: f64,
 }
 
 impl EconomyWorld {
-    /// Smaller exchanges receive better unit prices; there is no buy/sell arbitrage.
+    /// Integrate the marginal price over cumulative monthly volume so splitting
+    /// a transaction cannot improve its total proceeds or cost.
     pub fn quote_open_market(
         &self,
         player: usize,
@@ -38,20 +41,36 @@ impl EconomyWorld {
         }
         let wallet = self.players.get(player).ok_or("Unknown player")?;
         let config = &self.config.trade;
-        let margin = config.open_market_spread.max(0.0)
-            + quantity / config.open_market_depth[resource].max(1.0);
-        let unit_price = match side {
-            MarketSide::Buy => config.base_value[resource] * (1.0 + margin),
-            MarketSide::Sell => config.base_value[resource] / (1.0 + margin),
+        let side_index = match side {
+            MarketSide::Buy => 0,
+            MarketSide::Sell => 1,
         };
-        let coin = quantity * unit_price;
-        if !coin.is_finite() || coin <= 0.0 {
+        let prior_volume = self.open_market_volume[player][side_index][resource];
+        let depth = config.open_market_depth[resource].max(1.0);
+        let spread = config.open_market_spread.max(0.0);
+        let base = config.base_value[resource];
+        let coin = match side {
+            MarketSide::Buy => {
+                base * (quantity * (1.0 + spread)
+                    + (prior_volume * quantity + quantity * quantity * 0.5) / depth)
+            },
+            MarketSide::Sell => {
+                let start = 1.0 + spread + prior_volume / depth;
+                base * depth * (quantity / (depth * start)).ln_1p()
+            },
+        };
+        let unit_price = coin / quantity;
+        let size_margin = match side {
+            MarketSide::Buy => unit_price / base - 1.0,
+            MarketSide::Sell => base / unit_price - 1.0,
+        };
+        if !coin.is_finite() || coin <= 0.0 || !size_margin.is_finite() {
             return Err("The exchange is too large".into());
         }
         match side {
             MarketSide::Buy => {
                 if wallet.coin + 1e-9 < coin {
-                    return Err("Not enough Coin for this purchase".into());
+                    return Err("Not enough sestertii for this purchase".into());
                 }
                 if wallet.resources[resource] + quantity > wallet.storage[resource] + 1e-9 {
                     return Err("Not enough storage for this purchase".into());
@@ -66,7 +85,8 @@ impl EconomyWorld {
             quantity,
             coin,
             unit_price,
-            size_margin: margin,
+            size_margin,
+            prior_volume,
         })
     }
 
@@ -87,6 +107,11 @@ impl EconomyWorld {
         };
         wallet.resources[resource] = (wallet.resources[resource] + direction * quantity).max(0.0);
         wallet.coin = (wallet.coin - direction * quote.coin).max(0.0);
+        let side_index = match side {
+            MarketSide::Buy => 0,
+            MarketSide::Sell => 1,
+        };
+        self.open_market_volume[player][side_index][resource] += quantity;
         Ok(quote)
     }
 }

@@ -122,7 +122,7 @@ impl MilitaryWorld {
         }
         let unit = self.make_unit(owner, unit_type, self.config.unit(unit_type).manpower);
         let id = unit.id;
-        self.provinces[province].forces.entry(owner).or_default().push(unit);
+        self.insert_units(province, vec![unit]);
         self.provinces[province].plans.entry(owner).or_default();
         Ok(id)
     }
@@ -156,7 +156,7 @@ impl MilitaryWorld {
             return Err(MilitaryError::InBattle);
         }
         let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
-        plan.flank_size = plan.flank_size.clamp(1, 3);
+        plan.flank_size = plan.normalized_flank_size();
         state.plans.insert(owner, plan);
         Ok(())
     }
@@ -172,7 +172,7 @@ impl MilitaryWorld {
             .iter_mut()
             .find(|m| m.id == order && m.owner == owner)
             .ok_or(MilitaryError::InvalidUnits)?;
-        plan.flank_size = plan.flank_size.clamp(1, 3);
+        plan.flank_size = plan.normalized_flank_size();
         movement.plan = plan;
         Ok(())
     }
@@ -194,35 +194,43 @@ impl MilitaryWorld {
             return Err(MilitaryError::InBattle);
         }
         let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
-        if state.recruitment.is_some() {
+        let def = self.config.unit(kind);
+        if state.recruitment_queue_full() {
             return Err(MilitaryError::RecruitmentBusy);
         }
-        let def = self.config.unit(kind);
         if def.special_tag.is_some_and(|tag| !tags.contains(&tag)) {
             return Err(MilitaryError::MissingRecruitmentTag);
         }
         if !population[def.manpower_class].is_finite()
-            || population[def.manpower_class] < def.manpower
+            || population[def.manpower_class] < def.population_cost
         {
             return Err(MilitaryError::InsufficientPopulation);
         }
         if !metal.is_finite() || *metal < def.metal_cost {
             return Err(MilitaryError::InsufficientMetal);
         }
-        let fraction = def.manpower / population[def.manpower_class].max(0.001);
-        population[def.manpower_class] -= def.manpower;
+        let fraction = def.population_cost / population[def.manpower_class].max(0.001);
+        population[def.manpower_class] -= def.population_cost;
         *metal -= def.metal_cost;
         state.draft_penalties[def.manpower_class] = (state.draft_penalties[def.manpower_class]
-            + (fraction * self.config.draft_happiness_scale)
+            + (self.config.base_draft_penalty + fraction * self.config.draft_happiness_scale)
                 .min(self.config.maximum_draft_penalty))
         .min(50.);
-        state.recruitment = Some(RecruitmentProject {
+        let project = RecruitmentProject {
             owner: ForceOwner::Player(player),
             unit_type: kind,
             progress: 0.,
             required_progress: def.recruitment_months,
-            manpower: def.manpower,
-        });
+            population_cost: def.population_cost,
+            cohort_manpower: def.manpower,
+            manpower_class: def.manpower_class,
+            paid_metal: def.metal_cost,
+        };
+        if state.recruitment.is_none() {
+            state.recruitment = Some(project);
+        } else {
+            state.recruitment_queue.push_back(project);
+        }
         Ok(())
     }
     /// Cancel a project with no population or equipment refund.
@@ -235,9 +243,34 @@ impl MilitaryWorld {
         if state.recruitment.as_ref().is_none_or(|r| r.owner != owner) {
             return Err(MilitaryError::InvalidUnits);
         }
-        state.recruitment = None;
+        state.recruitment = state.recruitment_queue.pop_front();
         Ok(())
     }
+    /// Refund a waiting cohort's original population and equipment payment atomically.
+    pub fn cancel_queued_recruitment(
+        &mut self,
+        province: ProvinceId,
+        player: PlayerId,
+        index: usize,
+        directly_owned: bool,
+        population: &mut [f64; 4],
+        metal: &mut f64,
+    ) -> Result<(), MilitaryError> {
+        if !directly_owned {
+            return Err(MilitaryError::NotDirectlyOwned);
+        }
+        let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
+        let project = state.recruitment_queue.get(index).ok_or(MilitaryError::InvalidUnits)?;
+        if project.owner != ForceOwner::Player(player) || project.manpower_class >= population.len()
+        {
+            return Err(MilitaryError::InvalidUnits);
+        }
+        let project = state.recruitment_queue.remove(index).ok_or(MilitaryError::InvalidUnits)?;
+        population[project.manpower_class] += project.population_cost;
+        *metal += project.paid_metal;
+        Ok(())
+    }
+
     /// Disband only surviving soldiers into their original class in a directly owned province.
     pub fn disband(
         &mut self,
@@ -258,7 +291,35 @@ impl MilitaryWorld {
             state.forces.get_mut(&ForceOwner::Player(player)).ok_or(MilitaryError::InvalidUnits)?;
         let index = units.iter().position(|u| u.id == id).ok_or(MilitaryError::InvalidUnits)?;
         let unit = units.remove(index);
-        population[self.config.unit(unit.unit_type).manpower_class] += unit.current_manpower;
+        let definition = self.config.unit(unit.unit_type);
+        population[definition.manpower_class] += definition.population_cost * unit.manpower_ratio();
+        Ok(())
+    }
+    /// Disband the player's whole stationary army atomically; guests remain untouched.
+    pub fn disband_army(
+        &mut self,
+        province: ProvinceId,
+        player: PlayerId,
+        directly_owned: bool,
+        population: &mut [f64; 4],
+    ) -> Result<(), MilitaryError> {
+        if !directly_owned {
+            return Err(MilitaryError::NotDirectlyOwned);
+        }
+        if self.province_in_battle(province) {
+            return Err(MilitaryError::InBattle);
+        }
+        let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
+        let units = state
+            .forces
+            .get_mut(&ForceOwner::Player(player))
+            .filter(|units| !units.is_empty())
+            .ok_or(MilitaryError::InvalidUnits)?;
+        for unit in units.drain(..) {
+            let definition = self.config.unit(unit.unit_type);
+            population[definition.manpower_class] +=
+                definition.population_cost * unit.manpower_ratio();
+        }
         Ok(())
     }
     /// Progress one recruitment month; a changed owner cancels without refunds.
@@ -286,19 +347,21 @@ impl MilitaryWorld {
                 .is_some_and(|r| Some(r.owner) != owner(province).map(ForceOwner::Player))
             {
                 state.recruitment = None;
+                state.recruitment_queue.clear();
             }
             if let Some(project) = &mut state.recruitment {
                 project.progress += speed(province).max(0.0);
                 if project.progress >= project.required_progress {
                     complete.push((province, state.recruitment.take().unwrap()));
+                    state.recruitment = state.recruitment_queue.pop_front();
                 }
             }
         }
         let mut events = vec![];
         for (province, project) in complete {
-            let unit = self.make_unit(project.owner, project.unit_type, project.manpower);
+            let unit = self.make_unit(project.owner, project.unit_type, project.cohort_manpower);
             let id = unit.id;
-            self.provinces[province].forces.entry(project.owner).or_default().push(unit);
+            self.insert_units(province, vec![unit]);
             events.push(MilitaryEvent::Recruited {
                 province,
                 unit: id,
@@ -314,15 +377,23 @@ impl MilitaryWorld {
     }
     /// Inspect every existing unit without introducing an Army abstraction.
     pub fn all_units(&self) -> impl Iterator<Item = &Unit> {
+        self.units_with_province().map(|(_, unit)| unit)
+    }
+
+    /// Stationed and fighting troops have a province; marching troops are provisioned by their owner.
+    pub fn units_with_province(&self) -> impl Iterator<Item = (Option<ProvinceId>, &Unit)> {
         self.provinces
             .iter()
-            .flat_map(|p| p.forces.values().flatten())
-            .chain(self.movements.iter().flat_map(|m| m.units.iter()))
-            .chain(
-                self.battles
+            .enumerate()
+            .flat_map(|(id, p)| p.forces.values().flatten().map(move |unit| (Some(id), unit)))
+            .chain(self.movements.iter().flat_map(|m| m.units.iter().map(|unit| (None, unit))))
+            .chain(self.battles.iter().flat_map(|b| {
+                b.attackers
+                    .units
                     .iter()
-                    .flat_map(|b| b.attackers.units.iter().chain(&b.defenders.units)),
-            )
+                    .chain(&b.defenders.units)
+                    .map(move |unit| (Some(b.province), unit))
+            }))
     }
     /// Apply proportional food shortage and peaceful morale/training without healing men.
     pub fn apply_supply(&mut self, owner: ForceOwner, supply_ratio: f64) {
@@ -336,12 +407,22 @@ impl MilitaryWorld {
         supply_ratio: f64,
         wage_morale: f64,
     ) {
-        let supply = supply_ratio.clamp(0., 1.);
+        self.apply_supply_with_provisioning(owner, |_| supply_ratio, wage_morale);
+    }
+
+    /// Food comes from the province host, while wages remain the army owner's responsibility.
+    pub fn apply_supply_with_provisioning(
+        &mut self,
+        owner: ForceOwner,
+        supply_ratio: impl Fn(Option<ProvinceId>) -> f64,
+        wage_morale: f64,
+    ) {
         let config = &self.config;
-        let update = |unit: &mut Unit, in_battle: bool| {
+        let update = |unit: &mut Unit, in_battle: bool, province: Option<ProvinceId>| {
             if unit.owner != owner {
                 return;
             }
+            let supply = supply_ratio(province).clamp(0., 1.);
             unit.morale =
                 (unit.morale - config.shortage_morale_penalty * (1. - supply)).clamp(0., 100.);
             if supply >= config.training_supply_threshold {
@@ -357,16 +438,30 @@ impl MilitaryWorld {
                 }
             }
         };
-        for unit in self.provinces.iter_mut().flat_map(|p| p.forces.values_mut().flatten()) {
-            update(unit, false);
+        for (id, state) in self.provinces.iter_mut().enumerate() {
+            for unit in state.forces.values_mut().flatten() {
+                update(unit, false, Some(id));
+            }
         }
         for unit in self.movements.iter_mut().flat_map(|m| m.units.iter_mut()) {
-            update(unit, false);
+            update(unit, false, None);
         }
         for battle in &mut self.battles {
             for unit in battle.attackers.units.iter_mut().chain(&mut battle.defenders.units) {
-                update(unit, true);
+                update(unit, true, Some(battle.province));
             }
+        }
+        for state in &mut self.provinces {
+            for units in state.forces.values_mut() {
+                consolidate_army_condition(units);
+            }
+        }
+        for movement in &mut self.movements {
+            consolidate_army_condition(&mut movement.units);
+        }
+        for battle in &mut self.battles {
+            consolidate_army_condition(&mut battle.attackers.units);
+            consolidate_army_condition(&mut battle.defenders.units);
         }
     }
     /// Validate and remove a unique selection atomically into a new transient route.
@@ -447,6 +542,7 @@ impl MilitaryWorld {
             progress: 0.,
             required_progress: required,
             plan,
+            returning_home: false,
         });
         Ok(id)
     }
@@ -464,10 +560,67 @@ impl MilitaryWorld {
                 self.insert_units(movement.origin, movement.units);
                 continue;
             };
+            // A forced peaceful withdrawal waits for a battle rather than joining it.
+            if movement.returning_home && self.province_in_battle(destination) {
+                continuing.push(movement);
+                continue;
+            }
+            // Passage never becomes stationing when a battle interrupts a crossing.
+            if destination < graph.len()
+                && access(movement.owner, destination) == MilitaryAccess::Transit
+                && self.province_in_battle(destination)
+            {
+                continuing.push(movement);
+                continue;
+            }
             if destination >= graph.len()
                 || !graph[movement.origin].neighbors.contains(&destination)
-                || access(movement.owner, destination) == MilitaryAccess::Blocked
+                || (!movement.returning_home
+                    && (access(movement.owner, destination) == MilitaryAccess::Blocked
+                        || (movement.route.len() == 1
+                            && access(movement.owner, destination) == MilitaryAccess::Transit)))
             {
+                // If permission changes during passage, seek a legal stationing province.
+                // Keep troops in transit if temporarily stranded instead of creating a garrison.
+                if access(movement.owner, movement.origin) == MilitaryAccess::Transit {
+                    let escape = (0..graph.len())
+                        .filter(|&id| {
+                            access(movement.owner, id) == MilitaryAccess::Peaceful
+                                && !self.province_in_battle(id)
+                        })
+                        .filter_map(|id| {
+                            fastest_route(
+                                graph,
+                                movement.origin,
+                                id,
+                                movement.owner,
+                                &movement.units,
+                                |owner, next| {
+                                    if self.province_in_battle(next) {
+                                        MilitaryAccess::Blocked
+                                    } else {
+                                        access(owner, next)
+                                    }
+                                },
+                                &self.config,
+                            )
+                            .ok()
+                        })
+                        .min_by_key(|route| route.len());
+                    if let Some(route) = escape {
+                        movement.required_progress = edge_travel_months(
+                            &graph[movement.origin],
+                            &graph[route[0]],
+                            median,
+                            movement.speed(&self.config),
+                            &self.config,
+                        );
+                        movement.route = route;
+                        movement.progress = 0.;
+                    }
+                    continuing.push(movement);
+                    continue;
+                }
                 self.insert_units(movement.origin, movement.units);
                 events.push(MilitaryEvent::MovementStopped {
                     province: movement.origin,
@@ -481,7 +634,8 @@ impl MilitaryWorld {
                 continue;
             }
             let origin = movement.origin;
-            let invasion = access(movement.owner, destination) == MilitaryAccess::Invasion;
+            let invasion = !movement.returning_home
+                && access(movement.owner, destination) == MilitaryAccess::Invasion;
             movement.route.remove(0);
             // Any hostile arrival stops the order so the caller can start combat before politics.
             if invasion || movement.route.is_empty() || self.province_in_battle(destination) {
@@ -496,9 +650,11 @@ impl MilitaryWorld {
                 });
             } else {
                 let next = movement.route[0];
-                if next >= graph.len()
-                    || !graph[destination].neighbors.contains(&next)
-                    || access(movement.owner, next) == MilitaryAccess::Blocked
+                if access(movement.owner, destination) != MilitaryAccess::Transit
+                    && (next >= graph.len()
+                        || !graph[destination].neighbors.contains(&next)
+                        || (!movement.returning_home
+                            && access(movement.owner, next) == MilitaryAccess::Blocked))
                 {
                     self.insert_units(destination, movement.units);
                     events.push(MilitaryEvent::MovementStopped {
@@ -508,13 +664,17 @@ impl MilitaryWorld {
                 } else {
                     movement.origin = destination;
                     movement.progress = 0.;
-                    movement.required_progress = edge_travel_months(
-                        &graph[destination],
-                        &graph[next],
-                        median,
-                        movement.speed(&self.config),
-                        &self.config,
-                    );
+                    movement.required_progress = if next < graph.len() {
+                        edge_travel_months(
+                            &graph[destination],
+                            &graph[next],
+                            median,
+                            movement.speed(&self.config),
+                            &self.config,
+                        )
+                    } else {
+                        1.
+                    };
                     continuing.push(movement);
                 }
             }
@@ -623,6 +783,7 @@ impl MilitaryWorld {
             side.formation.reserves.push(unit.id);
             side.units.push(unit);
         }
+        consolidate_army_condition(&mut side.units);
         Ok(())
     }
     /// Resolve battles, retreat survivors, award renown, and return conquest events.
@@ -781,6 +942,9 @@ impl MilitaryWorld {
                     state.forces.entry(unit.owner).or_default().push(unit);
                 }
             }
+            for army in state.forces.values_mut() {
+                consolidate_army_condition(army);
+            }
         }
     }
 }
@@ -832,7 +996,8 @@ pub fn recruitment_tags(name: &str) -> Vec<RecruitmentTag> {
     match name {
         "Armenia Mesopotamia" | "Dacia" | "Moesia Inferior" => vec![HorseArchers],
         "Britannia" | "Belgica" | "Lugdunensis" => vec![Chariots],
-        "Arabia" | "Aegyptus" | "Numidia" | "Mauretania Caesariensis" | "Mauretania Tingitana" => {
+        "Numidia" | "Cyrenaica" => vec![Camels, Elephants],
+        "Arabia" | "Aegyptus" | "Mauretania Caesariensis" | "Mauretania Tingitana" => {
             vec![Camels]
         },
         "Africa Proconsularis" => vec![Elephants],

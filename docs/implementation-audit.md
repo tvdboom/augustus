@@ -62,7 +62,7 @@ Source references link to the implementing modules; detailed domain audits expla
 | 19 | Resource focus | Implemented | [EMODEL], [ECON], [BUILD], [UIE] | Global resources, labor, storage and income. |
 | 20 | Slave-labor policy | Implemented | [EMODEL], [ECON], [BUILD], [UIE] | Global resources, labor, storage and income. |
 | 21 | Resource roles | Revised by later sections | [ECON], [MIL] | Military Metal is recruitment-only; no ships or reinforcement. |
-| 22 | Coin | Implemented | [EMODEL], [ECON], [BUILD], [UIE] | Global resources, labor, storage and income. |
+| 22 | Sestertius | Implemented | [EMODEL], [ECON], [BUILD], [UIE] | Global resources, labor, storage and income. |
 | 23 | Player taxes | Implemented | [EMODEL], [ECON], [BUILD], [UIE] | Global resources, labor, storage and income. |
 | 24 | Influence | Tuned formula | [ECON], [APP] | Nobles 0.25/month, plus buildings/wonders/rank/vassals. |
 | 25 | Relation | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
@@ -71,7 +71,7 @@ Source references link to the implementing modules; detailed domain audits expla
 | 28 | Trade and relation | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
 | 29 | Negative relation events | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
 | 30 | Independent control | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
-| 31 | Gaining control with coin | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
+| 31 | Gaining control with sestertius | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
 | 32 | Gaining control with influence | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
 | 33 | Undermine rival | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
 | 34 | Control entrenchment | Implemented | [DIP], [UIP] | Separate relation/control; costs and graph distance. |
@@ -101,9 +101,9 @@ Source references link to the implementing modules; detailed domain audits expla
 | 58 | NPC visible demand bands | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 59 | NPC resource valuation | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 60 | NPC relation and trade terms | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
-| 61 | NPC coin treasury | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
+| 61 | NPC sestertius treasury | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 62 | NPC trade budget | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
-| 63 | Coin in NPC trade | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
+| 63 | Sestertius in NPC trade | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 64 | NPC recurring trade routes | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 65 | NPC one-time trade | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
 | 66 | Recurring trade and relation | Implemented | [ETRADE], [UIE] | Validated routes, bilateral trades and bounded NPC markets. |
@@ -257,7 +257,7 @@ Source references link to the implementing modules; detailed domain audits expla
 | 214 | Candidate campaigning | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
 | 215 | Other players supporting the candidate | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
 | 216 | Other players opposing the candidate | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
-| 217 | Coin bribery | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
+| 217 | Sestertius bribery | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
 | 218 | Exposing scandals | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
 | 219 | Campaign state is live | Implemented | [SEN], [SPY], [APP], [UIP] | Live bloc profiles, spending, bribes and real evidence. |
 | 220 | Failed vote | Implemented | [SEN], [UIP], [PTEST] | Ballots, two seats, terms, removal and Augustus victory. |

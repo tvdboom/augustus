@@ -54,12 +54,14 @@ pub(in crate::app) fn show(
             .sum()
     });
     let recruitment = campaign.map_or(0.0, |campaign| campaign.recruitment_effort_cost(player));
+    let spy_upkeep = campaign.map_or(0.0, |campaign| campaign.spy_upkeep(player));
     let outflow = [
         ("Wages", wages),
         ("Civic spending", civic),
         ("Recruitment effort", recruitment),
         ("Army maintenance", 0.0),
-        ("Deals", 0.0),
+        ("Spy upkeep", spy_upkeep),
+        ("Trade deals", 0.0),
     ];
     flow_panel::show(
         context,

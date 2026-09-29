@@ -1,5 +1,7 @@
 # Generated military artwork
 
+Standing map units now use the separate [sixteen-frame idle sheets](generated-art-unit-idle.md). These original sheets still supply unit icons, movement, and combat.
+
 Mode: built-in imagegen, transparent PNG. All 11 source sheets are saved in `assets/images/military/`. Row layout is icon, idle, movement, combat; four frames per row. Build-time premultiplied-alpha normalization produces 768×768 embedded sheets. Original high-resolution files remain available. Symbols and sprites are newly generated adaptations in the existing game's palette, not extracted Imperator assets. Exact Imperator icon fidelity is not claimed because the wiki could not be fetched.
 
 ## light-infantry
@@ -89,5 +91,3 @@ Saved: `assets/images/military/catapult.png`
 Recorded generation prompt:
 
 Use case historical-scene. Asset: transparent 4-column by 4-row regular game animation sprite sheet, hand painted realistic miniature ancient-world strategy aesthetic for Augustus. Subject ancient Roman single arm torsion stone-throwing catapult, wood, rope and brass fittings. Row1: four copies of isolated symbolic UI icon wooden stone throwing catapult, no riders or people. Row2: four chronological idle frames of full unit. Row3: four chronological moving right frames. Row4: four chronological combat or artillery firing frames. Fixed baseline and identical isometric three-quarter camera and scale in all cells. Every cell exactly 25 percent image width and height; each sprite wholly inside cell with 18 percent padding. Clear readable silhouette. Muted bronze gold, burgundy, warm ivory and brown. Transparent background. No text, labels, grid lines, borders or checkerboard.1536x1536 canvas.
-
-

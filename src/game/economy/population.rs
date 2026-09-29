@@ -2,6 +2,16 @@
 
 use super::{EconomicProvince, EconomyConfig, EconomyWorld, MonthlyInputs, ProvinceMonth};
 
+/// Happiness below these class-specific values reduces the class's output.
+pub const UNHAPPINESS_THRESHOLDS: [f64; 4] = [40.0, 30.0, 20.0, 10.0];
+
+/// Output falls linearly from full at the threshold to half at zero happiness.
+pub fn happiness_output_multiplier(class: usize, happiness: f64, config: &EconomyConfig) -> f64 {
+    let threshold = UNHAPPINESS_THRESHOLDS[class];
+    1.0 - config.max_unhappiness_output_loss.clamp(0.0, 1.0)
+        * ((threshold - happiness) / threshold).clamp(0.0, 1.0)
+}
+
 /// Convert atlas square-degree geometry into the existing aggregate resident scale.
 /// The current map's starting population is `(220 + 35 * sqrt(area))/10`,
 /// before city/starting compensation. Capacity adds its own terrain/city modifiers.
@@ -53,17 +63,45 @@ impl EconomicProvince {
             * config.food_policy[self.policies.food as usize].consumption
     }
 
+    fn available_production_workers(&self, config: &EconomyConfig) -> [f64; 4] {
+        let construction_slaves = if self.construction.is_some() {
+            self.population[3]
+                * config.construction_labor[self.policies.construction as usize].clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Both construction assignments remove slaves from production, never free workers.
+        let productive_slaves =
+            (self.population[3] - self.assigned_slaves() - construction_slaves).max(0.0);
+        [0.0, 0.0, self.population[2], productive_slaves]
+    }
+
+    /// People working in Food, Metal and Stone, ordered by population class.
+    /// Construction assignments are excluded; productivity does not change headcounts.
+    pub fn production_workers(&self, config: &EconomyConfig) -> [[f64; 4]; 3] {
+        let workers = self.available_production_workers(config);
+        let focus = config.focus_weights[self.policies.focus as usize];
+        let weights: [f64; 3] = std::array::from_fn(|i| self.potential[i] * focus[i]);
+        let denominator: f64 = weights.iter().sum();
+        if denominator <= 0.0 {
+            return [[0.0; 4]; 3];
+        }
+        weights.map(|weight| {
+            let share = weight / denominator;
+            workers.map(|count| count * share)
+        })
+    }
+
     /// Divide productive labor once, then calculate sector production from allocated shares.
     pub fn production(&self, config: &EconomyConfig) -> ([f64; 3], [f64; 3]) {
-        let mut labor = self.population[2] * config.productivity[0]
-            + (self.population[3] - self.assigned_slaves()).max(0.0)
+        let workers = self.available_production_workers(config);
+        let labor = workers[2]
+            * config.productivity[0]
+            * happiness_output_multiplier(2, self.happiness[2], config)
+            + workers[3]
                 * config.productivity[1]
-                * config.slave_policy[self.policies.slave_labor as usize].productivity;
-        if self.construction.is_some() {
-            // Wonder-assigned slaves were already removed above; divert only remaining labor.
-            labor *= 1.0
-                - config.construction_labor[self.policies.construction as usize].clamp(0.0, 1.0);
-        }
+                * config.slave_policy[self.policies.slave_labor as usize].productivity
+                * happiness_output_multiplier(3, self.happiness[3], config);
         let focus = config.focus_weights[self.policies.focus as usize];
         let weights: [f64; 3] = std::array::from_fn(|i| self.potential[i] * focus[i]);
         let denominator: f64 = weights.iter().sum();
@@ -72,12 +110,15 @@ impl EconomicProvince {
         }
         let allocation = weights.map(|weight| labor * weight / denominator);
         let effects = self.building_effects(config);
-        let production = std::array::from_fn(|i| {
+        let mut production = std::array::from_fn(|i| {
             allocation[i]
                 * self.potential[i]
                 * (1.0 + effects.production[i]).max(0.0)
                 * config.production_scale[i]
         });
+        if config.food_output_saturation > 0.0 {
+            production[0] /= 1.0 + production[0] / config.food_output_saturation;
+        }
         (allocation, production)
     }
 
@@ -94,19 +135,19 @@ impl EconomicProvince {
             (50.0
                 + food.happiness
                 + buildings.happiness[class]
+                + config.manumission_happiness[self.policies.manumission as usize][class]
                 + self.happiness_modifiers[class]
-                + if class == 0 {
-                    self.noble_tax_happiness
+                + self.temporary_happiness[class]
+                + if class == 1 || class == 2 {
+                    self.recruitment_happiness
                 } else {
                     0.0
                 }
-                + self.temporary_happiness[class]
-                + self.civic_happiness
-                + self.recruitment_happiness
                 + if class == 3 {
                     slave.happiness
                 } else {
-                    0.0
+                    config.migration_happiness[self.policies.migration as usize]
+                        + self.civic_happiness
                 }
                 - overcrowding
                 - shortage)
@@ -114,17 +155,14 @@ impl EconomicProvince {
         })
     }
 
-    /// Taxes have no direct slave tax, avoiding double counting slave production.
+    /// Only citizens and plebeians pay taxes; nobles and slaves are exempt.
     pub fn tax_income(&self, config: &EconomyConfig) -> f64 {
-        self.population
-            .iter()
-            .zip(config.tax_rates)
-            .enumerate()
-            .map(|(class, (count, rate))| {
-                count
-                    * rate
-                    * if class == 0 {
-                        self.noble_tax_multiplier
+        (1..=2)
+            .map(|class| {
+                self.population[class]
+                    * config.tax_rates[class]
+                    * if class == 1 {
+                        happiness_output_multiplier(class, self.happiness[class], config)
                     } else {
                         1.0
                     }
@@ -133,10 +171,10 @@ impl EconomicProvince {
             * (1.0 + self.building_effects(config).tax).max(0.0)
     }
 
-    /// Requested monthly civic budget, based on residents before demographic changes.
+    /// Requested monthly civic budget, based on free residents before demographic changes.
     pub fn civic_spending_cost(&self, config: &EconomyConfig) -> f64 {
-        self.total_population()
-            * config.civic_coin_per_resident[self.policies.civic_spending as usize].max(0.0)
+        self.population[..3].iter().sum::<f64>()
+            * config.civic_coin_per_free_resident[self.policies.civic_spending as usize].max(0.0)
     }
 
     /// Births/deaths are independent flows; class upgrades preserve the remaining total.
@@ -178,19 +216,22 @@ impl EconomicProvince {
         }
         let before = self.population;
         // Rates use one immutable pre-conversion snapshot: no same-month cascading promotion.
-        let manumission = before[3]
-            * (config.class_change_rates[0]
-                * config.manumission_multiplier[self.policies.manumission as usize])
-                .clamp(0.0, 1.0);
-        let citizenship = before[2]
-            * config.class_change_rates[1].clamp(0.0, 1.0)
+        let rate = config.manumission_rates[self.policies.manumission as usize].clamp(-1.0, 1.0);
+        let manumission = if rate >= 0.0 {
+            before[3] * rate
+        } else {
+            before[2] * rate
+        };
+        // Enslaved plebeians cannot also gain citizenship; newly freed slaves wait a month.
+        let citizenship = (before[2] + manumission.min(0.0)).max(0.0)
+            * config.class_change_rates[0].clamp(0.0, 1.0)
             * if self.has_city {
                 1.0
             } else {
                 0.5
             };
         let nobility = before[1]
-            * config.class_change_rates[2].clamp(0.0, 1.0)
+            * config.class_change_rates[1].clamp(0.0, 1.0)
             * if self.has_city {
                 1.0
             } else {

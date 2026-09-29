@@ -21,8 +21,6 @@ impl Campaign {
     /// Reapply after conquest/integration so an owner's edicts always cover their nation.
     pub(crate) fn sync_governance(&mut self) {
         for province in &mut self.economy.provinces {
-            province.noble_tax_multiplier = 1.0;
-            province.noble_tax_happiness = 0.0;
             let Some(owner) = province.owner else {
                 continue;
             };
@@ -37,12 +35,6 @@ impl Campaign {
                 EdictLevel::Medium => SlaveLabor::Normal,
                 EdictLevel::High => SlaveLabor::Harsh,
             };
-            province.noble_tax_multiplier = governance.noble_tax_per_person();
-            province.noble_tax_happiness = match governance.noble_taxes {
-                EdictLevel::Low => 1.0,
-                EdictLevel::Medium => 0.0,
-                EdictLevel::High => -1.0,
-            };
         }
     }
 
@@ -50,9 +42,8 @@ impl Campaign {
         self.military
             .all_units()
             .filter(|unit| unit.owner == ForceOwner::Player(player))
-            .map(|unit| unit.current_manpower)
+            .map(|unit| unit.coin_demand(&self.military.config))
             .sum::<f64>()
-            * self.military.config.coin_per_manpower
             * self.governance_for(player).army_wage_factor()
     }
 
@@ -71,9 +62,22 @@ impl Campaign {
             EdictLevel::Medium => 0.0,
             EdictLevel::High => 1.0,
         };
-        self.military.apply_supply_with_wages(
+        let economy = &self.economy;
+        self.military.apply_supply_with_provisioning(
             ForceOwner::Player(player),
-            supply,
+            |province| {
+                province
+                    .and_then(|id| economy.provinces.get(id))
+                    .and_then(|province| province.owner)
+                    .and_then(|host| {
+                        if host == player {
+                            Some(supply)
+                        } else {
+                            economy.last_report.food_supply_ratio.get(host).copied()
+                        }
+                    })
+                    .unwrap_or(supply)
+            },
             bonus * coverage - 2.0 * (1.0 - coverage),
         );
     }

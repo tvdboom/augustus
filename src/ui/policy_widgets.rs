@@ -7,6 +7,44 @@ pub(super) const SECTION_HEIGHT: f32 = 34.0;
 pub(super) const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
 const RULE: egui::Color32 = egui::Color32::from_rgb(191, 171, 143);
 
+pub(super) fn compact_decimal(value: f64) -> String {
+    let number = format!("{value:.1}").trim_end_matches(".0").to_owned();
+    if number == "-0" {
+        "0".into()
+    } else {
+        number
+    }
+}
+
+pub(super) fn signed_decimal(value: f64) -> String {
+    let number = compact_decimal(value);
+    if value > 0.0 && number != "0" {
+        format!("+{number}")
+    } else {
+        number
+    }
+}
+
+pub(super) fn hover_effects(
+    response: egui::Response,
+    scale: f32,
+    effects: &[&str],
+) -> egui::Response {
+    if effects.is_empty() {
+        return response;
+    }
+    response.on_hover_ui(|ui| {
+        ui.set_max_width(310.0 * scale);
+        ui.spacing_mut().item_spacing.y = 3.0 * scale;
+        for effect in effects {
+            ui.add(
+                egui::Label::new(egui::RichText::new(format!("• {effect}")).size(12.5 * scale))
+                    .wrap(),
+            );
+        }
+    })
+}
+
 pub(super) fn section(ui: &mut egui::Ui, scale: f32, title: &str) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), SECTION_HEIGHT * scale),

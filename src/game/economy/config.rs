@@ -66,40 +66,50 @@ pub struct EconomyConfig {
     pub migration_in: [f64; 4],
     /// Encourage, Normal, Discourage, Closed outbound multipliers.
     pub migration_out: [f64; 4],
+    /// Flat happiness change for Nobles, Citizens and Plebeians by migration policy.
+    pub migration_happiness: [f64; 4],
     /// Capacity/happiness/city contributions to destination attractiveness.
     pub migration_weights: [f64; 3],
-    /// Slave to plebeian, plebeian to citizen, citizen to noble monthly rates.
-    pub class_change_rates: [f64; 3],
+    /// Plebeian to citizen and citizen to noble monthly promotion rates.
+    pub class_change_rates: [f64; 2],
     /// Free workers and slaves' baseline productivity.
     pub productivity: [f64; 2],
     /// Food, Metal, Stone output per allocated labor/potential.
     pub production_scale: [f64; 3],
+    /// Diminishing-return level for provincial Food output; zero disables it.
+    pub food_output_saturation: f64,
     /// Resource focus weights, ordered Balanced, Food, Metal, Stone.
     pub focus_weights: [[f64; 3]; 4],
     /// Slow, Normal, Urgent construction speed multipliers.
     pub construction_speed: [f64; 3],
-    /// Fraction of productive labor diverted while a project is active.
+    /// Fraction of the slave population diverted while a building or wonder is active.
     pub construction_labor: [f64; 3],
-    /// Frugal, Normal, Generous monthly Coin per resident.
-    pub civic_coin_per_resident: [f64; 3],
-    /// Happiness support at full civic funding, recomposed every month.
+    /// Frugal, Normal, Generous monthly Coin per free resident, excluding slaves.
+    pub civic_coin_per_free_resident: [f64; 3],
+    /// Free-class happiness at full civic funding, recomposed every month.
     pub civic_happiness: [f64; 3],
     /// Low, Normal, High recruitment progress per month at full funding.
     pub recruitment_speed: [f64; 3],
-    /// Extra monthly Coin per recruit, charged only for active projects.
+    /// Monthly Coin per recruit, charged only for active projects.
     pub recruitment_coin_per_recruit: [f64; 3],
-    /// Local class happiness effect while recruitment is active.
+    /// Citizen and plebeian happiness effect while recruitment is active.
     pub recruitment_happiness: [f64; 3],
-    /// Restricted, Normal, Encouraged slave-to-plebeian rate multipliers.
-    pub manumission_multiplier: [f64; 3],
+    /// Enslave, Normal, Free monthly rates: negative enslaves plebeians, positive frees slaves.
+    pub manumission_rates: [f64; 3],
+    /// Per-class happiness changes for Enslave, Normal and Free.
+    pub manumission_happiness: [[f64; 4]; 3],
     /// Global physical storage without buildings.
     pub base_storage: [f64; 3],
     /// New player starting stocks; preserves a food buffer for specialization.
     pub starting_stock: [f64; 3],
-    /// Monthly coin per Noble/Citizen/Plebeian/Slave.
+    /// Monthly sestertii per Noble/Citizen/Plebeian/Slave; nobles and slaves are exempt.
     pub tax_rates: [f64; 4],
     /// Domestic influence per noble; political rank income is separate.
     pub influence_per_noble: f64,
+    /// Maximum lost class output at zero happiness, shared by all four classes.
+    pub max_unhappiness_output_loss: f64,
+    /// Monthly slave revolt probability at 5% and 0% happiness.
+    pub slave_revolt_chance: [f64; 2],
     /// Building definitions indexed by BuildingType.
     pub buildings: Vec<BuildingDefinition>,
     /// Canonical wonder IDs map to existing map sites, never duplicate positions.
@@ -193,7 +203,9 @@ impl Default for EconomyConfig {
         Self {
             terrain_capacity: [1.5, 1.0, 0.75, 0.7, 0.35, 0.2, 0.6],
             area_to_capacity_scale: 2.0,
-            city_capacity: 25.0,
+            // Urban starts can receive population compensation; house it before
+            // overcrowding suppresses all labor and triggers an idle revolt.
+            city_capacity: 90.0,
             birth_rates: [0.0035, 0.004, 0.0045, 0.004],
             death_rates: [0.002; 4],
             food_per_class: [1.0; 4],
@@ -244,23 +256,29 @@ impl Default for EconomyConfig {
             overpopulation_migration_scale: 2.0,
             migration_in: [1.5, 1.0, 0.5, 0.1],
             migration_out: [1.0, 1.0, 0.7, 0.1],
+            migration_happiness: [0.0, 0.0, -1.0, -2.0],
             migration_weights: [2.0, 1.0, 0.25],
-            class_change_rates: [0.0005, 0.0008, 0.00025],
+            class_change_rates: [0.0008, 0.00025],
             productivity: [1.0, 1.5],
-            production_scale: [1.1, 0.65, 0.8],
+            // Only plebs/slaves produce; Food supports all four classes.
+            production_scale: [3.3, 0.9, 1.2],
+            food_output_saturation: 400.0,
             focus_weights: [[1.0; 3], [3.0, 1.0, 1.0], [1.0, 3.0, 1.0], [1.0, 1.0, 3.0]],
-            construction_speed: [0.75, 1.0, 1.5],
+            construction_speed: [0.75, 1.0, 1.25],
             construction_labor: [0.05, 0.10, 0.20],
-            civic_coin_per_resident: [0.0, 0.03, 0.08],
-            civic_happiness: [0.0, 1.0, 3.0],
-            recruitment_speed: [0.75, 1.0, 1.5],
-            recruitment_coin_per_recruit: [0.0, 0.0, 0.10],
-            recruitment_happiness: [1.0, 0.0, -2.0],
-            manumission_multiplier: [0.25, 1.0, 4.0],
+            civic_coin_per_free_resident: [0.0, 0.1, 0.2],
+            civic_happiness: [-1.0, 0.0, 1.0],
+            recruitment_speed: [0.75, 1.0, 1.25],
+            recruitment_coin_per_recruit: [0.1, 0.2, 0.3],
+            recruitment_happiness: [1.0, 0.0, -1.0],
+            manumission_rates: [-0.002, 0.0, 0.002],
+            manumission_happiness: [[0.0, 0.0, -1.0, 0.0], [0.0; 4], [-1.0, 0.0, 0.0, 0.0]],
             base_storage: [2400.0, 1600.0, 4000.0],
             starting_stock: [450.0, 120.0, 200.0],
-            tax_rates: [1.0, 0.5, 0.2, 0.0],
+            tax_rates: [0.0, 0.5, 0.2, 0.0],
             influence_per_noble: 0.25,
+            max_unhappiness_output_loss: 0.5,
+            slave_revolt_chance: [0.10, 0.50],
             buildings: BuildingType::ALL.into_iter().map(BuildingDefinition::for_type).collect(),
             wonders: (0..crate::map::WONDER_COUNT).map(WonderDefinition::for_site).collect(),
             wonder_slave_speeds: vec![

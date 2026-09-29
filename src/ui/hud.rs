@@ -2,13 +2,18 @@
 
 use super::*;
 
+#[derive(Default)]
+pub(in crate::app) struct RankArtTextures {
+    ranks: Option<[Option<egui::TextureHandle>; 6]>,
+    scepter: Option<egui::TextureHandle>,
+}
+
 pub(in crate::app) fn draw_map_hud(
     mut contexts: EguiContexts,
     mut standard_textures: Local<Option<[Option<egui::TextureHandle>; PLAYER_COLORS.len()]>>,
     mut menu_icon_textures: Local<Option<[Option<egui::TextureHandle>; 4]>>,
     mut panels: MapPanelParams,
-    mut rank_textures: Local<Option<[Option<egui::TextureHandle>; 6]>>,
-    mut scepter_texture: Local<Option<egui::TextureHandle>>,
+    mut rank_art: Local<RankArtTextures>,
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
     mut practice: ResMut<LocalPractice>,
@@ -146,6 +151,10 @@ pub(in crate::app) fn draw_map_hud(
     }
     volume_popover(&responses.1, &mut sound);
     if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
+        let RankArtTextures {
+            ranks: rank_textures,
+            scepter: scepter_texture,
+        } = &mut *rank_art;
         let textures = rank_textures.get_or_insert_with(|| std::array::from_fn(|_| None));
         let scepter = scepter_texture.get_or_insert_with(|| load_rank_scepter(context));
         let active_rank = practice.players[practice.active_player].rank.min(RANKS.len() - 1);

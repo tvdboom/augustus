@@ -2,6 +2,30 @@
 
 use super::*;
 
+/// Defer accepted construction feedback until the panel has finished drawing.
+pub(in crate::app) fn request_construction_sound(context: &egui::Context) {
+    context.data_mut(|data| data.insert_temp(egui::Id::new("construction-sound"), true));
+}
+
+pub(in crate::app) fn take_construction_sound(context: &egui::Context) -> bool {
+    context.data_mut(|data| {
+        data.remove_temp::<bool>(egui::Id::new("construction-sound")).unwrap_or(false)
+    })
+}
+
+pub(in crate::app) fn play_construction_sound(
+    context: &egui::Context,
+    sound: &MenuAudio,
+    audio: &Audio,
+    assets: &AssetServer,
+) {
+    if !take_construction_sound(context) || sound.mode == AudioMode::Mute || sound.volume <= 0.001 {
+        return;
+    }
+    let decibels = 20.0 * sound.volume.clamp(0.001, 1.0).log10();
+    audio.play(assets.load("audio/construction.ogg")).with_volume(decibels);
+}
+
 pub(in crate::app) fn settings_button_destination(state: AppState, game: ActiveGame) -> AppState {
     if state == AppState::GameSettings {
         game.screen()
@@ -127,7 +151,9 @@ pub(in crate::app) fn volume_slider(ui: &mut egui::Ui, sound: &mut MenuAudio) ->
             state.fg_stroke = egui::Stroke::new(2.0, CREAM);
             state.corner_radius = egui::CornerRadius::same(6);
         }
-        ui.label(egui::RichText::new(format!("Volume  {:.0}%", volume * 100.0)).size(18.0));
+        ui.label(
+            egui::RichText::new(format!("Volume  {:.0}%", volume * 100.0)).size(18.0).color(CREAM),
+        );
         let response = ui
             .add(egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false).trailing_fill(true))
             .on_hover_cursor(egui::CursorIcon::PointingHand);

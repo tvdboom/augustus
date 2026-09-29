@@ -1,7 +1,7 @@
 //! Player-scoped, clickable political notifications with monthly aggregation and history.
 
 use super::campaign::Campaign;
-use crate::game::economy::ConstructionProject;
+use crate::game::economy::{BuildingType, ConstructionProject};
 use crate::game::military::{BattleResult, ForceOwner, MilitaryAccess, MilitaryEvent};
 use crate::game::politics::diplomacy::PoliticalState;
 use crate::game::politics::senate::SenateEvent;
@@ -52,10 +52,10 @@ pub(crate) enum NoticeKind {
     MilitaryRankIncreased,
     /// A directly owned ordinary building completed.
     BuildingCompleted,
-    /// The direct owner began a building upgrade or a wonder project.
-    ConstructionStarted,
     /// Civilian and military demand exceeded the owner's global Food supply.
     FoodShortage,
+    /// Enslaved residents left the province and formed hostile infantry.
+    SlaveRevolt,
     /// One or more recurring agreements failed or were cancelled.
     TradeInterrupted,
     /// A foreign wonder construction project began.
@@ -119,6 +119,8 @@ pub(crate) struct CampaignNotice {
     pub kind: NoticeKind,
     /// Affected province, where applicable.
     pub province: Option<usize>,
+    /// The building involved in this event, retained after construction finishes.
+    pub building: Option<BuildingType>,
     /// Canonical wonder site, where applicable.
     pub wonder: Option<usize>,
     /// Unique evidence item, where applicable.
@@ -206,13 +208,16 @@ impl CampaignNotifications {
         }
     }
 
-    /// Aggregate monthly events; each explicit construction start remains a fresh notice.
+    /// Aggregate monthly events while retaining each military access change.
     pub fn push(&mut self, mut notice: CampaignNotice) {
         let same = |old: &CampaignNotice| {
-            notice.kind != NoticeKind::ConstructionStarted
-                && old.recipient == notice.recipient
+            !matches!(
+                notice.kind,
+                NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+            ) && old.recipient == notice.recipient
                 && old.kind == notice.kind
                 && old.province == notice.province
+                && old.building == notice.building
                 && old.wonder == notice.wonder
                 && old.scandal == notice.scandal
                 && old.month == notice.month
@@ -252,6 +257,7 @@ impl CampaignNotifications {
             body: body.into(),
             kind,
             province: Some(province),
+            building: None,
             wonder: None,
             scandal: None,
             month,
@@ -272,39 +278,6 @@ pub(crate) struct NotificationSnapshot {
 }
 
 impl Campaign {
-    /// The UI calls once after a successful start, including same-month restarts.
-    pub fn notify_construction_started(&mut self, player: usize, province: usize) {
-        let state = &self.economy.provinces[province];
-        if state.owner != Some(player) {
-            return;
-        }
-        let Some(project) = &state.construction else {
-            return;
-        };
-        let (name, level) = match project {
-            ConstructionProject::Building(project) => {
-                (project.building.name(), format!("Level {}", project.target_level))
-            },
-            ConstructionProject::Wonder(project) => (
-                crate::map::wonder_name(project.wonder_id).unwrap_or("Wonder"),
-                "Wonder construction".to_owned(),
-            ),
-        };
-        self.notifications.province_notice(
-            player,
-            province,
-            self.economy.month,
-            NoticeSeverity::Info,
-            NoticeKind::ConstructionStarted,
-            format!("{name} started"),
-            format!(
-                "{level} in {} · {} months to complete.",
-                state.name,
-                project.months_remaining(&self.economy.config, state.policies.construction)
-            ),
-        );
-    }
-
     /// Senate events target the chamber explicitly rather than an unrelated province.
     pub fn record_senate_event(&mut self, event: &SenateEvent) {
         let (kind, title, body) = match event {
@@ -322,6 +295,7 @@ impl Campaign {
                 body: body.clone(),
                 kind,
                 province: None,
+                building: None,
                 wonder: None,
                 scandal: None,
                 month: self.economy.month,
@@ -347,10 +321,7 @@ impl Campaign {
                     NoticeSeverity::Info,
                     NoticeKind::RecruitmentCompleted,
                     format!("{} recruited", unit_type.name()),
-                    format!(
-                        "The cohort is ready in {} and now consumes Food.",
-                        self.economy.provinces[province].name
-                    ),
+                    format!("The cohort is ready in {}.", self.economy.provinces[province].name),
                 );
             },
             MilitaryEvent::UnitsDestroyed {
@@ -554,15 +525,22 @@ impl Campaign {
                     else {
                         continue;
                     };
-                    let granted = previous != MilitaryAccess::Peaceful
-                        && row[province] == MilitaryAccess::Peaceful;
-                    let revoked = previous == MilitaryAccess::Peaceful
-                        && row[province] != MilitaryAccess::Peaceful;
+                    let rank = |access| match access {
+                        MilitaryAccess::Peaceful => 2,
+                        MilitaryAccess::Transit => 1,
+                        _ => 0,
+                    };
+                    let granted = rank(row[province]) > rank(previous);
+                    let revoked = rank(row[province]) < rank(previous);
                     if granted || revoked {
                         self.notifications.province_notice(player,province,self.economy.month,if granted{NoticeSeverity::Info}else{NoticeSeverity::Warning},
                             if granted{NoticeKind::MilitaryAccessGranted}else{NoticeKind::MilitaryAccessRevoked},
                             format!("Military access {}: {name}",if granted{"granted"}else{"revoked"}),
-                            if granted{"Peaceful entry is now permitted. Friendly stationing never produces occupation Control."}else{"New peaceful entry is no longer permitted. Existing movement orders recheck permission at their next crossing."});
+                            match row[province] {
+                                MilitaryAccess::Peaceful => "Peaceful troop passage and stationing are now permitted. Peaceful stationing never produces occupation Control.",
+                                MilitaryAccess::Transit => "Troops may pass through this province, but may not station here. Existing movement orders recheck permission at their next crossing.",
+                                _ => "New peaceful entry is no longer permitted. Existing movement orders recheck permission at their next crossing.",
+                            });
                     }
                 }
             }
@@ -675,7 +653,7 @@ impl Campaign {
                         if old < threshold - 1e-7 && new >= threshold - 1e-7 {
                             self.notifications.province_notice(player, province, month, NoticeSeverity::Info, kind,
                                 if threshold == 100.0 { format!("Full Control of {name}") } else { format!("Control in {name} has reached 50") },
-                                if threshold == 100.0 { "Take Ownership is now available." } else { "Vassalize becomes available at 51 Control when you are the unique leader." });
+                                if threshold == 100.0 { "Take Ownership is now available." } else { "Vassalize becomes available above 50 Control when you are the unique leader." });
                         }
                     }
                 }
@@ -824,6 +802,7 @@ impl Campaign {
                     NoticeKind::WonderCompleted
                 },
                 province: Some(province),
+                building: None,
                 wonder: Some(wonder),
                 scandal: None,
                 month: self.economy.month,

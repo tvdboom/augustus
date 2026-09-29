@@ -1,13 +1,15 @@
 //! Campaign inspectors using the existing parchment, banner colors, and button treatment.
 
 use super::campaign::Campaign;
+use super::campaign_confirmation::ConfirmationAction;
 use super::campaign_notifications::{CampaignNotice, NoticeAction};
 use super::campaign_widgets::{icon, stat, Icon};
 use super::*;
 use crate::game::economy::ConstructionProject;
 use crate::game::military::*;
 use crate::game::politics::diplomacy::*;
-use crate::game::politics::{Currency, PoliticalError, PoliticalPlayer};
+use crate::game::politics::espionage::SpyAssignment;
+use crate::game::politics::PoliticalError;
 
 /// Global banner destinations and the contextual province inspector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +21,8 @@ pub(crate) enum CampaignTab {
     Province,
 }
 
+const PROVINCE_SECTION_COUNT: usize = 6;
+
 /// View state is separate from game rules and never changes simulation outcomes.
 #[derive(Resource, Default)]
 pub(crate) struct CampaignUi {
@@ -26,26 +30,67 @@ pub(crate) struct CampaignUi {
     pub province: Option<usize>,
     section: usize,
     last_detail: Option<MapDetail>,
-    notice: String,
+    pub(super) notice: String,
     highlight_scandal: Option<u64>,
     province_selector_open: bool,
     province_search: String,
+    politics_section: usize,
+    politics_province_search: String,
+    politics_spy_search: String,
+    pub(super) confirmation: Option<campaign_confirmation::PendingConfirmation>,
 }
 
 impl CampaignUi {
+    /// The mouse's forward/back side buttons cycle the open province's tabs.
+    fn cycle_province_tabs(&mut self, ctx: &egui::Context) {
+        if self.open != Some(CampaignTab::Province) || self.confirmation_open() {
+            return;
+        }
+        let (back, forward) = ctx.input(|input| {
+            (
+                input.pointer.button_pressed(egui::PointerButton::Extra1),
+                input.pointer.button_pressed(egui::PointerButton::Extra2),
+            )
+        });
+        if back != forward {
+            self.section = (self.section
+                + if forward {
+                    1
+                } else {
+                    PROVINCE_SECTION_COUNT - 1
+                })
+                % PROVINCE_SECTION_COUNT;
+            self.close_province_selector();
+        }
+    }
+
+    pub(crate) fn confirmation_open(&self) -> bool {
+        self.confirmation.is_some()
+    }
+
+    /// Escape dismisses the confirmation before touching the underlying panel.
+    pub(crate) fn dismiss_confirmation(&mut self) -> bool {
+        self.confirmation.take().is_some()
+    }
+
     /// Rome's city and province selections lead directly to the Senate.
     fn select_map_detail(&mut self, selected: MapDetail, campaign: &Campaign) {
         self.close_province_selector();
         let province = match selected {
             MapDetail::Province(id) | MapDetail::City(id) => id,
         };
+        if self.province.is_none() && campaign.economy.provinces[province].name != "Latium" {
+            self.section = if matches!(selected, MapDetail::City(_)) {
+                2
+            } else {
+                0
+            };
+        }
         self.province = Some(province);
         self.last_detail = Some(selected);
-        self.section = if matches!(selected, MapDetail::City(_)) {
-            2
-        } else {
-            0
-        };
+        if campaign.economy.provinces[province].name == "Latium" {
+            self.politics_section = 0;
+        }
         self.open = Some(if campaign.economy.provinces[province].name == "Latium" {
             CampaignTab::Senate
         } else {
@@ -74,6 +119,7 @@ impl CampaignUi {
             self.open = Some(CampaignTab::Province);
             self.last_detail = Some(MapDetail::Province(province));
         } else {
+            self.politics_section = 0;
             self.open = Some(CampaignTab::Senate);
         }
     }
@@ -100,117 +146,36 @@ fn province_title_selector(
     view: &mut CampaignUi,
 ) {
     let province = view.province.unwrap_or(0).min(provinces.len() - 1);
-    let search_id = ui.id().with("province-title-search");
-    let editing = view.province_selector_open;
-    let response = ui
-        .scope(|ui| {
-            ui.visuals_mut().weak_text_color = Some(if editing {
-                ink.gamma_multiply(0.5)
-            } else {
-                ink
-            });
-            ui.visuals_mut().text_cursor.stroke.color = ink;
-            ui.add_sized(
-                size,
-                egui::TextEdit::singleline(&mut view.province_search)
-                    .id(search_id)
-                    .frame(
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_black_alpha(if editing {
-                                18
-                            } else {
-                                8
-                            }))
-                            .stroke(egui::Stroke::new(scale, egui::Color32::TRANSPARENT))
-                            .corner_radius(3.0 * scale)
-                            .inner_margin(egui::vec2(8.0 * scale, 0.0)),
-                    )
-                    .min_size(size)
-                    .horizontal_align(egui::Align::Center)
-                    .vertical_align(egui::Align::Center)
-                    .font(egui::FontId::proportional(20.0 * scale))
-                    .text_color(ink)
-                    .hint_text(egui::RichText::new(&provinces[province].name).size(20.0 * scale)),
-            )
-        })
-        .inner
-        .on_hover_text("Click and type to search provinces");
-    if (response.clicked() || response.gained_focus()) && !view.province_selector_open {
-        view.province_selector_open = true;
-        response.request_focus();
-    }
-    let query = view.province_search.trim().to_lowercase();
-    let mut matches: Vec<_> = provinces
+    let options: Vec<_> = provinces
         .iter()
         .enumerate()
-        .filter(|(_, province)| province.name.to_lowercase().contains(&query))
-        .collect();
-    matches.sort_unstable_by(|(_, a), (_, b)| a.name.cmp(&b.name));
-    let mut selected = None;
-    let popup_frame = egui::Frame::popup(ui.style()).inner_margin(4.0 * scale);
-    egui::Popup::from_response(&response)
-        .id(search_id.with("dropdown"))
-        .open_bool(&mut view.province_selector_open)
-        .close_behavior(if response.contains_pointer() {
-            egui::PopupCloseBehavior::IgnoreClicks
-        } else {
-            egui::PopupCloseBehavior::CloseOnClickOutside
+        .map(|(id, candidate)| campaign_widgets::TitleSearchOption {
+            name: &candidate.name,
+            label: format!(
+                "{}{}",
+                candidate.name,
+                if candidate.owner == Some(player) {
+                    " · yours"
+                } else {
+                    ""
+                }
+            ),
+            selected: province == id,
         })
-        .align(egui::RectAlign::BOTTOM_START)
-        .align_alternatives(&[])
-        .gap(0.0)
-        .width(response.rect.width())
-        .frame(popup_frame)
-        .show(|ui| {
-            ui.set_width((response.rect.width() - popup_frame.total_margin().sum().x).max(1.0));
-            if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
-                selected = matches.first().map(|(id, _)| *id);
-            }
-            egui::ScrollArea::vertical()
-                .id_salt("province-search-results")
-                .max_height((ui.ctx().content_rect().height() * 0.4).min(280.0 * scale))
-                .show(ui, |ui| {
-                    if matches.is_empty() {
-                        ui.label("No provinces match");
-                    }
-                    for (id, province) in matches {
-                        if ui
-                            .add(
-                                egui::Button::selectable(view.province == Some(id), ())
-                                    .left_text(format!(
-                                        "{}{}",
-                                        province.name,
-                                        if province.owner == Some(player) {
-                                            " · yours"
-                                        } else {
-                                            ""
-                                        }
-                                    ))
-                                    .truncate()
-                                    .min_size(egui::vec2(ui.available_width(), 28.0 * scale)),
-                            )
-                            .clicked()
-                        {
-                            selected = Some(id);
-                        }
-                    }
-                });
-        });
-    if let Some(id) = selected {
+        .collect();
+    if let Some(id) = campaign_widgets::title_search_selector(
+        ui,
+        size,
+        ink,
+        scale,
+        &provinces[province].name,
+        ui.id().with("province-title-search"),
+        &mut view.province_selector_open,
+        &mut view.province_search,
+        &options,
+        "No provinces match",
+    ) {
         view.province = Some(id);
-        view.province_selector_open = false;
-    }
-    if !view.province_selector_open {
-        view.province_search.clear();
-        ui.memory_mut(|memory| memory.surrender_focus(search_id));
-    }
-    if response.hovered() || response.has_focus() {
-        ui.painter().rect_stroke(
-            response.rect,
-            3.0 * scale,
-            egui::Stroke::new(scale, ink.gamma_multiply(0.7)),
-            egui::StrokeKind::Inside,
-        );
     }
 }
 
@@ -309,7 +274,54 @@ fn panel_header(
                 closed = response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
             });
         });
-    if !matches!(tab, CampaignTab::Senate | CampaignTab::Governance | CampaignTab::Trade) {
+    if tab == CampaignTab::Senate {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric((12.0 * scale).round() as i8, 0))
+            .show(ui, |ui| {
+                let tabs =
+                    [(Icon::Eagle, "Senate"), (Icon::Province, "Provinces"), (Icon::Spy, "Spies")];
+                let gap = ui.spacing().item_spacing.x;
+                let width = ((ui.available_width() - gap * 2.0) / 3.0 - 3.0 * scale).max(1.0);
+                ui.horizontal(|ui| {
+                    for (index, (symbol, label)) in tabs.into_iter().enumerate() {
+                        let selected = view.politics_section == index;
+                        let fill = if selected {
+                            egui::Color32::from_rgb(219, 200, 168)
+                        } else {
+                            province_panel::TABLE_STRIPE
+                        };
+                        let response = egui::Frame::new()
+                            .fill(fill)
+                            .stroke(egui::Stroke::new(
+                                scale,
+                                if selected {
+                                    color
+                                } else {
+                                    province_panel::RULE
+                                },
+                            ))
+                            .corner_radius(3.0 * scale)
+                            .show(ui, |ui| {
+                                ui.set_width(width);
+                                ui.horizontal_centered(|ui| {
+                                    icon(ui, symbol, 22.0 * scale);
+                                    ui.strong(label);
+                                });
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            view.politics_section = index;
+                        }
+                    }
+                });
+                ui.separator();
+            });
+    }
+    if !matches!(
+        tab,
+        CampaignTab::Senate | CampaignTab::Governance | CampaignTab::Military | CampaignTab::Trade
+    ) {
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: (12.0 * scale).round() as i8,
@@ -342,7 +354,7 @@ fn panel_header(
                 }
                 if tab == CampaignTab::Province {
                     let owned = provinces[view.province.unwrap_or(province)].owner == Some(player);
-                    let tabs = [
+                    let tabs: [_; PROVINCE_SECTION_COUNT] = [
                         (Icon::Province, "Overview"),
                         if owned {
                             (Icon::Policies, "Policies")
@@ -362,15 +374,37 @@ fn panel_header(
                                 egui::Sense::click(),
                             );
                             let selected = view.section == index;
-                            if selected || response.hovered() {
-                                ui.painter().rect_filled(
+                            let hovered = response.hovered();
+                            let pressed = response.is_pointer_button_down_on();
+                            if selected || hovered || pressed {
+                                let fill = if pressed {
+                                    egui::Color32::from_rgb(199, 163, 111)
+                                } else if selected && hovered {
+                                    egui::Color32::from_rgb(211, 185, 145)
+                                } else if selected {
+                                    egui::Color32::from_rgb(219, 200, 168)
+                                } else {
+                                    egui::Color32::from_rgb(231, 213, 181)
+                                };
+                                ui.painter().rect_filled(rect, 3.0 * scale, fill);
+                                ui.painter().rect_stroke(
                                     rect,
-                                    3.0,
-                                    if selected {
-                                        egui::Color32::from_rgb(219, 200, 168)
-                                    } else {
-                                        province_panel::TABLE_STRIPE
-                                    },
+                                    3.0 * scale,
+                                    egui::Stroke::new(
+                                        if pressed {
+                                            1.8 * scale
+                                        } else {
+                                            scale
+                                        },
+                                        if pressed {
+                                            province_panel::INK
+                                        } else if selected {
+                                            color
+                                        } else {
+                                            province_panel::RULE
+                                        },
+                                    ),
+                                    egui::StrokeKind::Inside,
                                 );
                             }
                             ui.scope_builder(
@@ -384,7 +418,8 @@ fn panel_header(
                                         egui::Label::new(
                                             egui::RichText::new(label).size(11.0 * scale),
                                         )
-                                        .truncate(),
+                                        .truncate()
+                                        .show_tooltip_when_elided(false),
                                     );
                                 },
                             );
@@ -392,47 +427,33 @@ fn panel_header(
                                 ui.painter().hline(
                                     rect.x_range(),
                                     rect.bottom(),
-                                    egui::Stroke::new(2.0 * scale, color),
+                                    egui::Stroke::new(3.0 * scale, color),
                                 );
                             }
-                            if response
-                                .on_hover_text(label)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 view.section = index;
                             }
                         }
                     });
                 }
                 ui.separator();
-                if tab == CampaignTab::Province && matches!(view.section, 0 | 2) {
+                if tab == CampaignTab::Province && view.section == 0 {
                     let selected = &provinces[view.province.unwrap_or(province)];
-                    let landscape = if view.section == 2 {
-                        if selected.has_city {
-                            campaign_widgets::ProvinceLandscape::City
-                        } else {
-                            campaign_widgets::ProvinceLandscape::Village
-                        }
-                    } else {
-                        campaign_widgets::ProvinceLandscape::Terrain(selected.terrain)
-                    };
+                    let landscape = campaign_widgets::ProvinceLandscape::Terrain(selected.terrain);
                     let landscape = campaign_widgets::portrait(ui, landscape, 76.0 * scale);
-                    if !(tab == CampaignTab::Province && view.section == 2) {
-                        let city = selected
-                            .has_city
-                            .then(|| crate::map::city_name_for_province(&selected.name))
-                            .flatten();
-                        if campaign_widgets::landscape_badges(
-                            ui,
-                            landscape,
-                            selected.terrain,
-                            city,
-                            scale,
-                        ) {
-                            view.open = Some(CampaignTab::Province);
-                            view.section = 2;
-                        }
+                    let city = selected
+                        .has_city
+                        .then(|| crate::map::city_name_for_province(&selected.name))
+                        .flatten();
+                    if campaign_widgets::landscape_badges(
+                        ui,
+                        landscape,
+                        selected.terrain,
+                        city,
+                        scale,
+                    ) {
+                        view.open = Some(CampaignTab::Province);
+                        view.section = 2;
                     }
                 }
             });
@@ -447,9 +468,16 @@ fn province_overview(
     province: usize,
     player: usize,
     scale: f32,
-) {
-    let political_height = if campaign.politics.get(province).is_some() {
-        80.0
+) -> Option<ConfirmationAction> {
+    let politics = campaign.politics.get(province).filter(
+        |politics| !matches!(politics.state, PoliticalState::Owned { owner } if owner != player),
+    );
+    let political_height = if let Some(politics) = politics {
+        if acquisition_actions(politics, player).is_empty() {
+            80.0
+        } else {
+            110.0
+        }
     } else {
         0.0
     };
@@ -464,16 +492,19 @@ fn province_overview(
     ui.scope(|ui| {
         panel_style(ui, scale);
         ui.spacing_mut().item_spacing.y = 0.0;
-        if let Some(politics) = campaign.politics.get(province) {
-            overview_politics(ui, politics, player, scale);
+        let mut action = None;
+        if let Some(politics) = politics {
+            action = overview_politics(ui, politics, player, scale);
             ui.add_space(7.0 * scale);
         }
         if owned {
-            campaign_economy::overview(ui, &campaign.economy, province, scale);
+            campaign_economy::overview(ui, &campaign.economy, &campaign.military, province, scale);
         } else {
             province_intelligence::overview(ui, campaign, province, player, scale);
         }
-    });
+        action
+    })
+    .inner
 }
 
 /// Header and frame margins are accounted for before fitting the read-only overview.
@@ -484,12 +515,12 @@ fn province_overview_body(
     province: usize,
     player: usize,
     scale: f32,
-) {
+) -> Option<ConfirmationAction> {
     ui.set_max_height((inner_bottom - ui.next_widget_position().y).max(0.0));
-    province_overview(ui, campaign, province, player, scale);
+    province_overview(ui, campaign, province, player, scale)
 }
 
-/// Keep building sections and status inside the panel, scrolling when needed.
+/// Keep building sections inside the panel, scrolling when needed.
 fn province_buildings_body(
     ui: &mut egui::Ui,
     inner_bottom: f32,
@@ -497,23 +528,39 @@ fn province_buildings_body(
     province: usize,
     player: usize,
     scale: f32,
-    status: &str,
+    view: &mut CampaignUi,
 ) -> Option<String> {
     let remaining = (inner_bottom - ui.next_widget_position().y).max(0.0);
-    let footer = if status.is_empty() {
-        0.0
-    } else {
-        (26.0 * scale).min(remaining * 0.2)
-    };
-    ui.set_max_height(remaining - footer);
+    ui.set_max_height(remaining);
     let before = construction_underway(campaign, province);
+    let province_state = &campaign.economy.provinces[province];
+    let landscape = if province_state.has_city {
+        campaign_widgets::ProvinceLandscape::City
+    } else {
+        campaign_widgets::ProvinceLandscape::Village
+    };
+    campaign_widgets::portrait(ui, landscape, 76.0 * scale);
+    let remaining = (inner_bottom - ui.next_widget_position().y).max(0.0);
     let message = egui::ScrollArea::vertical()
         .id_salt(("province-buildings", province, player))
-        .max_height(remaining - footer)
+        .max_height(remaining)
         .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if campaign.economy.provinces[province].owner == Some(player) {
+            let owned = campaign.economy.provinces[province].owner == Some(player);
+            let queue_action = campaign_economy::construction_queue_view(
+                ui,
+                &campaign.economy,
+                province,
+                owned,
+                scale,
+            );
+            if let Some(action) = queue_action {
+                view.confirmation = campaign_confirmation::PendingConfirmation::construction(
+                    campaign, province, player, action,
+                );
+            }
+            if owned {
                 campaign_economy::buildings(ui, &mut campaign.economy, province, player, scale)
             } else {
                 province_intelligence::buildings(ui, campaign, province, player, scale);
@@ -523,77 +570,146 @@ fn province_buildings_body(
         .inner;
     let after = construction_underway(campaign, province);
     if before != after {
-        if after.is_some() {
-            campaign.notify_construction_started(player, province);
-        }
         if let Some(Icon::Wonder(wonder)) = after {
             campaign.notify_wonder_started(player, province, wonder);
         }
-    }
-    if footer > 0.0 {
-        let rect = egui::Rect::from_min_max(
-            egui::pos2(ui.max_rect().left(), inner_bottom - footer),
-            egui::pos2(ui.max_rect().right(), inner_bottom),
-        );
-        ui.put(rect, egui::Label::new(egui::RichText::new(status).size(12.0 * scale)).truncate())
-            .on_hover_text(status);
     }
     message
 }
 
 /// Compact meters show political values; full ownership fills the domestic indicators.
-fn overview_politics(ui: &mut egui::Ui, politics: &ProvincePolitics, player: usize, scale: f32) {
+fn overview_politics(
+    ui: &mut egui::Ui,
+    politics: &ProvincePolitics,
+    player: usize,
+    scale: f32,
+) -> Option<ConfirmationAction> {
     if politics.state == PoliticalState::Rome {
         ui.label("Rome · protected capital. Conquest grants immediate victory.");
-        return;
+        return None;
     }
     let gold = egui::Color32::from_rgb(190, 150, 76);
-    let (control, control_caption, control_text, control_tip) = match &politics.state {
-        PoliticalState::Independent { shares, .. } => {
+    let (control, control_text) = match &politics.state {
+        PoliticalState::Independent {
+            shares,
+            ..
+        } => {
             let value = shares.get(player).copied().unwrap_or(0.0);
-            (value / 100.0, "Your political share".to_owned(), format!("{value:.0}/100"),
-                "Your current share of Independent Control. Local government and all player shares total 100. Relation measures friendship separately.")
+            (value / 100.0, format!("{value:.0}/100"))
         },
-        PoliticalState::Vassal { overlord, control, .. } => (
-            control / 100.0,
-            if *overlord == player { "Your vassal".to_owned() } else { format!("Player {}'s vassal", overlord + 1) },
-            format!("{control:.0}/100"),
-            "Vassal Control belongs to the province's overlord. It measures stability and integration progress. Relation below 50 causes decay; garrisons and government support can offset it.",
-        ),
-        PoliticalState::Owned { owner } => (
-            1.0,
-            if *owner == player { "Your province".to_owned() } else { format!("Player {}'s province", owner + 1) },
-            "100/100".to_owned(),
-            "Direct ownership replaces diplomatic Control. Owned provinces have no Independent or Vassal Control score.",
-        ),
+        PoliticalState::Vassal {
+            control,
+            ..
+        } => (control / 100.0, format!("{control:.0}/100")),
+        PoliticalState::Owned {
+            ..
+        } => (1.0, "100/100".to_owned()),
         PoliticalState::Rome => unreachable!("Rome has no political meters"),
     };
     let domestic = matches!(politics.state, PoliticalState::Owned { owner } if owner == player);
-    let relation = politics.relation(player).clamp(0.0, 100.0);
-    let (band, relation_color) = if relation < 20.0 {
-        ("Very hostile", egui::Color32::from_rgb(155, 69, 58))
-    } else if relation < 40.0 {
-        ("Hostile", egui::Color32::from_rgb(182, 108, 75))
-    } else if relation < 60.0 {
-        ("Neutral", gold)
-    } else if relation < 80.0 {
-        ("Friendly", egui::Color32::from_rgb(139, 161, 112))
-    } else {
-        ("Strongly friendly", egui::Color32::from_rgb(103, 149, 118))
+    let control_tooltip = match &politics.state {
+        PoliticalState::Independent {
+            ..
+        } => {
+            "Your political power over this province. Above 50 Control, you can vassalize it; at 100, you can take direct ownership."
+        },
+        PoliticalState::Vassal {
+            ..
+        } => {
+            "The overlord's political hold over this vassal. At 100 Control, the overlord can take direct ownership; at 0, the province becomes independent."
+        },
+        PoliticalState::Owned {
+            owner,
+        } if *owner == player => "You directly own this province and have full political control.",
+        PoliticalState::Owned {
+            ..
+        } => {
+            "This province is directly owned by another player, who has full political control. Independent Control shares and vassalization no longer apply."
+        },
+        PoliticalState::Rome => unreachable!("Rome has no political meters"),
     };
+    let relation_tooltip = if domestic {
+        "This is your own province. Relation is always full."
+    } else {
+        "How friendly this province is toward you."
+    };
+    let relation = politics.relation(player).clamp(0.0, 100.0);
+    let relation_color = if relation < 20.0 {
+        egui::Color32::from_rgb(155, 69, 58)
+    } else if relation < 40.0 {
+        egui::Color32::from_rgb(182, 108, 75)
+    } else if relation < 60.0 {
+        gold
+    } else if relation < 80.0 {
+        egui::Color32::from_rgb(139, 161, 112)
+    } else {
+        egui::Color32::from_rgb(103, 149, 118)
+    };
+    let actions = acquisition_actions(politics, player);
+    let mut requested = None;
     ui.columns(2, |columns| {
-        political_card(&mut columns[0], Icon::Control, "Control", &control_caption, control as f32, &control_text, gold, control_tip, scale);
         political_card(
-            &mut columns[1], Icon::Relation, "Relation",
-            if domestic { "Domestic province" } else { band },
-            if domestic { 1.0 } else { relation as f32 / 100.0 },
-            &if domestic { "100/100".to_owned() } else { format!("{relation:.0}/100") },
-            if domestic { egui::Color32::from_rgb(103, 149, 118) } else { relation_color },
-            if domestic { "The full bar indicates your domestic province. Owned provinces use population happiness instead of diplomatic Relation. Integration converts the former relation into happiness." }
-            else { "This province's current Relation toward you, from 0 to 100. Relation measures friendship; Control separately measures political power." },
+            &mut columns[0],
+            Icon::Control,
+            "Control",
+            control as f32,
+            &control_text,
+            gold,
             scale,
-        );
+            &actions,
+            &mut requested,
+        )
+        .on_hover_text(control_tooltip);
+        political_card(
+            &mut columns[1],
+            Icon::Relation,
+            "Relation",
+            if domestic {
+                1.0
+            } else {
+                relation as f32 / 100.0
+            },
+            &if domestic {
+                "100/100".to_owned()
+            } else {
+                format!("{relation:.0}/100")
+            },
+            if domestic {
+                egui::Color32::from_rgb(103, 149, 118)
+            } else {
+                relation_color
+            },
+            scale,
+            &[],
+            &mut requested,
+        )
+        .on_hover_ui(|ui| {
+            ui.label(relation_tooltip);
+            ui.add_space(4.0 * scale);
+            for level in [
+                "• 0–19 · Hostile: no trade or peaceful troop access.",
+                "• 20–39 · Unfriendly: unfavorable trade terms; no peaceful troop access.",
+                "• 40–59 · Neutral: standard trade terms; no peaceful troop access.",
+                "• 60–79 · Friendly: better trade terms; you can move troops through the province.",
+                "• 80–100 · Very friendly: the best trade terms; you can move through and station troops in the province.",
+            ] {
+                ui.label(level);
+            }
+        });
     });
+    requested
+}
+
+/// The domain preview also enforces sovereignty and unique-leader eligibility.
+fn acquisition_actions(politics: &ProvincePolitics, player: usize) -> Vec<ConfirmationAction> {
+    let mut actions = Vec::new();
+    if politics.clone().vassalize(player).is_ok() {
+        actions.push(ConfirmationAction::Vassalize);
+    }
+    if politics.clone().take_ownership(player).is_ok() {
+        actions.push(ConfirmationAction::Integrate);
+    }
+    actions
 }
 
 /// Cards retain a readable icon, label and exact value at compact panel widths.
@@ -601,13 +717,13 @@ fn political_card(
     ui: &mut egui::Ui,
     symbol: Icon,
     title: &str,
-    caption: &str,
     progress: f32,
     value: &str,
     color: egui::Color32,
-    explanation: &str,
     scale: f32,
-) {
+    actions: &[ConfirmationAction],
+    requested: &mut Option<ConfirmationAction>,
+) -> egui::Response {
     let width = ui.available_width();
     egui::Frame::new()
         .fill(province_panel::TABLE_STRIPE)
@@ -616,6 +732,26 @@ fn political_card(
         .inner_margin(8.0 * scale)
         .show(ui, |ui| {
             ui.set_width((width - 2.0 * (8.0 * scale).round() - 2.0 * scale).max(1.0));
+            if !actions.is_empty() {
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 22.0 * scale), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0 * scale;
+                    for &action in actions.iter().rev() {
+                        let (label, symbol) = match action {
+                            ConfirmationAction::Vassalize => ("Vassalize", Icon::Vassalize),
+                            ConfirmationAction::Integrate => ("Integrate", Icon::Integrate),
+                            _ => unreachable!(),
+                        };
+                        let text = ui.painter().layout_no_wrap(label.into(), egui::FontId::proportional(10.0 * scale), province_panel::INK);
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(text.size().x + 22.0 * scale, 22.0 * scale), egui::Sense::click());
+                        let fill = if response.hovered() { province_panel::PAPER } else { province_panel::TABLE_STRIPE };
+                        ui.painter().rect_filled(rect, 3.0 * scale, fill);
+                        ui.painter().rect_stroke(rect, 3.0 * scale, egui::Stroke::new(scale, province_panel::RULE), egui::StrokeKind::Inside);
+                        campaign_widgets::paint_icon(ui, symbol, egui::Rect::from_min_size(rect.min + egui::vec2(3.0, 3.0) * scale, egui::vec2(16.0, 16.0) * scale));
+                        ui.painter().galley(rect.min + egui::vec2(20.0 * scale, (rect.height() - text.size().y) * 0.5), text, province_panel::INK);
+                        if response.on_hover_text(format!("{label} this province. Opens a confirmation before changing its status.")).clicked() { *requested = Some(action); }
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 icon(ui, symbol, 28.0 * scale);
                 ui.label(egui::RichText::new(title).size(15.0 * scale));
@@ -632,52 +768,23 @@ fn political_card(
             );
         })
         .response
-        .on_hover_text(format!("{caption}\n{explanation}"));
 }
 
-/// Split the actual space left by the header between scrollable content and a
-/// bounded, wrapped status message. Newly produced status appears next frame so
-/// an action cannot grow the panel after its body budget has already been used.
-fn scroll_body_with_status<R>(
+/// Use all space below the header for content without carrying action text across tabs.
+fn scroll_body<R>(
     ui: &mut egui::Ui,
     inner_bottom: f32,
-    scale: f32,
-    status: &str,
     id: impl std::hash::Hash + std::fmt::Debug,
     render: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let remaining = (inner_bottom - ui.next_widget_position().y).max(0.0);
-    let gap = ui.spacing().item_spacing.y;
-    let footer = if status.is_empty() {
-        0.0
-    } else {
-        (72.0 * scale).min(remaining * 0.25)
-    };
-    let body = (remaining
-        - footer
-        - if footer > 0.0 {
-            gap
-        } else {
-            0.0
-        })
-    .max(0.0);
     let id = egui::Id::new(id);
     let response = egui::ScrollArea::vertical()
         .id_salt(id)
-        .max_height(body)
+        .max_height(remaining)
         .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, render);
-    if footer > 0.0 {
-        egui::ScrollArea::vertical()
-            .id_salt(id.with("status"))
-            .max_height(footer)
-            .min_scrolled_height(0.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(egui::Label::new(status).wrap());
-            });
-    }
     response.inner
 }
 
@@ -685,6 +792,7 @@ fn scroll_body_with_status<R>(
 pub(in crate::app) fn draw(
     mut contexts: EguiContexts,
     state: Res<State<AppState>>,
+    clock: Res<GameClock>,
     mut campaign: ResMut<Campaign>,
     mut view: ResMut<CampaignUi>,
     mut detail: ResMut<ProvincePanelOpen>,
@@ -706,10 +814,19 @@ pub(in crate::app) fn draw(
         }
     }
     if view.open == Some(CampaignTab::Province)
+        && view.section != 3
         && view.province.is_some_and(|id| campaign.economy.provinces[id].name == "Latium")
     {
         view.open = Some(CampaignTab::Senate);
+        view.politics_section = 0;
         view.close_province_selector();
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let player = practice.active_player;
+    if let Some(hit) = crate::map::take_army_click(ctx) {
+        open_map_army(ctx, hit.province, hit.owner, hit.movement, player);
     }
     let Some(tab) = view.open else {
         return;
@@ -720,10 +837,6 @@ pub(in crate::app) fn draw(
         view.open = None;
         return;
     }
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-    let player = practice.active_player;
     if player >= campaign.actors.len() {
         return;
     }
@@ -747,7 +860,7 @@ pub(in crate::app) fn draw(
     campaign.pull_wallets();
     campaign.refresh_profiles();
     let header = match tab {
-        CampaignTab::Senate => "Rome · Senate".to_owned(),
+        CampaignTab::Senate => "Rome · Politics".to_owned(),
         CampaignTab::Governance => "Governance".to_owned(),
         CampaignTab::Military => "Military".to_owned(),
         CampaignTab::Trade => "Trade".to_owned(),
@@ -757,14 +870,27 @@ pub(in crate::app) fn draw(
     let mut action = None;
     let mut navigation = None;
     let mut army_province = None;
+    let mut politics_target = None;
     let old_notice = view.notice.clone();
+    let confirmation_was_open = view.confirmation_open();
+    let previous_section = view.section;
+    let previous_politics_section = view.politics_section;
+    view.cycle_province_tabs(ctx);
     let previous_rank = campaign.actors[player].rank;
     let owner_color = campaign.economy.provinces[province]
         .owner
         .and_then(|owner| practice.players.get(owner))
         .map(|owner| PLAYER_COLORS[owner.color_index])
         .unwrap_or(province_panel::NEUTRAL);
+    let player_colors: Vec<_> =
+        practice.players.iter().map(|p| PLAYER_COLORS[p.color_index]).collect();
     ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::new("campaign-player-colors"), player_colors.clone());
+        d.insert_temp(egui::Id::new("campaign-active-player-color"), player_colors[player]);
+        d.insert_temp(
+            egui::Id::new("campaign-construction-month-fraction"),
+            (clock.month_progress / SECONDS_PER_MONTH).clamp(0.0, 1.0),
+        );
         d.insert_temp(
             egui::Id::new("campaign-owner-color"),
             if matches!(
@@ -784,6 +910,7 @@ pub(in crate::app) fn draw(
         .fixed_pos(rect.min)
         .order(egui::Order::Foreground)
         .movable(false)
+        .sense(egui::Sense::hover())
         .show(ctx, |ui| {
             panel_style(ui, scale);
             let panel = panel_frame(scale).show(ui, |ui| {
@@ -800,6 +927,7 @@ pub(in crate::app) fn draw(
                 province = view.province.unwrap_or(province);
                 if tab == CampaignTab::Province && campaign.economy.provinces[province].name == "Latium" {
                     view.open = Some(CampaignTab::Senate);
+                    view.politics_section = 0;
                     return;
                 }
                 egui::Frame::new()
@@ -847,7 +975,7 @@ pub(in crate::app) fn draw(
                             return;
                         }
                         if tab == CampaignTab::Province && view.section == 0 {
-                            province_overview_body(
+                            let requested = province_overview_body(
                                 ui,
                                 rect.bottom() - 12.0 * scale,
                                 &campaign,
@@ -855,6 +983,9 @@ pub(in crate::app) fn draw(
                                 player,
                                 scale,
                             );
+                            if let Some(action) = requested {
+                                view.confirmation = campaign_confirmation::PendingConfirmation::new(&campaign, province, player, action);
+                            }
                             return;
                         }
                         if tab == CampaignTab::Province && view.section == 2 {
@@ -865,18 +996,65 @@ pub(in crate::app) fn draw(
                                 province,
                                 player,
                                 scale,
-                                &old_notice,
+                                &mut view,
                             ) {
                                 view.notice = message;
                             }
                             return;
                         }
-                        scroll_body_with_status(
+                        if tab == CampaignTab::Province && view.section == 5 {
+                            navigation = scroll_body(
+                                ui,
+                                rect.bottom() - 12.0 * scale,
+                                ("campaign_body", tab as usize, province, view.section),
+                                |ui| province_notifications(ui, &campaign, province, player, scale),
+                            );
+                            return;
+                        }
+                        if tab == CampaignTab::Province && view.section == 3 {
+                            ui.set_max_height((rect.bottom() - 12. * scale - ui.next_widget_position().y).max(0.));
+                            ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - 12. * scale))));
+                                            let access = campaign.access_snapshot();
+                                            let military = campaign.military_view(player, true);
+                                            let observed: Vec<_> = (0..campaign.politics.len())
+                                                .map(|id| campaign.observes_military(player, id))
+                                                .collect();
+                                            action = campaign_military::show(
+                                                ui,
+                                                &military,
+                                                &campaign.economy,
+                                                &campaign.graph,
+                                                province,
+                                                player,
+                                                |id| observed.get(id).copied().unwrap_or(false),
+                                                |_| None,
+                                                |owner, id| match owner {
+                                                    ForceOwner::Player(p) => access[p][id],
+                                                    ForceOwner::Local(home) => {
+                                                        if home == id {
+                                                            MilitaryAccess::Peaceful
+                                                        } else {
+                                                            MilitaryAccess::Blocked
+                                                        }
+                                                    },
+                                                },
+                                                |a, b| campaign.forces_hostile(a, b),
+                                            );
+                            return;
+                        }
+                        scroll_body(
                             ui,
                             rect.bottom() - 12.0 * scale,
-                            scale,
-                            &old_notice,
-                            ("campaign_body", tab as usize, province, view.section),
+                            (
+                                "campaign_body",
+                                tab as usize,
+                                province,
+                                if tab == CampaignTab::Senate {
+                                    view.politics_section
+                                } else {
+                                    view.section
+                                },
+                            ),
                             |ui| {
                                 if tab == CampaignTab::Trade {
                                     if let Some(message) =
@@ -895,6 +1073,24 @@ pub(in crate::app) fn draw(
                                         view.notice = message;
                                     }
                                 } else if tab == CampaignTab::Senate {
+                                    if view.politics_section == 1 {
+                                        politics_target = politics_provinces(
+                                            ui, &campaign, player, &player_colors,
+                                            &mut view.politics_province_search, scale,
+                                        );
+                                        return;
+                                    }
+                                    if view.politics_section == 2 {
+                                        let (target, message) = politics_spies(
+                                            ui, &mut campaign, player,
+                                            &mut view.politics_spy_search, scale,
+                                        );
+                                        politics_target = target;
+                                        if let Some(message) = message {
+                                            view.notice = message;
+                                        }
+                                        return;
+                                    }
                                     if let Some(capital) = campaign.economy.provinces.iter().position(|p| p.name == "Latium") {
                                         ui.horizontal_wrapped(|ui| {
                                             ui.strong("Rome · protected capital");
@@ -967,9 +1163,11 @@ pub(in crate::app) fn draw(
                                         _ => view.section,
                                     };
                                     match section {
-                                        0 => province_overview(
-                                            ui, &campaign, province, player, scale,
-                                        ),
+                                        0 => {
+                                            if let Some(action) = province_overview(ui, &campaign, province, player, scale) {
+                                                view.confirmation = campaign_confirmation::PendingConfirmation::new(&campaign, province, player, action);
+                                            }
+                                        },
                                         1 => campaign_economy::policies(
                                             ui,
                                             &mut campaign.economy,
@@ -982,16 +1180,6 @@ pub(in crate::app) fn draw(
                                             let observed: Vec<_> = (0..campaign.politics.len())
                                                 .map(|id| campaign.observes_military(player, id))
                                                 .collect();
-                                            let report_months: Vec<_> =
-                                                (0..campaign.politics.len())
-                                                    .map(|id| {
-                                                        campaign
-                                                            .intelligence
-                                                            .get(&(player, id))
-                                                            .and_then(|r| r.operations.as_ref())
-                                                            .map(|r| r.month)
-                                                    })
-                                                    .collect();
                                             action = campaign_military::show(
                                                 ui,
                                                 &military,
@@ -1000,7 +1188,7 @@ pub(in crate::app) fn draw(
                                                 province,
                                                 player,
                                                 |id| observed.get(id).copied().unwrap_or(false),
-                                                |id| report_months.get(id).copied().flatten(),
+                                                |_| None,
                                                 |owner, id| match owner {
                                                     ForceOwner::Player(p) => access[p][id],
                                                     ForceOwner::Local(home) => {
@@ -1016,7 +1204,7 @@ pub(in crate::app) fn draw(
                                         },
                                         4 => {
                                             if let Some(message) =
-                                                diplomacy(ui, &mut campaign, province, player)
+                                                diplomacy(ui, &mut campaign, province, player, &player_colors, &mut view)
                                             {
                                                 view.notice = message;
                                             }
@@ -1039,6 +1227,7 @@ pub(in crate::app) fn draw(
                 egui::StrokeKind::Inside,
             );
         });
+    audio_controls::play_construction_sound(ctx, &sound, &audio, &assets);
     if province != previous_province {
         detail.0 = Some(MapDetail::Province(province));
         view.last_detail = detail.0;
@@ -1059,10 +1248,22 @@ pub(in crate::app) fn draw(
         });
     }
     if let Some(action) = action {
-        view.notice = apply_military_action(&mut campaign, province, player, action);
+        dispatch_military_action(&mut view, &mut campaign, province, player, action);
     }
     if let Some(province) = army_province {
         open_military_province(ctx, &mut view, &mut detail, &mut map_view, province, player);
+        close_click.0 = true;
+        play_click(&sound, &audio, &assets);
+    }
+    if let Some(target) = politics_target {
+        detail.0 = Some(MapDetail::Province(target));
+        view.last_detail = detail.0;
+        map_view.focus_province(target);
+        if campaign.economy.provinces[target].name == "Latium" {
+            view.politics_section = 0;
+        } else {
+            view.open_province_section(target, 0);
+        }
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
     }
@@ -1081,8 +1282,96 @@ pub(in crate::app) fn draw(
         view.last_detail = None;
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
-    } else if old_notice != view.notice {
+    } else if old_notice != view.notice
+        || view.section != previous_section
+        || view.politics_section != previous_politics_section
+        || (!confirmation_was_open && view.confirmation_open())
+    {
         play_click(&sound, &audio, &assets);
+    }
+}
+
+/// Destructive commands wait for an explicit Yes; all other orders remain immediate.
+pub(super) fn dispatch_military_action(
+    view: &mut CampaignUi,
+    campaign: &mut Campaign,
+    province: usize,
+    player: usize,
+    action: campaign_military::MilitaryUiAction,
+) {
+    use campaign_military::MilitaryUiAction::*;
+    let pending = match action {
+        CancelRecruitment => campaign_confirmation::ConfirmationAction::CancelRecruitment,
+        CancelQueuedRecruitment(index) => {
+            campaign_confirmation::ConfirmationAction::CancelQueuedRecruitment(index)
+        },
+        Disband(id) => campaign_confirmation::ConfirmationAction::Disband(id),
+        DisbandArmy => campaign_confirmation::ConfirmationAction::DisbandArmy,
+        action => {
+            view.notice = apply_military_action(campaign, province, player, action);
+            return;
+        },
+    };
+    view.confirmation =
+        campaign_confirmation::PendingConfirmation::new(campaign, province, player, pending);
+}
+
+/// Map figures select only their own army window.
+fn open_map_army(
+    ctx: &egui::Context,
+    province: usize,
+    owner: ForceOwner,
+    movement: Option<u64>,
+    player: usize,
+) {
+    if owner == ForceOwner::Player(player) {
+        campaign_military::open_army_panel(ctx, province, player, movement);
+    }
+}
+
+/// The army window has its own render pass so province navigation cannot hide it.
+pub(in crate::app) fn draw_army_panel(
+    mut contexts: EguiContexts,
+    state: Res<State<AppState>>,
+    practice: Res<LocalPractice>,
+    mut campaign: ResMut<Campaign>,
+    mut view: ResMut<CampaignUi>,
+) {
+    if !campaign.active || *state.get() != AppState::Map {
+        return;
+    }
+    let player = practice.active_player;
+    if player >= campaign.actors.len() {
+        return;
+    }
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+    let military = campaign.military_view(player, true);
+    let access = campaign.access_snapshot();
+    let observed: Vec<_> =
+        (0..campaign.politics.len()).map(|id| campaign.observes_military(player, id)).collect();
+    if let Some((province, action)) = campaign_military::draw_army_panel(
+        ctx,
+        &military,
+        &campaign.economy,
+        &campaign.graph,
+        player,
+        |id| observed.get(id).copied().unwrap_or(false),
+        |_| None,
+        |owner, id| match owner {
+            ForceOwner::Player(p) => access[p][id],
+            ForceOwner::Local(home) => {
+                if home == id {
+                    MilitaryAccess::Peaceful
+                } else {
+                    MilitaryAccess::Blocked
+                }
+            },
+        },
+        |a, b| campaign.forces_hostile(a, b),
+    ) {
+        dispatch_military_action(&mut view, &mut campaign, province, player, action);
     }
 }
 
@@ -1103,7 +1392,7 @@ fn open_military_province(
 }
 
 /// Dispatch validated military commands; never grant free recruits or mutate locked battle plans.
-fn apply_military_action(
+pub(super) fn apply_military_action(
     campaign: &mut Campaign,
     province: usize,
     player: usize,
@@ -1130,11 +1419,32 @@ fn apply_military_action(
             .military
             .cancel_recruitment(province, ForceOwner::Player(player))
             .map_err(|e| e.to_string()),
+        CancelQueuedRecruitment(index) => {
+            let p = &mut campaign.economy.provinces[province];
+            campaign
+                .military
+                .cancel_queued_recruitment(
+                    province,
+                    player,
+                    index,
+                    p.owner == Some(player),
+                    &mut p.population,
+                    &mut campaign.economy.players[player].resources[1],
+                )
+                .map_err(|e| e.to_string())
+        },
         Disband(id) => {
             let p = &mut campaign.economy.provinces[province];
             campaign
                 .military
                 .disband(province, player, id, p.owner == Some(player), &mut p.population)
+                .map_err(|e| e.to_string())
+        },
+        DisbandArmy => {
+            let p = &mut campaign.economy.provinces[province];
+            campaign
+                .military
+                .disband_army(province, player, p.owner == Some(player), &mut p.population)
                 .map_err(|e| e.to_string())
         },
         SavePlan(plan) => campaign
@@ -1189,373 +1499,698 @@ fn apply_military_action(
                 .and_then(|b| b.request_retreat(attacker, &config).map_err(|e| e.to_string()))
         },
     };
-    result.map_or_else(|message| message, |_| "Order accepted.".to_owned())
+    result.map_or_else(|message| message, |_| String::new())
 }
 
-/// Display sovereignty, exact domain-quoted prices, eligibility, spies and military access.
+/// Foreign diplomacy shares the overview cards and offers persistent spy missions.
 fn diplomacy(
     ui: &mut egui::Ui,
     campaign: &mut Campaign,
     province: usize,
     player: usize,
+    colors: &[egui::Color32],
+    view: &mut CampaignUi,
 ) -> Option<String> {
+    let scale = super::viewport_ui_scale(ui.ctx().content_rect().size());
+    let portrait = campaign_widgets::portrait(
+        ui,
+        campaign_widgets::ProvinceLandscape::Diplomacy,
+        76.0 * scale,
+    );
     let state = campaign.politics[province].state.clone();
     if state == PoliticalState::Rome {
         ui.label("Rome permits no provincial actions. Open the Senate to manage politics or declare a march on the capital.");
         return None;
     }
-    let relation = campaign.politics[province].relation(player);
-    let distance = campaign.distance(player, province);
-    let config = campaign.diplomacy_config.clone();
-    ui.horizontal_wrapped(|ui| {
-        stat(ui, Icon::Coin, &format!("{:.0}", campaign.actors[player].coin), "Available Coin.");
-        stat(ui, Icon::Influence, &format!("{:.0}", campaign.actors[player].influence), "Available Influence.");
-        stat(ui, Icon::Trade, &distance.map_or_else(|| "—".into(), |d| d.to_string()), &distance.map_or_else(|| "No usable political route.".into(), |d| format!("Political distance: {d} edges. Spending multiplier ×{:.2}. Includes usable sea crossings.", distance_multiplier(Some(d)).unwrap_or(1.0))));
-    });
-    if !matches!(state, PoliticalState::Owned { owner } if owner == player) {
-        diplomatic_meter(ui, Icon::Relation, "Relation", relation, "Friendship toward you. Political Control separately measures power; occupation can create high Control with low Relation.");
+    if matches!(state, PoliticalState::Owned { owner } if owner == player) {
+        return military_diplomacy(ui, campaign, province, player, player, colors);
     }
-    let mut result: Option<Result<(), PoliticalError>> = None;
-    let mut message = None;
-    match &state {
-        PoliticalState::Rome => unreachable!("Rome has no diplomatic actions"),
+    let distance = campaign.distance(player, province);
+    political_distance_badge(ui, portrait, distance, scale);
+    ui.add_space(6.0 * scale);
+    if let Some(action) = overview_politics(ui, &campaign.politics[province], player, scale) {
+        view.confirmation =
+            campaign_confirmation::PendingConfirmation::new(campaign, province, player, action);
+    }
+    ui.add_space(6.0 * scale);
+    if matches!(state, PoliticalState::Vassal { overlord, .. } if overlord == player) {
+        policy_widgets::section(ui, scale, "VASSAL GOVERNMENT");
+        ui.label("This province is your vassal. Relations and a stationed garrison build its Control over time.");
+        return None;
+    }
+    let message = spy_network(ui, campaign, province, player, scale);
+    let evidence: Vec<_> = campaign
+        .espionage
+        .scandals
+        .iter()
+        .filter(|evidence| {
+            evidence.holder == player
+                && evidence.province == Some(province)
+                && (evidence.expires > campaign.economy.month || evidence.reserved_for_motion)
+        })
+        .collect();
+    if !evidence.is_empty() {
+        policy_widgets::section(ui, scale, "DISCOVERED EVIDENCE");
+        for scandal in evidence {
+            ui.label(scandal.kind.label()).on_hover_text(format!(
+                "{:?} · {} months remaining",
+                scandal.severity,
+                scandal.expires.saturating_sub(campaign.economy.month)
+            ));
+        }
+    }
+    message
+}
+
+const SPY_ACTIONS: [(SpyAssignment, &str, Icon); 4] = [
+    (SpyAssignment::GainControl, "Build control", Icon::SpyBuildControl),
+    (SpyAssignment::ImproveRelations, "Improve relations", Icon::SpyImproveRelations),
+    (SpyAssignment::DiscoverScandals, "Uncover scandals", Icon::SpyUncoverScandals),
+    (SpyAssignment::UndermineOpponents, "Undermine opponents", Icon::SpyUndermineOpponents),
+];
+
+/// A single political reading is shared by the directory and its summary.
+fn politics_reading(
+    politics: &ProvincePolitics,
+    player: usize,
+) -> (&'static str, f64, Option<f64>) {
+    match &politics.state {
+        PoliticalState::Rome => ("Capital", 0.0, None),
         PoliticalState::Independent {
-            local,
             shares,
-        } => {
-            ui.strong("Independent").on_hover_text("51 Control and a unique lead permit vassalization. 100 Control permits ownership. Vassalization is optional; initial Vassal Control equals Independent Control minus 50.");
-            diplomatic_meter(
-                ui,
-                Icon::Province,
-                "Local",
-                *local,
-                "Control retained by the independent local government.",
-            );
-            for (id, share) in shares.iter().enumerate() {
-                if *share > 0.0 || id == player {
-                    diplomatic_meter(ui, Icon::Control, &format!("P{}{}", id + 1, if id == player { " · you" } else { "" }), *share, "Independent Control share. All players and Local sum to 100. Monthly political pressure resolves simultaneously.");
-                }
-            }
-            let pending = campaign.politics[province].queued_control_pressure(player);
-            if pending > 0.0 {
-                stat(ui, Icon::Control, &format!("+{pending:.1} pending"), "Your paid control and blackmail pressure awaits simultaneous month-end resolution. Rival pressure can change the final gain; this has not already been added to your Control.");
-            }
-            let mut preview = campaign.politics[province].clone();
-            let vassal_eligible = preview.vassalize(player).is_ok();
-            let mut preview = campaign.politics[province].clone();
-            let ownership_eligible = preview.take_ownership(player).is_ok();
-            ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(vassal_eligible, egui::Button::new("Vassalize"))
-                    .on_hover_text("Create a vassal; retain relations and remove every independent control share.")
-                    .on_disabled_hover_text("Requires at least 51 Independent Control and a unique lead over every rival.").clicked() {
-                    result = Some(campaign.politics[province].vassalize(player));
-                }
-                if ui.add_enabled(ownership_eligible, egui::Button::new("Integrate"))
-                    .on_hover_text(format!("Directly own this province. Current relation produces a {:+.1} happiness shift for every class.", relation - 50.0))
-                    .on_disabled_hover_text("Requires 100 Independent Control, resolved at the monthly boundary.").clicked() {
-                    result = Some(integrate_province(campaign, province, player));
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                for currency in [Currency::Coin, Currency::Influence] {
-                    let quote = political_quote(&campaign.politics[province], &campaign.actors[player], currency,
-                        |p, actor| p.buy_control(player, actor, currency, 5.0, distance, &config));
-                    if political_button(ui, "+5 Control", currency, quote,
-                        "Adds pressure to the next simultaneous monthly resolution. Distance, relation, your existing position and rival entrenchment determine the price.") {
-                        result = Some(campaign.politics[province].buy_control(player, &mut campaign.actors[player], currency, 5.0, distance, &config));
-                    }
-                }
-            });
-        },
+            ..
+        } => (
+            "Independent",
+            shares.get(player).copied().unwrap_or(0.0),
+            Some(politics.relation(player)),
+        ),
         PoliticalState::Vassal {
             overlord,
             control,
             ..
-        } => {
-            let delta = &campaign.politics[province].last_control_change;
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("Vassal · P{}", overlord + 1));
-                stat(ui, Icon::Control, &format!("{:+.1}/mo", delta.total), &format!("Last monthly change. Relation {:+.2}; garrison {:+.2}; paid support {:+.2}. At 0 the province becomes independent; at 100 integration is optional.", delta.relation, delta.military, delta.support));
-            });
-            diplomatic_meter(ui, Icon::Control, "Control", *control, "Vassal stability and integration progress. Relation below 50 causes decay; military garrisons and paid government support can offset it.");
+        } => (
             if *overlord == player {
-                if let PoliticalState::Vassal {
-                    tribute,
-                    ..
-                } = &mut campaign.politics[province].state
-                {
+                "Your vassal"
+            } else {
+                "Foreign vassal"
+            },
+            if *overlord == player {
+                *control
+            } else {
+                0.0
+            },
+            Some(politics.relation(player)),
+        ),
+        PoliticalState::Owned {
+            owner,
+        } => (
+            if *owner == player {
+                "Your province"
+            } else {
+                "Rival province"
+            },
+            if *owner == player {
+                100.0
+            } else {
+                0.0
+            },
+            Some(if *owner == player {
+                100.0
+            } else {
+                politics.relation(player)
+            }),
+        ),
+    }
+}
+
+fn politics_provinces(
+    ui: &mut egui::Ui,
+    campaign: &Campaign,
+    player: usize,
+    colors: &[egui::Color32],
+    search: &mut String,
+    scale: f32,
+) -> Option<usize> {
+    let provinces = &campaign.economy.provinces;
+    let controlled = campaign.politics.iter().filter(|p| matches!(p.state,
+        PoliticalState::Owned { owner } | PoliticalState::Vassal { overlord: owner, .. } if owner == player
+    )).count();
+    policy_widgets::section(ui, scale, "PROVINCIAL POLITICS");
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(format!("{} provinces", provinces.len()));
+        ui.label(format!("· {controlled} under your rule"));
+        ui.label("· Select a province to open its overview");
+    });
+    ui.add_space(5.0 * scale);
+    ui.add_sized(
+        [ui.available_width(), 28.0 * scale],
+        egui::TextEdit::singleline(search).hint_text("Find a province…"),
+    );
+    ui.add_space(8.0 * scale);
+    let query = search.trim().to_lowercase();
+    let mut ids: Vec<_> = (0..provinces.len())
+        .filter(|&id| provinces[id].name.to_lowercase().contains(&query))
+        .collect();
+    ids.sort_by_key(|&id| provinces[id].name.to_lowercase());
+    if ids.is_empty() {
+        ui.label("No provinces match your search.");
+    }
+    let mut target = None;
+    for (row, id) in ids.into_iter().enumerate() {
+        let province = &provinces[id];
+        let politics = &campaign.politics[id];
+        let (status, control, relation) = politics_reading(politics, player);
+        let owner_color = province
+            .owner
+            .and_then(|owner| colors.get(owner).copied())
+            .unwrap_or(province_panel::NEUTRAL);
+        let fill = if row % 2 == 0 {
+            province_panel::TABLE_STRIPE
+        } else {
+            province_panel::PAPER
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(egui::Stroke::new(scale, province_panel::RULE))
+            .corner_radius(3.0 * scale)
+            .inner_margin(7.0 * scale)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (swatch, _) =
+                        ui.allocate_exact_size(egui::vec2(7.0, 26.0) * scale, egui::Sense::hover());
+                    ui.painter().rect_filled(swatch, 2.0 * scale, owner_color);
+                    if ui
+                        .add_sized(
+                            [173.0 * scale, 26.0 * scale],
+                            egui::Button::new(egui::RichText::new(&province.name).strong()),
+                        )
+                        .on_hover_text("Open province overview")
+                        .clicked()
+                    {
+                        target = Some(id);
+                    }
+                    ui.add_sized([108.0 * scale, 26.0 * scale], egui::Label::new(status));
+                    ui.vertical(|ui| {
+                        ui.small("YOUR CONTROL");
+                        ui.add(
+                            egui::ProgressBar::new((control / 100.0).clamp(0.0, 1.0) as f32)
+                                .desired_width(125.0 * scale)
+                                .fill(egui::Color32::from_rgb(166, 121, 67))
+                                .text(format!("{control:.0}%")),
+                        );
+                    });
+                    ui.vertical(|ui| {
+                        ui.small("RELATION");
+                        if let Some(relation) = relation {
+                            let color = if relation < 40.0 {
+                                egui::Color32::from_rgb(166, 83, 66)
+                            } else if relation < 60.0 {
+                                egui::Color32::from_rgb(179, 137, 74)
+                            } else {
+                                egui::Color32::from_rgb(103, 149, 118)
+                            };
+                            ui.add(
+                                egui::ProgressBar::new((relation / 100.0).clamp(0.0, 1.0) as f32)
+                                    .desired_width(125.0 * scale)
+                                    .fill(color)
+                                    .text(format!("{relation:.0}%")),
+                            );
+                        } else {
+                            ui.label("—").on_hover_text("Rome has no provincial relation.");
+                        }
+                    });
+                });
+            });
+        ui.add_space(4.0 * scale);
+    }
+    target
+}
+
+/// The directory uses the same deployment quotes and eligibility as province diplomacy.
+fn politics_spies(
+    ui: &mut egui::Ui,
+    campaign: &mut Campaign,
+    player: usize,
+    search: &mut String,
+    scale: f32,
+) -> (Option<usize>, Option<String>) {
+    let active_count = campaign.espionage.missions.iter().filter(|m| m.owner == player).count();
+    policy_widgets::section(ui, scale, "SPY NETWORKS");
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(format!("{active_count} active networks"));
+        ui.label("· Recall agents or launch a mission directly from this list");
+    });
+    ui.add_space(5.0 * scale);
+    ui.add_sized(
+        [ui.available_width(), 28.0 * scale],
+        egui::TextEdit::singleline(search).hint_text("Find a province…"),
+    );
+    ui.add_space(8.0 * scale);
+    let query = search.trim().to_lowercase();
+    let mut ids: Vec<_> = (0..campaign.politics.len())
+        .filter(|&id| campaign.economy.provinces[id].name.to_lowercase().contains(&query))
+        .collect();
+    ids.sort_by_key(|&id| {
+        (
+            !campaign.espionage.missions.iter().any(|m| m.owner == player && m.province == id),
+            campaign.economy.provinces[id].name.to_lowercase(),
+        )
+    });
+    if ids.is_empty() {
+        ui.label("No provinces match your search.");
+    }
+    let mut target = None;
+    let mut message = None;
+    for (row, id) in ids.into_iter().enumerate() {
+        let name = campaign.economy.provinces[id].name.clone();
+        let state = campaign.politics[id].state.clone();
+        let active = campaign
+            .espionage
+            .missions
+            .iter()
+            .find(|m| m.owner == player && m.province == id)
+            .cloned();
+        let distance = campaign.distance(player, id);
+        let upkeep = campaign.espionage_config.monthly_cost_at(distance).ok();
+        let fill = if active.is_some() {
+            egui::Color32::from_rgb(231, 219, 195)
+        } else if row % 2 == 0 {
+            province_panel::TABLE_STRIPE
+        } else {
+            province_panel::PAPER
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(egui::Stroke::new(scale, province_panel::RULE))
+            .corner_radius(3.0 * scale)
+            .inner_margin(8.0 * scale)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    icon(ui, Icon::Spy, 22.0 * scale);
+                    if ui.add_sized([170.0 * scale, 26.0 * scale],
+                        egui::Button::new(egui::RichText::new(&name).strong()))
+                        .on_hover_text("Open province overview").clicked() {
+                        target = Some(id);
+                    }
+                    if let Some(mission) = &active {
+                        let label = SPY_ACTIONS.iter()
+                            .find(|(assignment, _, _)| *assignment == mission.assignment)
+                            .map_or("Active network", |(_, label, _)| *label);
+                        ui.strong(label);
+                        ui.label(format!("· {} months active", mission.months_active));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Recall spy").on_hover_text("End this network and its monthly upkeep.").clicked() {
+                                campaign.espionage.withdraw(player, id);
+                                message = Some(format!("Spy recalled from {name}. Monthly upkeep has ended."));
+                            }
+                        });
+                    } else if matches!(state, PoliticalState::Rome) {
+                        ui.label("Protected capital · no spy missions");
+                    } else if matches!(state, PoliticalState::Owned { owner } if owner == player)
+                        || matches!(state, PoliticalState::Vassal { overlord, .. } if overlord == player) {
+                        ui.label("Under your rule · no spy missions");
+                    } else {
+                        ui.label("No spy deployed");
+                    }
+                });
+                if active.is_some() {
+                    ui.small(format!("Upkeep: {} sestertii/month · Network results and evidence are shown in provincial diplomacy.",
+                        upkeep.map_or("—".to_owned(), |cost| format!("{cost:.0}"))));
+                } else if !matches!(state, PoliticalState::Rome)
+                    && !matches!(state, PoliticalState::Owned { owner } if owner == player)
+                    && !matches!(state, PoliticalState::Vassal { overlord, .. } if overlord == player) {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label("Tribute:");
-                        for (level, label) in [(Tribute::Low, "Low"), (Tribute::Normal, "Normal"), (Tribute::High, "High")] {
-                            ui.selectable_value(tribute, level, label).on_hover_text(format!("Pays {:.0}% of available monthly Coin output. Relation changes {:+.1} per month.", level.income_fraction() * 100.0, level.relation_delta()));
+                        ui.small("DEPLOY");
+                        for (assignment, label, symbol) in SPY_ACTIONS {
+                            let cost = campaign.espionage_config.deployment_cost_at(assignment, distance).ok();
+                            let available = assignment.eligible(&state)
+                                && cost.is_some_and(|cost| campaign.actors[player].influence >= cost)
+                                && message.is_none();
+                            let reason = if !assignment.eligible(&state) {
+                                "Unavailable under this province's government.".to_owned()
+                            } else if distance.is_none() {
+                                "No usable political route from your controlled territory.".to_owned()
+                            } else if !available {
+                                "Not enough Influence to deploy a spy.".to_owned()
+                            } else {
+                                format!("Spend {:.0} Influence to deploy. Upkeep: {} sestertii/month.",
+                                    cost.unwrap_or(0.0), upkeep.map_or("—".to_owned(), |cost| format!("{cost:.0}")))
+                            };
+                            let image = egui::Image::new((
+                                campaign_widgets::texture(ui.ctx(), symbol),
+                                egui::Vec2::splat(18.0 * scale),
+                            ));
+                            if ui.add_enabled(available, egui::Button::image_and_text(image, label))
+                                .on_hover_text(reason).clicked() {
+                                let result = campaign.espionage.deploy_assignment(
+                                    player, id, &mut campaign.actors, &campaign.politics,
+                                    &campaign.espionage_config, assignment, distance,
+                                );
+                                message = Some(result.map_or_else(
+                                    |error| error.to_string(),
+                                    |_| format!("Spy deployed to {name}: {label}."),
+                                ));
+                            }
                         }
                     });
                 }
-                if ui.add_enabled(*control >= 100.0 - 1e-7, egui::Button::new("Integrate"))
-                    .on_hover_text(format!("End vassal tribute and vassal Influence. Relation produces a {:+.1} happiness shift for every population class.", relation - 50.0))
-                    .on_disabled_hover_text("Requires 100 Vassal Control. Integration is always your choice.").clicked() {
-                    result = Some(integrate_province(campaign, province, player));
-                }
-                ui.horizontal_wrapped(|ui| {
-                    for currency in [Currency::Coin, Currency::Influence] {
-                        let quote = political_quote(
-                            &campaign.politics[province],
-                            &campaign.actors[player],
-                            currency,
-                            |p, actor| {
-                                p.support_government(
-                                    player, actor, currency, 5.0, distance, &config,
-                                )
-                            },
-                        );
-                        if political_button(
-                            ui,
-                            "+5 Control",
-                            currency,
-                            quote,
-                            "Support the government directly. This does not improve Relation.",
-                        ) {
-                            result = Some(campaign.politics[province].support_government(
-                                player,
-                                &mut campaign.actors[player],
-                                currency,
-                                5.0,
-                                distance,
-                                &config,
-                            ));
-                        }
-                    }
-                });
-            }
-        },
-        PoliticalState::Owned {
-            owner,
-        } => {
-            ui.horizontal_wrapped(|ui| {
-                icon(ui, Icon::Province, 22.0);
-                ui.strong(format!("Owned · P{}", owner + 1)).on_hover_text(
-                    "Domestic happiness replaces foreign Control in directly owned provinces.",
-                );
             });
-            if let Some(text) = military_diplomacy(ui, campaign, province, player, *owner) {
-                message = Some(text);
-            }
-        },
+        ui.add_space(5.0 * scale);
     }
-    if !matches!(campaign.politics[province].state, PoliticalState::Owned { .. }) {
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            for currency in [Currency::Coin, Currency::Influence] {
-                let quote = political_quote(&campaign.politics[province], &campaign.actors[player], currency,
-                    |p, actor| p.improve_relation(player, actor, currency, 5.0, distance, &config));
-                if political_button(ui, "+5 Relation", currency, quote, "Pay immediately. High existing friendship has diminishing returns; political distance also raises the price.") {
-                    result = Some(campaign.politics[province].improve_relation(player, &mut campaign.actors[player], currency, 5.0, distance, &config));
+    (target, message)
+}
+
+/// Deployment history and recall above the illustrated mission choices.
+fn spy_network(
+    ui: &mut egui::Ui,
+    campaign: &mut Campaign,
+    province: usize,
+    player: usize,
+    scale: f32,
+) -> Option<String> {
+    let active = campaign
+        .espionage
+        .missions
+        .iter()
+        .find(|mission| mission.owner == player && mission.province == province)
+        .cloned();
+    let distance = campaign.distance(player, province);
+    let state = campaign.politics[province].state.clone();
+    let upkeep = campaign.espionage_config.monthly_cost_at(distance).ok();
+    let mut message = None;
+    policy_widgets::section(ui, scale, "SPY NETWORK");
+    if let Some(mission) = &active {
+        let (name, result_icon) = SPY_ACTIONS
+            .iter()
+            .find(|(assignment, _, _)| *assignment == mission.assignment)
+            .map_or(("Unknown", Icon::Spy), |(_, name, icon)| (*name, *icon));
+        ui.horizontal(|ui| {
+            ui.add_space(8.0 * scale);
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(20.0 * scale), egui::Sense::hover());
+            campaign_widgets::paint_icon(ui, result_icon, icon_rect);
+            ui.label(egui::RichText::new(name).size(14.0 * scale));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.visuals_mut().widgets.inactive.bg_fill = province_panel::TABLE_STRIPE;
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = province_panel::TABLE_STRIPE;
+                ui.visuals_mut().widgets.hovered.bg_fill = egui::Color32::from_rgb(224, 210, 181);
+                ui.visuals_mut().widgets.hovered.weak_bg_fill =
+                    egui::Color32::from_rgb(224, 210, 181);
+                ui.visuals_mut().widgets.active.bg_fill = egui::Color32::from_rgb(207, 180, 137);
+                ui.visuals_mut().widgets.active.weak_bg_fill =
+                    egui::Color32::from_rgb(207, 180, 137);
+                let image = egui::Image::new((
+                    campaign_widgets::texture(ui.ctx(), Icon::Cancel),
+                    egui::Vec2::splat(20.0 * scale),
+                ));
+                if ui.add(egui::Button::image_and_text(image, "Recall spy")).clicked() {
+                    campaign.espionage.withdraw(player, province);
+                    message = Some("Spy recalled. Monthly upkeep has ended.".into());
                 }
-            }
+            });
         });
-        ui.collapsing("Monthly support", |ui| {
-        let route = distance_multiplier(distance);
-        let support = &mut campaign.politics[province].support[player];
-        for (enabled, currency, base, label) in [
-            (&mut support.relation_coin, Currency::Coin, config.monthly_coin, "+1 Relation"),
-            (
-                &mut support.relation_influence,
-                Currency::Influence,
-                config.monthly_influence,
-                "+1 Relation",
+        let totals = &mission.totals;
+        let (result_caption, result_value, result_tip) = match mission.assignment {
+            SpyAssignment::GainControl => (
+                "Control added",
+                policy_widgets::compact_decimal(totals.control_contributed),
+                "Control contributed by this spy since deployment.".to_owned(),
             ),
-        ] {
-            recurring_support(ui, enabled, currency, base, route, label);
-        }
-        if matches!(campaign.politics[province].state, PoliticalState::Vassal { overlord, .. } if overlord == player)
-        {
-            let support = &mut campaign.politics[province].support[player];
-            recurring_support(
-                ui,
-                &mut support.control_coin,
-                Currency::Coin,
-                config.monthly_coin,
-                route,
-                "+1 Control",
+            SpyAssignment::ImproveRelations => (
+                "Relation gained",
+                policy_widgets::compact_decimal(totals.relation_gained),
+                "Relation improved by this spy since deployment.".to_owned(),
+            ),
+            SpyAssignment::DiscoverScandals => (
+                "Scandals found",
+                totals.scandals_revealed.to_string(),
+                "Scandals revealed by this spy, including spent or expired evidence.".to_owned(),
+            ),
+            SpyAssignment::UndermineOpponents => {
+                if campaign.economy.provinces[province].owner.is_some() {
+                    (
+                        "Happiness lost",
+                        policy_widgets::compact_decimal(totals.happiness_reduced),
+                        "Population happiness reduced by this spy since deployment.".to_owned(),
+                    )
+                } else {
+                    (
+                        "Rival losses",
+                        format!(
+                            "{} C · {} R",
+                            policy_widgets::compact_decimal(totals.rival_control_reduced),
+                            policy_widgets::compact_decimal(totals.rival_relation_reduced)
+                        ),
+                        "C = rival Control reduced; R = rival Relation reduced.".to_owned(),
+                    )
+                }
+            },
+        };
+        let risk = crate::game::politics::espionage::detection_chance(
+            campaign.economy.provinces[province].happiness[0],
+            &campaign.espionage_config,
+        ) * 100.0;
+        let badges = [
+            (
+                Icon::Coin,
+                "Sestertii spent",
+                policy_widgets::compact_decimal(totals.coin_spent),
+                "Total sestertii paid in monthly upkeep.".to_owned(),
+            ),
+            (result_icon, result_caption, result_value, result_tip),
+            (
+                Icon::Spy,
+                "Detection",
+                format!("{}%", policy_widgets::compact_decimal(risk)),
+                "Current chance of detection at each check.".to_owned(),
+            ),
+        ];
+        ui.add_space(7.0 * scale);
+        let columns = if ui.available_width() >= 390.0 * scale {
+            3
+        } else {
+            2
+        };
+        let gap = 6.0 * scale;
+        let width = (ui.available_width() - (columns - 1) as f32 * gap) / columns as f32;
+        for row in badges.chunks(columns) {
+            let (row_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 48.0 * scale),
+                egui::Sense::hover(),
             );
-            recurring_support(
-                ui,
-                &mut support.control_influence,
-                Currency::Influence,
-                config.monthly_influence,
-                route,
-                "+1 Control",
-            );
+            for (index, (symbol, caption, value, tip)) in row.iter().enumerate() {
+                let rect = egui::Rect::from_min_size(
+                    row_rect.min + egui::vec2(index as f32 * (width + gap), 0.0),
+                    egui::vec2(width, row_rect.height()),
+                );
+                campaign_economy::overview_badge(
+                    ui,
+                    rect,
+                    *symbol,
+                    caption,
+                    value,
+                    tip,
+                    province_panel::INK,
+                    scale,
+                );
+            }
+            ui.add_space(gap);
         }
-        });
+    } else {
+        ui.label("No spy deployed.");
     }
-    ui.separator();
-    let foreign = !matches!(campaign.politics[province].state, PoliticalState::Owned { owner } if owner == player)
-        && !matches!(campaign.politics[province].state, PoliticalState::Vassal { overlord, .. } if overlord == player);
-    if foreign {
-        let deployed = campaign
+    policy_widgets::section(ui, scale, "SPY MISSIONS");
+    let actions: Vec<_> = SPY_ACTIONS
+        .into_iter()
+        .filter(|(assignment, _, _)| {
+            !(matches!(assignment, SpyAssignment::GainControl | SpyAssignment::ImproveRelations)
+                && (campaign.economy.provinces[province].owner.is_some()
+                    || matches!(state, PoliticalState::Owned { .. })))
+        })
+        .collect();
+    let gap = 10.0 * scale;
+    let button_size = egui::vec2((ui.available_width() - gap) / 2.0, 84.0 * scale);
+    let rows = actions.len().div_ceil(2);
+    let (grid, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), rows as f32 * (button_size.y + gap) - gap),
+        egui::Sense::hover(),
+    );
+    for (index, (assignment, name, symbol)) in actions.into_iter().enumerate() {
+        let deployment = campaign.espionage_config.deployment_cost_at(assignment, distance).ok();
+        let description = match assignment {
+            SpyAssignment::GainControl => "Gain one control per month.",
+            SpyAssignment::ImproveRelations => "Gain one relation per month.",
+            SpyAssignment::DiscoverScandals => {
+                "Search for scandals to use against the enemy player. Discovery is not guaranteed."
+            },
+            SpyAssignment::UndermineOpponents => {
+                if campaign.economy.provinces[province].owner.is_some() {
+                    "Reduce population happiness in this province. Success is not guaranteed."
+                } else {
+                    "Reduce an opponent's control or relation in this province. Success is not guaranteed."
+                }
+            },
+        };
+        let has_spy = campaign
             .espionage
             .missions
             .iter()
             .any(|mission| mission.owner == player && mission.province == province);
-        let spy_config = &campaign.espionage_config;
-        let can_deploy = campaign.actors[player].influence >= spy_config.deployment_influence;
-        let risk = campaign.intelligence.get(&(player, province)).map_or_else(
-            || "Detection risk: ?".to_owned(),
-            |report| {
-                format!(
-                    "Detection risk from month {} report: {:.1}% (Noble happiness {}).",
-                    report.demographics.month,
-                    crate::game::politics::espionage::detection_chance(
-                        report.demographics.happiness[0],
-                        spy_config
-                    ) * 100.0,
-                    report.demographics.happiness[0]
-                )
+        let blocked = if has_spy {
+            Some(
+                "You already have a spy deployed here. Recall the spy before choosing another mission.",
+            )
+        } else if !assignment.eligible(&state) {
+            Some("This mission is unavailable under the province's current government.")
+        } else if distance.is_none() {
+            Some("No usable political route from your controlled territory.")
+        } else if campaign.actors[player].influence < deployment.unwrap_or(f64::INFINITY) {
+            Some("Not enough Influence to deploy a spy.")
+        } else {
+            None
+        };
+        let available = blocked.is_none() && message.is_none();
+        let rect = egui::Rect::from_min_size(
+            grid.min
+                + egui::vec2(
+                    (index % 2) as f32 * (button_size.x + gap),
+                    (index / 2) as f32 * (button_size.y + gap),
+                ),
+            button_size,
+        );
+        let response = ui.interact(
+            rect,
+            ui.id().with(("spy-action", province, assignment as u8)),
+            if available {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
             },
         );
-        let age = campaign
-            .espionage
-            .missions
-            .iter()
-            .find(|mission| mission.owner == player && mission.province == province)
-            .map_or(0, |mission| mission.months_active);
-        ui.horizontal_wrapped(|ui| {
-        icon(ui, Icon::Spy, 24.0).on_hover_text(format!("{} · {age} surviving months. {risk}\nMonth 1: population/happiness. Month 2: production/consumption/policies. Month 3: construction/troops/recruitment.\nReports refresh monthly after detection. Scandal discovery is separate. National stockpiles, treasury, tactics and movement destinations stay private.", if deployed { "Network active" } else { "No network" }));
-        if deployed { ui.small(format!("Access {}/3", age.min(3))); }
-        let label = if deployed { "Withdraw" } else { "Deploy spy" };
-        if ui.add_enabled(deployed || can_deploy, egui::Button::new(label))
-            .on_hover_text(format!("Deployment: {:.1} Influence. Maintenance: {:.1} Coin/month. Detection is checked before reports and separate scandal discovery. Information unlocks after 1 / 2 / 3 surviving months. Withdrawal or detection stops updates; redeployment starts at access 0.", spy_config.deployment_influence, spy_config.monthly_coin))
-            .on_disabled_hover_text(format!("Requires {:.1} Influence to deploy; only one network per player and province is allowed.", spy_config.deployment_influence)).clicked() {
-            if deployed { campaign.espionage.withdraw(player, province); message = Some("Spy network withdrawn.".into()); }
-            else { result = Some(campaign.espionage.deploy(player, province, &mut campaign.actors, &campaign.politics, &campaign.espionage_config)); }
-        }
-        stat(ui, Icon::Coin, &format!("{:.0}/mo", spy_config.monthly_coin), "Monthly upkeep of a deployed spy network.");
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, available, name));
+        campaign_widgets::paint_purchase_background(
+            ui,
+            rect,
+            available,
+            response.hovered(),
+            response.is_pointer_button_down_on(),
+            4.0 * scale,
+            scale,
+        );
+        ui.painter().rect_stroke(
+            rect,
+            4.0 * scale,
+            egui::Stroke::new(scale, province_panel::RULE),
+            egui::StrokeKind::Inside,
+        );
+        let image_size = (rect.height() - 10.0 * scale).min(64.0 * scale).min(rect.width() * 0.30);
+        let image_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 6.0 * scale + image_size * 0.5, rect.center().y),
+            egui::Vec2::splat(image_size),
+        );
+        ui.scope(|ui| {
+            if !available {
+                ui.set_opacity(0.85);
+            }
+            campaign_widgets::paint_icon(ui, symbol, image_rect);
         });
-        if !matches!(campaign.politics[province].state, PoliticalState::Owned { .. }) {
-            let hostile = campaign.npc_wars[player][province];
-            let battling = campaign.military.province_in_battle(province);
-            if hostile {
-                if ui.add_enabled(!battling, egui::Button::new("End hostility"))
-                    .on_hover_text("End invasion permission and military occupation. Peaceful access still requires friendly relations.")
-                    .on_disabled_hover_text("Resolve or retreat from the battle before ending hostility.").clicked() {
-                    campaign.npc_wars[player][province] = false;
-                    if campaign.military.provinces[province].occupation == Some(ForceOwner::Player(player)) { campaign.military.provinces[province].occupation = None; }
-                    message = Some("Hostility ended. Military occupation no longer creates Control.".into());
-                }
-            } else if ui.button("Declare hostility").on_hover_text("Permits invasion and starts a battle if hostile units coexist. NPC defenders must be defeated before occupation can generate Control.").clicked() {
-                campaign.declare_hostility(player, province); message = Some("Hostility declared.".into());
-            }
-        }
-    }
-    let current_state = campaign.politics[province].state.clone();
-    for rival in 0..campaign.actors.len() {
-        if rival == player {
-            continue;
-        }
-        let actions: &[Interference] = match current_state {
-            PoliticalState::Independent {
-                ..
-            } => &[
-                Interference::SmearCampaign,
-                Interference::FundOpposition,
-                Interference::UndermineRival,
-            ],
-            PoliticalState::Vassal {
-                overlord,
-                ..
-            } if overlord == rival => &[
-                Interference::SmearCampaign,
-                Interference::PoliticalAgitation,
-                Interference::FundDissidents,
-            ],
-            PoliticalState::Owned {
-                owner,
-            } if owner == rival => &[Interference::AgitatePopulation, Interference::FundUnrest],
-            _ => &[],
+        let ink = if available {
+            province_panel::INK
+        } else {
+            campaign_widgets::UNAVAILABLE_PURCHASE_INK
         };
-        if actions.is_empty() {
-            continue;
+        let content_left = image_rect.right() + 6.0 * scale;
+        let content_width = (rect.right() - content_left - 6.0 * scale).max(1.0);
+        let title = ui.painter().layout(
+            name.to_owned(),
+            egui::FontId::proportional(16.0 * scale),
+            ink,
+            content_width,
+        );
+        let title_top = rect.top() + 9.0 * scale;
+        let costs_top = rect.bottom() - 36.0 * scale;
+        ui.painter().galley(egui::pos2(content_left, title_top), title, ink);
+        let mut cost_left = content_left;
+        for (symbol, value) in [
+            (Icon::Influence, deployment.map_or("—".to_owned(), |cost| format!("{cost:.0}"))),
+            (Icon::Coin, upkeep.map_or("—/mo".to_owned(), |cost| format!("{cost:.0}/mo"))),
+        ] {
+            let center = egui::pos2(cost_left, costs_top + 11.0 * scale);
+            campaign_widgets::paint_icon(
+                ui,
+                symbol,
+                egui::Rect::from_center_size(
+                    center + egui::vec2(10.0 * scale, 0.0),
+                    egui::Vec2::splat(20.0 * scale),
+                ),
+            );
+            let cost =
+                ui.painter().layout_no_wrap(value, egui::FontId::proportional(14.0 * scale), ink);
+            let position = center + egui::vec2(23.0 * scale, -cost.size().y * 0.5);
+            cost_left = position.x + cost.size().x + 12.0 * scale;
+            ui.painter().galley(position, cost, ink);
         }
-        egui::CollapsingHeader::new(format!("Rival · P{}", rival + 1))
-            .id_salt((province, rival))
-            .show(ui, |ui| {
-                for &action in actions {
-                    let (label, currency, explanation) = interference_details(action);
-                    let quote = political_quote(
-                        &campaign.politics[province],
-                        &campaign.actors[player],
-                        currency,
-                        |p, actor| {
-                            p.interfere(player, rival, actor, action, distance, &config).map(|_| ())
-                        },
-                    );
-                    if political_button(ui, label, currency, quote, explanation) {
-                        result = Some(
-                            campaign.politics[province]
-                                .interfere(
-                                    player,
-                                    rival,
-                                    &mut campaign.actors[player],
-                                    action,
-                                    distance,
-                                    &config,
-                                )
-                                .map(|changes| {
-                                    campaign
-                                        .notifications
-                                        .record_foreign_happiness(player, rival, province, changes);
-                                    for (class, change) in changes.into_iter().enumerate() {
-                                        campaign.economy.provinces[province].temporary_happiness
-                                            [class] += change;
-                                    }
-                                }),
-                        );
-                    }
-                }
-            });
-    }
-    if let Some(text) = campaign_politics::npc_evidence(
-        ui,
-        &mut campaign.espionage,
-        &mut campaign.politics,
-        player,
-        province,
-        campaign.economy.month,
-        &campaign.espionage_config,
-    ) {
-        message = Some(text);
-    }
-    if matches!(campaign.politics[province].state, PoliticalState::Owned { .. }) {
-        let evidence: Vec<_> = campaign
-            .espionage
-            .scandals
-            .iter()
-            .filter(|evidence| {
-                evidence.holder == player
-                    && evidence.province == Some(province)
-                    && (evidence.expires > campaign.economy.month || evidence.reserved_for_motion)
-            })
-            .collect();
-        if !evidence.is_empty() {
-            ui.separator();
-            ui.collapsing(format!("Evidence · {}", evidence.len()), |ui| {
-            for scandal in evidence {
-                ui.horizontal_wrapped(|ui| {
-                    icon(ui, Icon::Spy, 18.0);
-                    ui.label(scandal.kind.label()).on_hover_text(format!("{:?} · expires in {} months. Expose player evidence in the Senate to undermine faction loyalties or force an unpopular Consul to resign.", scandal.severity, scandal.expires.saturating_sub(campaign.economy.month)));
-                });
-            }
-            });
+        if response.on_hover_text(description).clicked() && available {
+            let result = campaign.espionage.deploy_assignment(
+                player,
+                province,
+                &mut campaign.actors,
+                &campaign.politics,
+                &campaign.espionage_config,
+                assignment,
+                distance,
+            );
+            message = Some(
+                result.map_or_else(|error| error.to_string(), |_| format!("Spy deployed: {name}.")),
+            );
         }
     }
-    result
-        .map(|value| {
-            value.map_or_else(|error| error.to_string(), |_| "Political action accepted.".into())
-        })
-        .or(message)
+    message
 }
 
+/// The dark portrait badge uses the same treatment as the terrain and city labels.
+fn political_distance_badge(
+    ui: &mut egui::Ui,
+    portrait: egui::Rect,
+    distance: Option<usize>,
+    scale: f32,
+) {
+    let multiplier = distance_multiplier(distance).ok();
+    let value = multiplier.map_or_else(
+        || "—".into(),
+        |value| format!("×{}", format!("{value:.2}").trim_end_matches('0').trim_end_matches('.')),
+    );
+    let text = ui.painter().layout_no_wrap(
+        format!("Political distance {value}"),
+        egui::FontId::proportional(12.0 * scale),
+        egui::Color32::WHITE,
+    );
+    let size = egui::vec2(text.size().x + 34.0 * scale, 27.0 * scale);
+    let rect = egui::Rect::from_min_size(
+        portrait.right_bottom() - size - egui::vec2(7.0, 7.0) * scale,
+        size,
+    );
+    ui.painter().rect_filled(rect, 3.0 * scale, egui::Color32::from_black_alpha(180));
+    campaign_widgets::paint_icon(
+        ui,
+        Icon::PoliticalDistance,
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(5.0, 4.0) * scale,
+            egui::vec2(19.0, 19.0) * scale,
+        ),
+    );
+    ui.painter().galley(
+        rect.min + egui::vec2(28.0 * scale, (rect.height() - text.size().y) * 0.5),
+        text,
+        egui::Color32::WHITE,
+    );
+    ui.interact(rect, ui.id().with("political-distance-badge"), egui::Sense::hover()).on_hover_text(if multiplier.is_some() {
+        "Political distance multiplies spy deployment Influence and monthly sestertii upkeep. The mission cards show the actual whole-number costs. A usable route is required."
+    } else {
+        "Political distance: this province has no usable route from your controlled territory. Spy deployment is unavailable."
+    });
+}
 #[cfg(test)]
 #[path = "../../tests/unit/ui_layout.rs"]
 mod layout_tests;
@@ -1565,7 +2200,7 @@ mod layout_tests;
 mod buildings_ui;
 
 /// Apply integration's already-computed relation shift once while preserving other causes.
-fn integrate_province(
+pub(super) fn integrate_province(
     campaign: &mut Campaign,
     province: usize,
     player: usize,
@@ -1577,166 +2212,84 @@ fn integrate_province(
     Ok(())
 }
 
-/// A validated price and the original actor's ability to pay it.
-#[derive(Debug, Clone, Copy)]
-struct PoliticalQuote {
-    cost: f64,
-    affordable: bool,
-}
-
-/// A compact illustrated meter puts the rule explanation on the entire row's hover.
-fn diplomatic_meter(ui: &mut egui::Ui, symbol: Icon, label: &str, value: f64, explanation: &str) {
-    ui.horizontal(|ui| {
-        icon(ui, symbol, 21.0);
-        ui.add_sized([61.0, 20.0], egui::Label::new(label));
-        ui.add(
-            egui::ProgressBar::new((value / 100.0).clamp(0.0, 1.0) as f32)
-                .desired_width(ui.available_width().max(1.0))
-                .text(format!("{value:.1}")),
-        );
-    })
-    .response
-    .on_hover_text(explanation);
-}
-
-/// Run the authoritative operation on cloned state so UI prices and legality cannot
-/// diverge from the actual action. No pending pressure or wallet change escapes the preview.
-fn political_quote(
-    province: &ProvincePolitics,
-    actor: &PoliticalPlayer,
-    currency: Currency,
-    operation: impl FnOnce(&mut ProvincePolitics, &mut PoliticalPlayer) -> Result<(), PoliticalError>,
-) -> Result<PoliticalQuote, PoliticalError> {
-    let mut preview = province.clone();
-    let mut wallet = actor.clone();
-    // The panel quotes five-point actions. This finite budget safely exceeds every
-    // configured price while retaining sub-cent precision in the subtraction.
-    let preview_budget = 1_000_000_000.0;
-    wallet.coin = preview_budget;
-    wallet.influence = preview_budget;
-    operation(&mut preview, &mut wallet)?;
-    let (remaining, available) = match currency {
-        Currency::Coin => (wallet.coin, actor.coin),
-        Currency::Influence => (wallet.influence, actor.influence),
-    };
-    let cost = (preview_budget - remaining).max(0.0);
-    Ok(PoliticalQuote {
-        cost,
-        affordable: available + 0.000_001 >= cost,
-    })
-}
-
-/// Render a priced action with consistent explanations when disabled or affordable.
-fn political_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    currency: Currency,
-    quote: Result<PoliticalQuote, PoliticalError>,
-    explanation: &str,
-) -> bool {
-    let name = currency_label(currency);
-    let (enabled, tooltip) = match quote {
-        Ok(quote) => (
-            quote.affordable,
-            if quote.affordable {
-                format!("{label} · {:.1} {name}\n{explanation}", quote.cost)
-            } else {
-                format!(
-                    "Requires {:.1} {name}; insufficient available funds.\n{explanation}",
-                    quote.cost
-                )
-            },
-        ),
-        Err(error) => (false, format!("{error}\n{explanation}")),
-    };
-    let mut clicked = false;
-    ui.horizontal(|ui| {
-        icon(ui, currency_icon(currency), 20.0).on_hover_text(name);
-        clicked = ui
-            .add_enabled(enabled, egui::Button::new(label))
-            .on_hover_text(&tooltip)
-            .on_disabled_hover_text(tooltip)
-            .clicked();
-    });
-    clicked
-}
-
-/// Use the same illustrated resource identity in every priced political control.
-fn currency_icon(currency: Currency) -> Icon {
-    match currency {
-        Currency::Coin => Icon::Coin,
-        Currency::Influence => Icon::Influence,
-    }
-}
-
-/// Common currency labels keep configuration-driven prices readable.
-fn currency_label(currency: Currency) -> &'static str {
-    match currency {
-        Currency::Coin => "Coin",
-        Currency::Influence => "Influence",
-    }
-}
-
-/// Display a recurring program's actual routed monthly cost; enabled programs may
-/// always be switched off, including after their political route becomes invalid.
-fn recurring_support(
-    ui: &mut egui::Ui,
-    enabled: &mut bool,
-    currency: Currency,
-    base_cost: f64,
-    route: Result<f64, PoliticalError>,
-    effect: &str,
-) {
-    let (cost, valid) = match route {
-        Ok(distance) => {
-            (format!("{:.1} {}/month", base_cost * distance, currency_label(currency)), true)
-        },
-        Err(_) => ("No usable route".into(), false),
-    };
-    ui.horizontal(|ui| {
-    icon(ui, currency_icon(currency), 20.0);
-    ui.add_enabled(valid || *enabled, egui::Checkbox::new(enabled, effect))
-        .on_hover_text(format!("{cost}. Pays once each month if the route is usable and sufficient funds are available. Otherwise skips the month without debt."))
-        .on_disabled_hover_text("A usable political connection is required before enabling this program.");
-    });
-}
-
-/// Map each allowed hostile action to its actual payment resource and distinct effect.
-fn interference_details(action: Interference) -> (&'static str, Currency, &'static str) {
-    match action {
-        Interference::SmearCampaign => ("Smear", Currency::Influence, "Lowers only this rival's Relation. Limited to one smear per actor, rival and province each month. Strong existing friendship resists the action."),
-        Interference::FundOpposition => ("Opposition", Currency::Coin, "Reduces this rival's Independent Control at monthly resolution and returns it to Local. You gain no Control. Entrenchment and friendship increase the cost."),
-        Interference::UndermineRival => ("Undermine", Currency::Influence, "Reduces this rival's Independent Control at monthly resolution and returns it to Local. You gain no Control."),
-        Interference::PoliticalAgitation => ("Agitate", Currency::Influence, "Immediately reduces enemy Vassal Control. At zero the province becomes independent. It does not give you a control share."),
-        Interference::FundDissidents => ("Dissidents", Currency::Coin, "Lowers Relation toward the overlord. Poorer relations increase future Vassal Control decay; this does not directly remove Control."),
-        Interference::AgitatePopulation => ("Agitate", Currency::Influence, "Reduces Citizen and Plebeian happiness in the rival's owned province. Ownership and Control do not change. The action is attributed to you."),
-        Interference::FundUnrest => ("Unrest", Currency::Coin, "Reduces Plebeian happiness in the rival's owned province. Ownership and Control do not change. The action is attributed to you."),
-    }
-}
-
-/// Global player access and bilateral peace controls, surfaced from owned-province context.
+/// Province access and bilateral peace controls, surfaced from owned-province context.
 fn military_diplomacy(
     ui: &mut egui::Ui,
     campaign: &mut Campaign,
     province: usize,
     player: usize,
     owner: usize,
+    colors: &[egui::Color32],
 ) -> Option<String> {
     let mut message = None;
     if owner == player {
-        ui.collapsing("Military access", |ui| {
-            for guest in 0..campaign.actors.len() {
-                if guest == player { continue; }
-                let war = campaign.wars[player][guest];
-                let mut invited = campaign.invitations[player][guest];
-                if ui.add_enabled(!war, egui::Checkbox::new(&mut invited, format!("Invite Player {}", guest + 1)))
-                    .on_hover_text("Permit peaceful military entry. Uncheck to revoke future entry; stationed units are not automatically expelled.")
-                    .on_disabled_hover_text("Military invitations are unavailable between players at war.").changed() {
-                    campaign.invitations[player][guest] = invited;
-                    message = Some(format!("Military access for Player {} {}.", guest + 1, if invited { "granted" } else { "revoked" }));
-                }
-            }
-        });
+        let scale = egui::TextStyle::Body.resolve(ui.style()).size / 14.0;
+        ui.add_space(8.0 * scale);
+        policy_widgets::section(ui, scale, "Military Access");
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(
+                (6.0 * scale).round() as i8,
+                (10.0 * scale).round() as i8,
+            ))
+            .show(ui, |ui| {
+                ui.add(egui::Label::new("Permit peaceful military entry to this province. If revoked, foreign units automatically march back to their home province.").wrap());
+                ui.add_space(12.0 * scale);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0) * scale;
+                    for guest in 0..campaign.actors.len() {
+                        if guest == player {
+                            continue;
+                        }
+                        let war = campaign.wars[player][guest];
+                        let mut invited = campaign.province_access_granted(province, player, guest);
+                        let color = colors.get(guest).copied().unwrap_or(province_panel::INK);
+                        let label = egui::RichText::new(format!("Player {}", guest + 1)).color(color);
+                        let changed = egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(247, 243, 232))
+                            .stroke(egui::Stroke::new(0.8 * scale, province_panel::RULE))
+                            .corner_radius(2.0 * scale)
+                            .inner_margin(egui::Margin::symmetric(
+                                (8.0 * scale).round() as i8,
+                                (5.0 * scale).round() as i8,
+                            ))
+                            .show(ui, |ui| {
+                                let response = ui.add_enabled_ui(!war, |ui| {
+                                    ui.add_sized(
+                                        [136.0 * scale, 26.0 * scale],
+                                        egui::Checkbox::new(&mut invited, label),
+                                    )
+                                }).inner.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                  .on_disabled_hover_text("Access unavailable during war.");
+                                response.changed()
+                            })
+                            .inner;
+                        if changed {
+                            match campaign.set_province_access(province, player, guest, invited) {
+                                Ok(()) => {
+                                    message = Some(format!(
+                                        "Military access {} for Player {}.",
+                                        if invited { "granted" } else { "revoked" },
+                                        guest + 1
+                                    ))
+                                },
+                                Err(error) => {
+                                    let text = error.to_string();
+                                    campaign.notifications.province_notice(
+                                        player,
+                                        province,
+                                        campaign.economy.month,
+                                        super::campaign_notifications::NoticeSeverity::Warning,
+                                        super::campaign_notifications::NoticeKind::MilitaryMovementStopped,
+                                        "Military access could not be changed",
+                                        &text,
+                                    );
+                                    message = Some(text);
+                                },
+                            }
+                        }
+                    }
+                });
+            });
     } else if campaign.wars[player][owner] {
         stat(
             ui,
@@ -1759,7 +2312,16 @@ fn military_diplomacy(
             message = Some(format!("Peace established with Player {}.", owner + 1));
         }
     } else {
-        stat(ui, Icon::Trade, if campaign.invitations[owner][player] { "Access granted" } else { "Access closed" }, "Peaceful military entry requires the owner's invitation. Peaceful stationing grants no occupation Control.");
+        stat(
+            ui,
+            Icon::MilitaryAccess,
+            if campaign.province_access_granted(province, owner, player) {
+                "Access granted"
+            } else {
+                "Access closed"
+            },
+            "Peaceful military entry requires the owner's invitation. Peaceful stationing grants no occupation Control.",
+        );
         if ui.button("Declare hostility").on_hover_text("Ends military invitations between both players. Entering hostile territory begins combat; victory captures an owned province immediately.").clicked() {
             campaign.invitations[player][owner] = false; campaign.invitations[owner][player] = false;
             campaign.declare_hostility(player, province);
@@ -1769,8 +2331,8 @@ fn military_diplomacy(
     message
 }
 
-/// Read construction identity before and after the building UI to emit its one start event.
-fn construction_underway(campaign: &Campaign, province: usize) -> Option<Icon> {
+/// Read construction identity to announce new wonders to other players.
+pub(super) fn construction_underway(campaign: &Campaign, province: usize) -> Option<Icon> {
     match &campaign.economy.provinces[province].construction {
         Some(ConstructionProject::Building(project)) => Some(Icon::Building(project.building)),
         Some(ConstructionProject::Wonder(project)) => Some(Icon::Wonder(project.wonder_id)),
@@ -1806,7 +2368,11 @@ fn province_notifications(
         });
     }
     if empty {
-        ui.label("No notifications from this province yet.");
+        ui.add_space(8. * scale);
+        ui.horizontal(|ui| {
+            ui.add_space(12. * scale);
+            ui.label("No notifications from this province yet.");
+        });
     }
     navigation
 }
@@ -1822,6 +2388,7 @@ pub(in crate::app) fn open_notification(
     match notice.action {
         NoticeAction::OpenSenate => {
             view.open = Some(CampaignTab::Senate);
+            view.politics_section = 0;
             view.close_province_selector();
             detail.0 = None;
             view.last_detail = None;

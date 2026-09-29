@@ -18,8 +18,10 @@ pub struct MilitaryProvince {
 /// Movement permission separates peaceful access from hostile invasion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MilitaryAccess {
-    /// Directly owned, own vassal, friendly NPC, or explicitly invited.
+    /// Directly owned, own vassal, very friendly NPC, or explicitly invited.
     Peaceful,
+    /// Friendly NPC permits passage, but cannot be the army's final destination.
+    Transit,
     /// Hostile entry, which may begin a battle on arrival.
     Invasion,
     /// No diplomatic permission and no declaration of hostility.
@@ -45,6 +47,8 @@ pub struct MovementOrder {
     pub required_progress: f64,
     /// Snapshot, editable only before combat starts.
     pub plan: BattlePlan,
+    /// Fixed withdrawal to home after access revocation, with peaceful transit.
+    pub returning_home: bool,
 }
 
 impl MovementOrder {
@@ -117,11 +121,28 @@ pub fn fastest_route(
     access: impl Fn(ForceOwner, ProvinceId) -> MilitaryAccess,
     config: &MilitaryConfig,
 ) -> Result<Vec<ProvinceId>, MilitaryError> {
+    fastest_route_leg(graph, origin, destination, owner, units, access, config, false)
+}
+
+/// Waypoint legs may end in a passage-only province; complete orders may not.
+fn fastest_route_leg(
+    graph: &[MilitaryProvince],
+    origin: ProvinceId,
+    destination: ProvinceId,
+    owner: ForceOwner,
+    units: &[Unit],
+    access: impl Fn(ForceOwner, ProvinceId) -> MilitaryAccess,
+    config: &MilitaryConfig,
+    transit_endpoint: bool,
+) -> Result<Vec<ProvinceId>, MilitaryError> {
     if origin >= graph.len() || destination >= graph.len() {
         return Err(MilitaryError::UnknownProvince);
     }
     if origin == destination || units.is_empty() {
         return Err(MilitaryError::InvalidUnits);
+    }
+    if !transit_endpoint && access(owner, destination) == MilitaryAccess::Transit {
+        return Err(MilitaryError::NoLegalRoute);
     }
     let speed = force_speed(units, config);
     if speed <= 0. {
@@ -195,10 +216,21 @@ pub fn route_via(
         if next == current {
             continue;
         }
-        if next != destination && access(owner, next) != MilitaryAccess::Peaceful {
+        if next != destination
+            && !matches!(access(owner, next), MilitaryAccess::Peaceful | MilitaryAccess::Transit)
+        {
             return Err(MilitaryError::NoLegalRoute);
         }
-        route.extend(fastest_route(graph, current, next, owner, units, &access, config)?);
+        route.extend(fastest_route_leg(
+            graph,
+            current,
+            next,
+            owner,
+            units,
+            &access,
+            config,
+            next != destination,
+        )?);
         current = next;
     }
     if route.is_empty() {
@@ -227,6 +259,7 @@ pub fn validate_route(
         let permission = access(owner, next);
         if permission == MilitaryAccess::Blocked
             || (permission == MilitaryAccess::Invasion && step + 1 < route.len())
+            || (permission == MilitaryAccess::Transit && step + 1 == route.len())
         {
             return Err(MilitaryError::NoLegalRoute);
         }

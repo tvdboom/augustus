@@ -1,7 +1,7 @@
 //! Parchment-styled Senate controls and a precisely one-hundred-seat chamber.
 
-use super::campaign_widgets::{icon, stat, Icon};
-use crate::game::politics::diplomacy::{PoliticalState, ProvincePolitics};
+use super::campaign_widgets::{icon, sestertius_unit, stat, Icon};
+
 use crate::game::politics::espionage::{
     EspionageConfig, EspionageState, ScandalKind, ScandalTarget, Severity,
 };
@@ -17,58 +17,6 @@ const UNDECIDED: egui::Color32 = egui::Color32::from_rgb(145, 143, 134);
 #[cfg(test)]
 #[path = "../../tests/unit/senate_ui.rs"]
 mod tests;
-
-/// Show only the local player's evidence about the selected NPC government.
-/// Both uses consume evidence; one-time trade itself never grants political control.
-pub(in crate::app) fn npc_evidence(
-    ui: &mut egui::Ui,
-    espionage: &mut EspionageState,
-    politics: &mut [ProvincePolitics],
-    player: usize,
-    province: usize,
-    month: u32,
-    config: &EspionageConfig,
-) -> Option<String> {
-    let state = politics.get(province)?.state.clone();
-    if matches!(state, PoliticalState::Owned { .. }) {
-        return None;
-    }
-    let mut message = None;
-    let evidence: Vec<_> = espionage
-        .scandals
-        .iter()
-        .filter(|s| {
-            s.holder == player
-                && s.target == ScandalTarget::Province(province)
-                && s.expires > month
-                && !s.reserved_for_motion
-        })
-        .cloned()
-        .collect();
-    if evidence.is_empty() {
-        return None;
-    }
-    ui.collapsing(format!("Evidence · {}", evidence.len()), |ui| {
-    for scandal in evidence {
-        ui.horizontal_wrapped(|ui| {
-            icon(ui, Icon::Spy, 20.0);
-            ui.strong(scandal.kind.label()).on_hover_text(format!("{:?} evidence · expires in {} months. Either blackmail action consumes this evidence.", scandal.severity, scandal.expires.saturating_sub(month)));
-        });
-        ui.horizontal_wrapped(|ui| {
-            icon(ui, Icon::Control, 20.0);
-            if ui.add_enabled(matches!(state, PoliticalState::Independent { .. }), egui::Button::new(format!("+{:.1}", scandal.severity.control_gain())))
-                .on_hover_text("Consume the evidence. Adds political pressure to the next simultaneous monthly resolution and lowers relation by 5. Existing rival pressure may oppose the gain.").clicked() {
-                message = Some(match espionage.blackmail_control(player, scandal.id, month, politics) { Ok(()) => "Scandal consumed. Blackmail pressure will resolve next month; relation decreased by 5.".into(), Err(error) => error.to_string() });
-            }
-            icon(ui, Icon::Trade, 20.0);
-            if ui.button("Trade terms").on_hover_text(format!("Consume this evidence. For {} months, this NPC requires {:.0}% of its usual offered value from you. Other players receive no benefit.", config.favorable_trade_months, config.favorable_trade_ratio * 100.0)).clicked() {
-                message = Some(match espionage.blackmail_trade(player, scandal.id, month, config) { Ok(()) => format!("Favorable trade terms secured for {} months.", config.favorable_trade_months), Err(error) => error.to_string() });
-            }
-        });
-    }
-    });
-    message
-}
 
 /// Show persistent loyalties, office requirements and faction-specific political tools.
 pub(in crate::app) fn show(
@@ -96,7 +44,7 @@ pub(in crate::app) fn show(
         }
     });
     ui.horizontal_wrapped(|ui| {
-        stat(ui, Icon::Coin, &format!("{:.0}", actor.coin), "Available Coin.");
+        stat(ui, Icon::Coin, &format!("{:.0}", actor.coin), "Available sestertii.");
         stat(ui, Icon::Influence, &format!("{:.0}", actor.influence), "Available Influence.");
         stat(ui, Icon::Nobles, &format!("{} senators", senate.support(player)), "Senators in your color support you. Their loyalties are compared against every player's performance each month.");
     });
@@ -195,9 +143,9 @@ pub(in crate::app) fn show(
             let quote = senate.bribe_quote(player, bloc, players, config);
             let affordable = quote.as_ref().is_ok_and(|cost| players[player].coin >= *cost);
             let bribe_tip = quote.as_ref().map_or_else(ToString::to_string, |cost|
-                format!("{cost:.0} Coin: buy one senator's loyalty immediately for {} months. At most {} active bribes. Cost rises by 20 Coin per active bribe. One bribe per faction per month. Creates discoverable corruption evidence; exposure cancels all your bribes.", config.bribe_months, config.bribe_cap));
+                format!("{cost:.0} {}: buy one senator's loyalty immediately for {} months. At most {} active bribes. Cost rises by 20 sestertii per active bribe. One bribe per faction per month. Creates discoverable corruption evidence; exposure cancels all your bribes.", sestertius_unit(*cost), config.bribe_months, config.bribe_cap));
             if ui.add_enabled(affordable, egui::Button::new("Bribe"))
-                .on_hover_text(&bribe_tip).on_disabled_hover_text(if affordable || quote.is_err() { bribe_tip.clone() } else { format!("{bribe_tip}\nInsufficient Coin.") }).clicked() {
+                .on_hover_text(&bribe_tip).on_disabled_hover_text(if affordable || quote.is_err() { bribe_tip.clone() } else { format!("{bribe_tip}\nInsufficient sestertii.") }).clicked() {
                 message = Some(match senate.bribe(player, bloc, players, config) {
                     Ok(id) => {
                         espionage.record_action(player, None, ScandalKind::PoliticalBribery, Severity::Medium, senate.month, espionage_config);

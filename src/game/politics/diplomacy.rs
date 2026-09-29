@@ -243,6 +243,44 @@ impl ProvincePolitics {
         }
     }
 
+    /// Political power held by a player in an NPC independent or vassal province.
+    pub fn control(&self, player: PlayerId) -> f64 {
+        match self.state {
+            PoliticalState::Vassal {
+                overlord,
+                control,
+                ..
+            } if overlord == player => control,
+            _ => self.independent_control(player),
+        }
+    }
+
+    /// Targeted spy losses join independent monthly pressure or weaken vassal stability.
+    pub fn queue_control_loss(
+        &mut self,
+        player: PlayerId,
+        amount: f64,
+    ) -> Result<(), PoliticalError> {
+        valid_amount(amount)?;
+        match &mut self.state {
+            PoliticalState::Independent {
+                ..
+            } => {
+                *self.pending_reductions.get_mut(player).ok_or(PoliticalError::MissingTarget)? +=
+                    amount;
+            },
+            PoliticalState::Vassal {
+                overlord,
+                control,
+                ..
+            } if *overlord == player => {
+                *control = (*control - amount).max(0.0);
+            },
+            _ => return Err(PoliticalError::Ineligible),
+        }
+        Ok(())
+    }
+
     /// Pay for immediate relation gain with diminishing returns at high friendship.
     pub fn improve_relation(
         &mut self,
@@ -483,7 +521,7 @@ impl ProvincePolitics {
             return Err(PoliticalError::Ineligible);
         };
         let control = *shares.get(player).ok_or(PoliticalError::MissingTarget)?;
-        if control < 51.0
+        if control <= 50.0
             || shares.iter().enumerate().any(|(id, value)| id != player && *value >= control)
         {
             return Err(PoliticalError::Ineligible);
@@ -765,7 +803,10 @@ pub fn distance_multiplier(steps: Option<usize>) -> Result<f64, PoliticalError> 
         Some(0..=1) => Ok(1.0),
         Some(2..=3) => Ok(1.25),
         Some(4..=5) => Ok(1.5),
-        Some(_) => Ok(2.0),
+        Some(6..=7) => Ok(1.75),
+        Some(8..=9) => Ok(2.0),
+        Some(10..=11) => Ok(2.25),
+        Some(_) => Ok(2.5),
         None => Err(PoliticalError::NoConnection),
     }
 }

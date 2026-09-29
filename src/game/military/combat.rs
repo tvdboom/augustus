@@ -27,12 +27,13 @@ pub struct BattleSide {
 impl BattleSide {
     /// Construct a coalition and deterministically deploy it.
     pub fn new(
-        units: Vec<Unit>,
+        mut units: Vec<Unit>,
         plans: BTreeMap<ForceOwner, BattlePlan>,
         ranks: BTreeMap<ForceOwner, MilitaryRank>,
         width: usize,
         config: &MilitaryConfig,
     ) -> Self {
+        consolidate_army_condition(&mut units);
         let mut initial_manpower = BTreeMap::new();
         let mut initial_strength = BTreeMap::new();
         for unit in &units {
@@ -111,6 +112,8 @@ pub struct Battle {
     pub result: Option<BattleResult>,
     /// Pending retreat at the next round boundary (true means attacker).
     retreat_requested: Option<bool>,
+    /// Rome's local defenders fight until destroyed, regardless of morale.
+    rome_defense: bool,
     /// Deterministic authoritative RNG state; clients consume resolved state.
     random_state: u64,
 }
@@ -141,7 +144,27 @@ impl Battle {
             months: 0,
             result: None,
             retreat_requested: None,
+            rome_defense: false,
             random_state: seed.max(1),
+        }
+    }
+    /// The capital's local defenders cannot rout or lose through the battle deadline.
+    pub fn protect_rome_defenders(&mut self) {
+        if self.defenders.units.iter().any(|unit| unit.owner == ForceOwner::Local(self.province)) {
+            self.rome_defense = true;
+            self.restore_rome_morale();
+        }
+    }
+
+    fn restore_rome_morale(&mut self) {
+        if !self.rome_defense {
+            return;
+        }
+        for unit in &mut self.defenders.units {
+            if unit.owner == ForceOwner::Local(self.province) && unit.current_manpower > 0. {
+                unit.morale = unit.morale.max(1.);
+                self.defenders.routed.remove(&unit.id);
+            }
         }
     }
     /// Request retreat without changing the already committed formation.
@@ -151,6 +174,9 @@ impl Battle {
         config: &MilitaryConfig,
     ) -> Result<(), MilitaryError> {
         if self.result.is_some() {
+            return Err(MilitaryError::InvalidBattle);
+        }
+        if self.rome_defense && !attacker {
             return Err(MilitaryError::InvalidBattle);
         }
         if self.months < config.minimum_retreat_months {
@@ -171,7 +197,10 @@ impl Battle {
             }
         }
         self.months += 1;
-        if self.result.is_none() && self.months >= config.maximum_battle_months {
+        if self.result.is_none()
+            && !self.rome_defense
+            && self.months >= config.maximum_battle_months
+        {
             self.result = Some(BattleResult::DefenderVictory);
         }
     }
@@ -180,6 +209,7 @@ impl Battle {
         if self.result.is_some() {
             return;
         }
+        self.restore_rome_morale();
         if let Some(attacker) = self.retreat_requested.take() {
             self.result = Some(if attacker {
                 BattleResult::DefenderVictory
@@ -228,6 +258,7 @@ impl Battle {
         mark_participating(&mut self.defenders);
         apply_losses(&mut self.attackers, attacker_losses);
         apply_losses(&mut self.defenders, defender_losses);
+        self.restore_rome_morale();
         self.round += 1;
         self.result = broken_result(&self.attackers, &self.defenders);
     }
@@ -515,20 +546,17 @@ fn attacks(
                     1.
                 };
             let ratio = attack / defense.max(0.001);
-            let manpower = config.base_manpower_damage
-                * victim.max_manpower
-                * ratio
-                * target_stats.manpower_damage_taken
+            // One pressure value drives casualties and morale. Morale already
+            // modifies attack above; defense provides all unit-type resistance.
+            let pressure = ratio
                 * intensity
                 * if exposed {
                     config.exposed_support_casualties
                 } else {
                     1.
                 };
-            let morale_loss = config.base_morale_damage
-                * ratio
-                * (config.morale_attack_base + config.morale_attack_scale * morale / 100.)
-                * target_stats.morale_damage_taken;
+            let manpower = config.base_manpower_damage * victim.max_manpower * pressure;
+            let morale_loss = config.base_morale_damage * pressure;
             let entry = losses.entry(target_id).or_insert((0., 0.));
             entry.0 += manpower;
             entry.1 += morale_loss;
@@ -557,7 +585,7 @@ fn find_target(slot: usize, maneuver: usize, formation: &Formation) -> Option<(U
     None
 }
 
-/// Coalition casualty character is weighted, so extra allied owners cannot multiply it arbitrarily.
+/// Coalition combat intensity is weighted, so extra allied owners cannot multiply it arbitrarily.
 fn side_intensity(side: &BattleSide, config: &MilitaryConfig) -> f64 {
     let total: f64 = side.units.iter().map(Unit::manpower_ratio).sum();
     if total <= 0. {
@@ -585,16 +613,26 @@ fn random_multiplier(state: &mut u64, config: &MilitaryConfig) -> f64 {
 
 /// Commit summed losses simultaneously and remove only destroyed units.
 fn apply_losses(side: &mut BattleSide, losses: BTreeMap<UnitId, (f64, f64)>) {
+    let mut army_losses = BTreeMap::<ForceOwner, (f64, f64)>::new();
+    for unit in &side.units {
+        let entry = army_losses.entry(unit.owner).or_default();
+        entry.0 += losses.get(&unit.id).map_or(0., |loss| loss.1) * unit.current_manpower;
+        entry.1 += unit.current_manpower;
+    }
     for unit in &mut side.units {
-        if let Some(&(men, morale)) = losses.get(&unit.id) {
-            unit.current_manpower = (unit.current_manpower - men).max(0.);
-            unit.morale = (unit.morale - morale).clamp(0., 100.);
-            if unit.morale <= 0. {
-                side.routed.insert(unit.id);
-            }
+        let (loss, weight) = army_losses[&unit.owner];
+        unit.morale = (unit.morale - loss / weight.max(0.001)).clamp(0., 100.);
+        if let Some(&(men, _)) = losses.get(&unit.id) {
+            let casualties = (men.max(0.) * PEOPLE_PER_POPULATION).round();
+            let survivors = (unit.people() as f64 - casualties).max(0.);
+            unit.current_manpower = survivors / PEOPLE_PER_POPULATION;
+        }
+        if unit.morale <= 0. {
+            side.routed.insert(unit.id);
         }
     }
     side.units.retain(|u| u.current_manpower > 0.);
+    consolidate_army_condition(&mut side.units);
 }
 
 /// Award bounded experience to living participants and preserve defeat morale.
@@ -631,4 +669,5 @@ fn reward_survivors(side: &mut BattleSide, winner: bool, config: &MilitaryConfig
             unit.morale = (unit.morale + config.victory_morale).clamp(0., 100.);
         }
     }
+    consolidate_army_condition(&mut side.units);
 }

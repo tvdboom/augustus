@@ -3,6 +3,73 @@
 use super::*;
 
 #[test]
+fn practice_boost_updates_campaign_balances_and_every_owned_province() {
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
+    let mut campaign = campaign::Campaign::default();
+    campaign.start(&ownership, 2);
+    let mut resources = HudResources::default();
+    resources.start_players(2, &ownership);
+    let before_wallet = campaign.economy.players[0].clone();
+    let before_populations: Vec<_> = campaign
+        .economy
+        .provinces
+        .iter()
+        .map(|province| (province.owner, province.population))
+        .collect();
+
+    apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
+
+    let wallet = &campaign.economy.players[0];
+    for index in 0..3 {
+        assert_eq!(wallet.resources[index], before_wallet.resources[index] + 5_000.0);
+        assert_eq!(wallet.practice_storage_bonus[index], 5_000.0);
+    }
+    assert_eq!(wallet.coin, before_wallet.coin + 5_000.0);
+    assert_eq!(wallet.influence, before_wallet.influence + 1_000.0);
+    assert_eq!(campaign.actors[0].coin, wallet.coin);
+    assert_eq!(campaign.actors[0].influence, wallet.influence);
+    let boosted_resources = wallet.resources;
+    assert_eq!(campaign.economy.players[1].practice_storage_bonus, [0.0; 3]);
+    for (province, (owner, population)) in campaign.economy.provinces.iter().zip(before_populations)
+    {
+        assert_eq!(
+            province.population,
+            population.map(|count| count
+                * if owner == Some(0) {
+                    10.0
+                } else {
+                    1.0
+                })
+        );
+    }
+    campaign.economy.recalculate_storage();
+    campaign.economy.players[0].clamp_storage();
+    assert_eq!(campaign.economy.players[0].resources, boosted_resources);
+}
+
+#[test]
+fn practice_boost_updates_preview_balances_and_owned_population() {
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
+    let mut resources = HudResources::default();
+    resources.start_players(2, &ownership);
+    let before = resources.players[0];
+    let before_population = ownership.population_for(0);
+    let other_population = ownership.population_for(1);
+
+    apply_practice_boost(0, &mut campaign::Campaign::default(), &mut resources, &mut ownership);
+
+    for index in 0..4 {
+        assert_eq!(resources.players[0][index].amount, before[index].amount + 5_000.0);
+    }
+    assert_eq!(resources.players[0][4].amount, before[4].amount + 1_000.0);
+    assert_eq!(ownership.population_for(0), before_population.map(|count| count * 10.0));
+    assert_eq!(ownership.population_for(1), other_population);
+    assert_eq!(resources.players[0][5].amount, ownership.total_population_for(0));
+}
+
+#[test]
 fn selected_local_house_color_reaches_players_and_province_headers() {
     let mut practice = LocalPractice {
         color_index: 4,
@@ -52,8 +119,10 @@ fn hud_floors_fractional_values_and_uses_the_least_happy_class_trend() {
     assert_eq!(format_hud_number(1_000_000.0), "1.0M");
     assert_eq!(format_hud_number(1_250_000.0), "1.3M");
     assert_eq!(format_hud_number(0.9), "0");
-    assert_eq!(format_hud_delta(0.0), "+0");
-    assert_eq!(format_hud_delta(0.9), "+0");
+    assert_eq!(format_hud_number(-0.0), "0");
+    assert_eq!(format_hud_delta(0.0), "0");
+    assert_eq!(format_hud_delta(-0.0), "0");
+    assert_eq!(format_hud_delta(0.9), "0");
     assert_eq!(format_hud_delta(-0.1), "-1");
     assert_eq!(format_hud_delta(1_550.0), "+1.6k");
     assert_eq!(format_hud_delta(-1_550.0), "-1.6k");
@@ -91,24 +160,22 @@ fn governance_happiness_drift_updates_without_stacking_old_edicts() {
     let mut edicts = Governance {
         food_rations: EdictLevel::High,
         slave_labor: EdictLevel::Low,
-        noble_taxes: EdictLevel::High,
         ..Default::default()
     };
     ownership.set_governance_for(0, edicts);
     resources.refresh_player_rates(0, &ownership);
     let happiness = resources.happiness_for(0);
-    assert_eq!(happiness.map(|class| class.monthly_delta), [0.0, 1.0, 1.0, 3.0]);
+    assert_eq!(happiness.map(|class| class.monthly_delta), [1.0, 1.0, 1.0, 3.0]);
     resources.advance(1, &mut ownership, true);
-    assert_eq!(resources.happiness_for(0).map(|class| class.amount), [50.0, 51.0, 51.0, 53.0]);
+    assert_eq!(resources.happiness_for(0).map(|class| class.amount), [51.0, 51.0, 51.0, 53.0]);
 
     edicts.food_rations = EdictLevel::Low;
     edicts.slave_labor = EdictLevel::High;
-    edicts.noble_taxes = EdictLevel::Low;
     ownership.set_governance_for(0, edicts);
     resources.refresh_player_rates(0, &ownership);
     assert_eq!(
         resources.happiness_for(0).map(|class| class.monthly_delta),
-        [0.0, -1.0, -1.0, -3.0]
+        [-1.0, -1.0, -1.0, -3.0]
     );
     resources.advance(1, &mut ownership, true);
     assert_eq!(resources.happiness_for(0).map(|class| class.amount), [50.0, 50.0, 50.0, 50.0]);
@@ -260,6 +327,68 @@ fn player_banner_click_opens_each_players_founding_province() {
 }
 
 #[test]
+fn player_banner_excludes_folds_rail_and_transparent_corners_without_a_tooltip() {
+    for (size, scale) in [(egui::vec2(1600.0, 900.0), 1.0), (egui::vec2(800.0, 600.0), 0.85)] {
+        let screen = egui::Rect::from_min_size(egui::pos2(25.0, 15.0), size);
+        for (source, expected) in [
+            (egui::pos2(100.0, 150.0), true),  // Eagle.
+            (egui::pos2(100.0, 230.0), true),  // SPQR lettering.
+            (egui::pos2(175.0, 250.0), true),  // Flag cloth near its lower edge.
+            (egui::pos2(50.0, 340.0), false),  // Curled cloth below the flag.
+            (egui::pos2(50.0, 450.0), false),  // Menu rail.
+            (egui::pos2(210.0, 270.0), false), // Empty lower-right corner.
+            (egui::pos2(210.0, 400.0), false), // Lower-right part of the old square.
+        ] {
+            let context = egui::Context::default();
+            let position = screen.min
+                + egui::vec2(
+                    (source.x - 7.0) / 213.0 * MAP_STANDARD_WIDTH,
+                    (source.y - 20.0) / 1664.0 * map_standard_height(screen, scale),
+                ) * scale;
+            let mut time = 0.0;
+            let mut frame = |events| {
+                time += 0.1;
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                });
+                let clicked = draw_map_menu_hitboxes(&context, scale);
+                let mut output = context.end_pass();
+                output.textures_delta.clear();
+                assert!(output.shapes.is_empty(), "The banner must not paint a tooltip");
+                (clicked, output.platform_output.cursor_icon)
+            };
+            frame(vec![]);
+            frame(vec![egui::Event::PointerMoved(position)]);
+            for _ in 0..10 {
+                frame(vec![]);
+            }
+            let (_, cursor) = frame(vec![egui::Event::PointerMoved(position)]);
+            assert_eq!(
+                cursor,
+                if expected {
+                    egui::CursorIcon::PointingHand
+                } else {
+                    egui::CursorIcon::Default
+                },
+                "Hover at {source:?} with scale {scale}"
+            );
+            for pressed in [true, false] {
+                let (clicked, _) = frame(vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert_eq!(clicked, expected && !pressed, "Click at {source:?} with scale {scale}");
+            }
+        }
+    }
+}
+
+#[test]
 fn left_menu_stays_clickable_after_the_rail_is_clicked() {
     let context = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
@@ -362,6 +491,53 @@ fn escape_opens_and_closes_the_correct_game_menu() {
         assert_eq!(escape_destination(AppState::GameMenu, game), Some(screen));
         assert_eq!(escape_destination(AppState::GameSettings, game), Some(AppState::GameMenu));
     }
+}
+
+#[test]
+fn escape_closes_army_window_before_opening_game_menu() {
+    let mut keyboard = ButtonInput::<KeyCode>::default();
+    keyboard.press(KeyCode::Escape);
+    let mut view = campaign_panel::CampaignUi::default();
+    view.open = Some(campaign_panel::CampaignTab::Military);
+    let mut app = App::new();
+    app.insert_resource(keyboard)
+        .insert_resource(State::new(AppState::Map))
+        .insert_resource(view)
+        .insert_resource(ProvincePanelOpen(Some(MapDetail::Province(0))))
+        .init_resource::<ActiveGame>()
+        .init_resource::<NextState<AppState>>()
+        .init_resource::<GovernancePanelOpen>()
+        .init_resource::<MapPanelCloseClick>()
+        .add_systems(Update, handle_escape);
+    let entity = app
+        .world_mut()
+        .spawn((bevy_egui::EguiContext::default(), bevy_egui::PrimaryEguiContext))
+        .id();
+    campaign_military::open_army_panel(
+        app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut(),
+        0,
+        0,
+        None,
+    );
+
+    app.update();
+    assert!(!campaign_military::dismiss_army_panel(
+        app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut()
+    ));
+    assert_eq!(app.world().resource::<campaign_panel::CampaignUi>().open, None);
+    assert_eq!(app.world().resource::<ProvincePanelOpen>().0, None);
+    assert!(matches!(app.world().resource::<NextState<AppState>>(), NextState::Unchanged));
+
+    let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+    keyboard.clear();
+    keyboard.release(KeyCode::Escape);
+    keyboard.press(KeyCode::Escape);
+    drop(keyboard);
+    app.update();
+    assert!(matches!(
+        app.world().resource::<NextState<AppState>>(),
+        NextState::Pending(AppState::GameMenu)
+    ));
 }
 
 #[test]

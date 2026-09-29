@@ -17,7 +17,9 @@ pub use buildings::*;
 pub use config::*;
 pub use market::*;
 pub use model::*;
-pub use population::{birth_modifier, normalized_capacity_area};
+pub use population::{
+    birth_modifier, happiness_output_multiplier, normalized_capacity_area, UNHAPPINESS_THRESHOLDS,
+};
 pub use trade::*;
 
 #[cfg(test)]

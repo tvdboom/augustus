@@ -1,6 +1,535 @@
 use super::*;
 
 #[test]
+fn mission_prices_are_distinct_and_failed_deployment_does_not_charge() {
+    let config = EspionageConfig::default();
+    let politics = vec![ProvincePolitics::independent(1)];
+    for (assignment, base_cost) in [
+        (SpyAssignment::GainControl, 10.0),
+        (SpyAssignment::ImproveRelations, 5.0),
+        (SpyAssignment::DiscoverScandals, 15.0),
+        (SpyAssignment::UndermineOpponents, 20.0),
+    ] {
+        for distance in [0, 12] {
+            let cost = config.deployment_cost_at(assignment, Some(distance)).unwrap();
+            let mut state = EspionageState::new(1);
+            let mut players = vec![PoliticalPlayer {
+                influence: cost - 1.0,
+                ..Default::default()
+            }];
+            assert!(state
+                .deploy_assignment(
+                    0,
+                    0,
+                    &mut players,
+                    &politics,
+                    &config,
+                    assignment,
+                    Some(distance),
+                )
+                .is_err());
+            assert_eq!(players[0].influence, cost - 1.0);
+            assert!(state.missions.is_empty());
+            players[0].influence = cost;
+            state
+                .deploy_assignment(
+                    0,
+                    0,
+                    &mut players,
+                    &politics,
+                    &config,
+                    assignment,
+                    Some(distance),
+                )
+                .unwrap();
+            assert_eq!(players[0].influence, 0.0);
+            assert_eq!(state.missions[0].assignment, assignment);
+            assert_eq!(state.missions[0].totals.influence_spent, cost);
+            assert_eq!(config.deployment_cost(assignment), base_cost);
+        }
+    }
+}
+
+#[test]
+fn distance_adjusts_the_whole_price_charged_at_launch_and_each_month() {
+    let config = EspionageConfig {
+        detection_range: [0.0; 2],
+        ..Default::default()
+    };
+    assert_eq!(config.deployment_cost_at(SpyAssignment::GainControl, Some(8)), Ok(20.0));
+    assert_eq!(config.monthly_cost_at(Some(8)), Ok(10.0));
+    assert_eq!(config.deployment_cost_at(SpyAssignment::GainControl, Some(2)), Ok(13.0));
+    assert_eq!(config.monthly_cost_at(Some(4)), Ok(8.0));
+    assert_eq!(
+        config.deployment_cost_at(SpyAssignment::GainControl, None),
+        Err(PoliticalError::NoConnection)
+    );
+    let mut state = EspionageState::new(1);
+    let mut players = vec![PoliticalPlayer {
+        influence: 20.0,
+        coin: 10.0,
+        ..Default::default()
+    }];
+    let mut politics = vec![ProvincePolitics::independent(1)];
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::GainControl,
+            Some(8),
+        )
+        .unwrap();
+    assert_eq!(players[0].influence, 0.0);
+    assert_eq!(state.missions[0].totals.influence_spent, 20.0);
+    state.advance_month(
+        1,
+        &mut players,
+        &[SpyProvince {
+            owner: None,
+            noble_happiness: 50.0,
+            conditions: vec![],
+        }],
+        &mut politics,
+        &config,
+    );
+    assert_eq!(players[0].coin, 0.0);
+    assert_eq!(state.missions[0].totals.coin_spent, 10.0);
+}
+
+#[test]
+fn undermining_targets_only_positive_rival_stats_and_preserves_the_control_pool() {
+    for (control, relation, chance) in
+        [(30.0, 40.0, 1.0), (30.0, 0.0, 1.0), (0.0, 40.0, 1.0), (0.0, 0.0, 1.0), (30.0, 40.0, 0.0)]
+    {
+        let mut state = EspionageState::new(17);
+        let config = EspionageConfig {
+            detection_range: [0.0; 2],
+            npc_generation_chance: 1.0,
+            npc_discovery_chance: 1.0,
+            undermine_chance: chance,
+            ..Default::default()
+        };
+        let mut players = vec![
+            PoliticalPlayer {
+                coin: 100.0,
+                influence: 100.0,
+                ..Default::default()
+            };
+            3
+        ];
+        let mut target = ProvincePolitics::independent(3);
+        target.state = PoliticalState::Independent {
+            local: 80.0 - control,
+            shares: vec![20.0, control, 0.0],
+        };
+        target.relations = vec![50.0, relation, 0.0];
+        let mut politics = vec![target];
+        state
+            .deploy_assignment(
+                0,
+                0,
+                &mut players,
+                &politics,
+                &config,
+                SpyAssignment::UndermineOpponents,
+                Some(12),
+            )
+            .unwrap();
+        state.advance_month(
+            1,
+            &mut players,
+            &[SpyProvince {
+                owner: None,
+                noble_happiness: 50.0,
+                conditions: vec![],
+            }],
+            &mut politics,
+            &config,
+        );
+        politics[0].resolve_month(
+            &[0.0; 3],
+            None,
+            0.0,
+            &super::super::diplomacy::DiplomacyConfig::default(),
+        );
+        let loss = control - politics[0].control(1) + relation - politics[0].relation(1);
+        assert_eq!(
+            loss,
+            if chance > 0.0 && control + relation > 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        );
+        assert_eq!(politics[0].control(0), 20.0, "The spy cannot undermine its own player");
+        assert_eq!(politics[0].relation(0), 50.0);
+        assert_eq!(politics[0].relation(2), 0.0, "An absent rival is never targeted");
+        assert!(state.scandals.is_empty(), "Undermining does not also uncover scandals");
+        if let PoliticalState::Independent {
+            local,
+            shares,
+        } = &politics[0].state
+        {
+            assert!((local + shares.iter().sum::<f64>() - 100.0).abs() < 1e-9);
+        }
+        assert_eq!(players[0].influence, 50.0);
+        assert_eq!(players[0].coin, 87.0);
+    }
+}
+
+#[test]
+fn undermining_is_intermittent_in_npc_provinces() {
+    let mut state = EspionageState::new(17);
+    let config = EspionageConfig {
+        detection_range: [0.0; 2],
+        npc_generation_chance: 0.0,
+        ..Default::default()
+    };
+    let mut players = vec![
+        PoliticalPlayer {
+            coin: 1000.0,
+            influence: 100.0,
+            ..Default::default()
+        };
+        2
+    ];
+    let mut politics = vec![ProvincePolitics::independent(2)];
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::UndermineOpponents,
+            Some(1),
+        )
+        .unwrap();
+    let snapshots = [SpyProvince {
+        owner: None,
+        noble_happiness: 50.0,
+        conditions: vec![],
+    }];
+    let mut successes = 0;
+    for month in 1..=48 {
+        let previous = politics[0].relation(1);
+        state.advance_month(month, &mut players, &snapshots, &mut politics, &config);
+        successes += usize::from(politics[0].relation(1) < previous);
+    }
+    assert!(
+        successes > 0 && successes < 48,
+        "Undermining succeeds sometimes, not every month: {successes}"
+    );
+}
+
+#[test]
+fn caught_unpaid_or_unreachable_spies_cannot_undermine() {
+    for (coin, detected, reachable, owner) in [
+        (100.0, true, true, None),
+        (0.0, false, true, None),
+        (100.0, false, false, None),
+        (100.0, true, true, Some(1)),
+        (0.0, false, true, Some(1)),
+        (100.0, false, false, Some(1)),
+    ] {
+        let config = EspionageConfig {
+            detection_range: [if detected {
+                1.0
+            } else {
+                0.0
+            }; 2],
+            undermine_chance: 1.0,
+            ..Default::default()
+        };
+        let mut state = EspionageState::new(17);
+        let mut players = vec![
+            PoliticalPlayer {
+                coin,
+                influence: 100.0,
+                ..Default::default()
+            };
+            2
+        ];
+        let mut politics = vec![owner.map_or_else(
+            || ProvincePolitics::independent(2),
+            |player| ProvincePolitics::owned(2, player),
+        )];
+        state
+            .deploy_assignment(
+                0,
+                0,
+                &mut players,
+                &politics,
+                &config,
+                SpyAssignment::UndermineOpponents,
+                Some(1),
+            )
+            .unwrap();
+        state.missions[0].reachable = reachable;
+        let events = state.advance_month(
+            1,
+            &mut players,
+            &[SpyProvince {
+                owner,
+                noble_happiness: 50.0,
+                conditions: vec![],
+            }],
+            &mut politics,
+            &config,
+        );
+        assert!(state.missions.is_empty());
+        assert_eq!(politics[0].relation(1), 50.0);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, EspionageEvent::PopulationUndermined(..))));
+    }
+}
+
+#[test]
+fn spy_missions_charge_their_own_prices_and_require_recall_to_change_mission() {
+    let mut state = EspionageState::new(17);
+    let config = EspionageConfig {
+        detection_range: [0.0; 2],
+        npc_generation_chance: 1.0,
+        npc_discovery_chance: 1.0,
+        ..Default::default()
+    };
+    let mut players = vec![PoliticalPlayer {
+        coin: 100.0,
+        influence: 100.0,
+        ..Default::default()
+    }];
+    let mut politics = vec![ProvincePolitics::independent(1)];
+    let snapshots = [SpyProvince {
+        owner: None,
+        noble_happiness: 50.0,
+        conditions: vec![],
+    }];
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::GainControl,
+            Some(6),
+        )
+        .unwrap();
+    assert_eq!(players[0].influence, 82.0);
+    assert_eq!(state.missions[0].totals.influence_spent, 18.0);
+    assert_eq!(state.missions[0].totals.coin_spent, 0.0);
+    assert_eq!(politics[0].queued_control_pressure(0), 0.0);
+    state.advance_month(1, &mut players, &snapshots, &mut politics, &config);
+    assert_eq!(players[0].coin, 91.0);
+    assert_eq!(politics[0].queued_control_pressure(0), 1.0);
+    assert_eq!(state.missions[0].totals.control_contributed, 1.0);
+    assert_eq!(state.missions[0].totals.coin_spent, 9.0);
+    assert_eq!(politics[0].relation(0), 50.0);
+    assert!(state.scandals.is_empty());
+    assert_eq!(
+        state.deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::ImproveRelations,
+            Some(6)
+        ),
+        Err(PoliticalError::AlreadyUsed)
+    );
+    assert_eq!(state.missions[0].assignment, SpyAssignment::GainControl);
+    assert_eq!(players[0].influence, 82.0);
+    state.withdraw(0, 0);
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::ImproveRelations,
+            Some(6),
+        )
+        .unwrap();
+    assert_eq!(politics[0].relation(0), 50.0, "Assignment has no instant benefit");
+    assert_eq!(players[0].influence, 73.0, "Relations cost 9 Influence at this distance");
+    assert_eq!(state.missions[0].totals.influence_spent, 9.0);
+    assert_eq!(state.missions[0].totals.coin_spent, 0.0, "A fresh launch resets totals");
+    assert_eq!(state.missions[0].totals.control_contributed, 0.0);
+    state.advance_month(2, &mut players, &snapshots, &mut politics, &config);
+    assert_eq!(politics[0].relation(0), 51.0);
+    assert_eq!(politics[0].queued_control_pressure(0), 1.0);
+    assert!(state.scandals.is_empty());
+    assert!(state.advance_month(2, &mut players, &snapshots, &mut politics, &config).is_empty());
+    assert_eq!(politics[0].relation(0), 51.0, "Duplicate tick cannot deliver twice");
+    assert_eq!(state.missions[0].totals.relation_gained, 1.0);
+    assert_eq!(state.missions[0].totals.coin_spent, 9.0, "Duplicate ticks do not inflate costs");
+    state.withdraw(0, 0);
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::DiscoverScandals,
+            Some(6),
+        )
+        .unwrap();
+    state.advance_month(3, &mut players, &snapshots, &mut politics, &config);
+    assert!(!state.scandals.is_empty());
+    assert_eq!(state.missions[0].totals.scandals_revealed, 1);
+    state.scandals.clear();
+    assert_eq!(
+        state.missions[0].totals.scandals_revealed, 1,
+        "Spending evidence preserves deployment history"
+    );
+    assert_eq!(politics[0].relation(0), 51.0);
+    assert_eq!(
+        players[0].influence, 47.0,
+        "Control, relations and scandals cost 18, 9 and 26 here"
+    );
+    assert_eq!(players[0].coin, 73.0, "Every resolved mission costs 9 per month here");
+    state.withdraw(0, 0);
+    state.advance_month(4, &mut players, &snapshots, &mut politics, &config);
+    assert_eq!(players[0].coin, 73.0, "Recall ends upkeep");
+}
+
+#[test]
+fn spy_history_uses_paid_costs_and_clamped_relation_gains() {
+    let mut state = EspionageState::new(17);
+    let mut config = EspionageConfig {
+        detection_range: [0.0; 2],
+        npc_generation_chance: 0.0,
+        ..Default::default()
+    };
+    let mut players = vec![PoliticalPlayer {
+        coin: 100.0,
+        influence: 100.0,
+        ..Default::default()
+    }];
+    let mut politics = vec![ProvincePolitics::independent(1)];
+    politics[0].relations[0] = 99.5;
+    let provinces = [SpyProvince {
+        owner: None,
+        noble_happiness: 50.0,
+        conditions: vec![],
+    }];
+    state
+        .deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::ImproveRelations,
+            Some(1),
+        )
+        .unwrap();
+    state.advance_month(1, &mut players, &provinces, &mut politics, &config);
+    config.monthly_coin = 7.0;
+    state.advance_month(2, &mut players, &provinces, &mut politics, &config);
+    let totals = &state.missions[0].totals;
+    assert_eq!(totals.influence_spent, 5.0);
+    assert_eq!(totals.coin_spent, 12.0, "Use the cost actually paid in each month");
+    assert_eq!(totals.relation_gained, 0.5, "No gains beyond the relation ceiling");
+}
+
+#[test]
+fn detected_or_unpaid_spies_never_deliver_control_or_relation() {
+    for assignment in [SpyAssignment::GainControl, SpyAssignment::ImproveRelations] {
+        for caught in [true, false] {
+            let mut state = EspionageState::new(1);
+            let config = EspionageConfig {
+                detection_range: [if caught {
+                    1.0
+                } else {
+                    0.0
+                }; 2],
+                ..Default::default()
+            };
+            let mut players = vec![PoliticalPlayer {
+                coin: if caught {
+                    100.0
+                } else {
+                    0.0
+                },
+                influence: 100.0,
+                ..Default::default()
+            }];
+            let mut politics = vec![ProvincePolitics::independent(1)];
+            state
+                .deploy_assignment(0, 0, &mut players, &politics, &config, assignment, Some(1))
+                .unwrap();
+            state.advance_month(
+                1,
+                &mut players,
+                &[SpyProvince {
+                    owner: None,
+                    noble_happiness: 50.0,
+                    conditions: vec![],
+                }],
+                &mut politics,
+                &config,
+            );
+            assert!(state.missions.is_empty());
+            assert_eq!(politics[0].queued_control_pressure(0), 0.0);
+            assert_eq!(
+                politics[0].relation(0),
+                if caught {
+                    40.0
+                } else {
+                    50.0
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn unreachable_and_foreign_owned_control_missions_do_not_charge_deployment() {
+    let mut state = EspionageState::new(1);
+    let config = EspionageConfig::default();
+    let mut players = vec![PoliticalPlayer {
+        influence: 100.0,
+        ..Default::default()
+    }];
+    let mut politics = vec![ProvincePolitics::independent(2)];
+    assert_eq!(
+        state.deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::GainControl,
+            None
+        ),
+        Err(PoliticalError::NoConnection)
+    );
+    politics[0] = ProvincePolitics::owned(2, 1);
+    assert_eq!(
+        state.deploy_assignment(
+            0,
+            0,
+            &mut players,
+            &politics,
+            &config,
+            SpyAssignment::GainControl,
+            Some(1)
+        ),
+        Err(PoliticalError::Ineligible)
+    );
+    assert_eq!(players[0].influence, 100.0);
+    assert!(state.missions.is_empty());
+}
+
+#[test]
 fn duplicate_network_is_rejected_and_unpaid_spy_withdraws() {
     let mut state = EspionageState::new(1);
     let config = EspionageConfig::default();
@@ -27,7 +556,7 @@ fn duplicate_network_is_rejected_and_unpaid_spy_withdraws() {
     );
     assert!(matches!(events[0], EspionageEvent::Withdrawn(0, 0)));
     assert!(state.missions.is_empty());
-    assert_eq!(players[0].influence, 20.0);
+    assert_eq!(players[0].influence, 15.0);
     assert_eq!(players[0].coin, 0.0);
 }
 

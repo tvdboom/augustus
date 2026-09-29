@@ -14,6 +14,156 @@ fn atlas_campaign() -> Campaign {
 }
 
 #[test]
+fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
+    let mut starts = std::collections::BTreeSet::new();
+    for player_count in 1..=4 {
+        for sample in 0..32 {
+            let mut ownership = ProvinceOwnership::default();
+            ownership.start_game(&vec![egui::Color32::RED; player_count]);
+            let mut campaign = Campaign::default();
+            campaign.start(&ownership, player_count);
+            let mut discovered = false;
+            for player in 0..player_count {
+                let province = campaign.home_provinces[player].unwrap();
+                let p = &campaign.economy.provinces[province];
+                let production = p.production(&campaign.economy.config).1;
+                let food_need = p.food_request(&campaign.economy.config)
+                    + campaign.military.food_demand(ForceOwner::Player(player));
+                let coin_income = p.tax_income(&campaign.economy.config);
+                let influence_income =
+                    p.population[0] * campaign.economy.config.influence_per_noble;
+                assert!(
+                    p.total_population() <= p.capacity(&campaign.economy.config) * 1.1,
+                    "{} starts with severe overcrowding: {:.1} residents for {:.1} capacity",
+                    p.name,
+                    p.total_population(),
+                    p.capacity(&campaign.economy.config)
+                );
+                assert!(
+                    production[0] >= food_need,
+                    "{} opens with a food deficit: {production:?} versus {food_need}",
+                    p.name
+                );
+                assert!(
+                    production[0] - food_need <= 225.0,
+                    "{} still has excessive opening Food surplus: {}",
+                    p.name,
+                    production[0] - food_need
+                );
+                assert!(coin_income > 0.0, "{} has no coin income", p.name);
+                assert!(influence_income > 0.0, "{} has no influence income", p.name);
+                if starts.insert(p.name.clone()) {
+                    discovered = true;
+                }
+            }
+            if !discovered && sample > 0 {
+                continue;
+            }
+            for month in 0..12 {
+                campaign.advance_month();
+                for player in 0..player_count {
+                    let home = campaign.home_provinces[player].unwrap();
+                    let province = &campaign.economy.provinces[home];
+                    assert!(
+                        campaign.economy.last_report.food_supply_ratio[player] >= 0.999,
+                        "{} has a food shortage in month {} of its opening year: ratio {:.3}, stock {:.1}, output {:.1}, need {:.1}, pop {:?}, cap {:.1}, happiness {:?}, owner {:?}, rebellion {}, players {} sample {}",
+                        province.name, month + 1,
+                        campaign.economy.last_report.food_supply_ratio[player],
+                        campaign.economy.players[player].resources[0],
+                        province.production(&campaign.economy.config).1[0],
+                        province.food_request(&campaign.economy.config),
+                        province.population, province.capacity(&campaign.economy.config), province.happiness, province.owner,
+                        campaign.military.provinces[home].slave_rebellion,
+                        player_count, sample
+                    );
+                    assert!(campaign.economy.players[player].coin > 0.0);
+                    assert!(campaign.economy.players[player].influence > 0.0);
+                }
+            }
+        }
+    }
+    assert_eq!(starts.len(), 7, "cover every urban starting province");
+}
+
+#[test]
+fn opening_recruitment_construction_and_market_trade_remain_affordable() {
+    use crate::game::economy::{CivicSpending, MarketSide};
+    for _ in 0..8 {
+        let mut ownership = ProvinceOwnership::default();
+        ownership.start_game(&[egui::Color32::RED]);
+        let mut campaign = Campaign::default();
+        campaign.start(&ownership, 1);
+        campaign.economy.config.slave_revolt_chance = [0.0; 2];
+        let home = campaign.home_provinces[0].unwrap();
+        let plebeians = campaign.economy.provinces[home].population[2];
+        campaign
+            .military
+            .recruit(
+                home,
+                0,
+                UnitType::HeavyInfantry,
+                true,
+                &[],
+                &mut campaign.economy.provinces[home].population,
+                &mut campaign.economy.players[0].resources[1],
+            )
+            .unwrap();
+        assert_eq!(campaign.economy.provinces[home].population[2], plebeians - 1.0);
+        campaign.economy.start_building(0, home, BuildingType::Road).unwrap();
+        campaign.economy.provinces[home].policies.civic_spending = CivicSpending::Normal;
+        campaign.economy.exchange_open_market(0, 0, MarketSide::Sell, 100.0).unwrap();
+        campaign.economy.exchange_open_market(0, 1, MarketSide::Buy, 20.0).unwrap();
+        for _ in 0..12 {
+            campaign.advance_month();
+            assert!(
+                campaign.economy.last_report.food_supply_ratio[0] >= 0.999,
+                "{} ran short after a modest opening",
+                campaign.economy.provinces[home].name
+            );
+            assert!(campaign.economy.players[0].coin > 0.0);
+        }
+        assert!(campaign.military.all_units().any(|unit| {
+            unit.owner == ForceOwner::Player(0) && unit.unit_type == UnitType::HeavyInfantry
+        }));
+        assert_eq!(campaign.economy.provinces[home].level(BuildingType::Road), 1);
+    }
+}
+
+#[test]
+fn surviving_spy_control_resolves_in_the_same_campaign_month() {
+    use crate::game::politics::espionage::SpyAssignment;
+    let mut campaign = atlas_campaign();
+    let target = (0..campaign.politics.len())
+        .find(|&id| {
+            matches!(campaign.politics[id].state, PoliticalState::Independent { .. })
+                && campaign.distance(0, id).is_some()
+        })
+        .unwrap();
+    campaign.actors[0].coin = 1000.0;
+    campaign.actors[0].influence = 1000.0;
+    campaign.push_wallets();
+    campaign.espionage_config.detection_range = [0.0; 2];
+    let distance = campaign.distance(0, target);
+    campaign
+        .espionage
+        .deploy_assignment(
+            0,
+            target,
+            &mut campaign.actors,
+            &campaign.politics,
+            &campaign.espionage_config,
+            SpyAssignment::GainControl,
+            distance,
+        )
+        .unwrap();
+    campaign.push_wallets();
+    assert_eq!(campaign.politics[target].independent_control(0), 0.0);
+    campaign.advance_month();
+    assert_eq!(campaign.politics[target].independent_control(0), 1.0);
+    assert_eq!(campaign.politics[target].queued_control_pressure(0), 0.0);
+}
+
+#[test]
 fn rome_starts_protected_with_fifty_supplied_cohorts_and_rejects_provincial_actions() {
     let mut c = atlas_campaign();
     let rome = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
@@ -100,19 +250,14 @@ fn unguarded_rome_requires_hostility_and_presence_then_wins_immediately() {
 }
 
 #[test]
-fn construction_start_and_completion_each_emit_a_private_actionable_info_notice() {
+fn construction_only_emits_a_private_actionable_notice_when_completed() {
     use super::super::campaign_notifications::{NoticeAction, NoticeKind, NoticeSeverity};
     let mut campaign = atlas_campaign();
     let province = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
     campaign.economy.players[0].resources = [10_000.0; 3];
     campaign.economy.start_building(0, province, BuildingType::Granary).unwrap();
-    campaign.notify_construction_started(0, province);
-    let start = campaign.notifications.drain_for(0);
-    assert_eq!(start.len(), 1);
-    assert_eq!(start[0].kind, NoticeKind::ConstructionStarted);
-    assert_eq!(start[0].severity, NoticeSeverity::Info);
-    assert_eq!(start[0].action, NoticeAction::OpenProvince(province));
-    assert_eq!(start[0].title, "Granary started");
+    assert!(campaign.notifications.drain_for(0).is_empty());
+    assert_eq!(campaign.notifications.history_for(0).count(), 0);
     assert!(campaign.notifications.drain_for(1).is_empty());
     for _ in 0..4 {
         let report = campaign.economy.advance_month(&campaign.inputs());
@@ -125,35 +270,38 @@ fn construction_start_and_completion_each_emit_a_private_actionable_info_notice(
         .filter(|notice| notice.kind == NoticeKind::BuildingCompleted)
         .collect();
     assert_eq!(finished.len(), 1, "Construction must announce completion exactly once");
+    assert_eq!(
+        campaign
+            .notifications
+            .history_for(0)
+            .filter(|n| n.kind == NoticeKind::BuildingCompleted)
+            .count(),
+        1,
+        "The completion must remain in notification history"
+    );
     assert_eq!(finished[0].severity, NoticeSeverity::Info);
     assert_eq!(finished[0].action, NoticeAction::OpenProvince(province));
     assert_eq!(finished[0].title, "Granary completed");
+    assert_eq!(finished[0].building, Some(BuildingType::Granary));
+    assert_eq!(
+        finished[0].body,
+        format!("Level 1 construction finished in {}.", campaign.economy.provinces[province].name)
+    );
     assert_eq!(campaign.economy.provinces[province].level(BuildingType::Granary), 1);
     assert!(campaign.notifications.drain_for(1).is_empty());
 }
 
 #[test]
-fn cancelling_and_restarting_in_the_same_month_produces_a_fresh_start_notice() {
-    use super::super::campaign_notifications::NoticeKind;
+fn cancelling_and_restarting_in_the_same_month_does_not_create_notices() {
     let mut campaign = atlas_campaign();
     let province = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
     campaign.economy.players[0].resources = [10_000.0; 3];
     for building in [BuildingType::Granary, BuildingType::Warehouse] {
         campaign.economy.start_building(0, province, building).unwrap();
-        campaign.notify_construction_started(0, province);
-        let notice = campaign.notifications.drain_for(0);
-        assert_eq!(notice.len(), 1);
-        assert_eq!(notice[0].title, format!("{} started", building.name()));
+        assert!(campaign.notifications.drain_for(0).is_empty());
         campaign.economy.cancel_construction(0, province).unwrap();
     }
-    assert_eq!(
-        campaign
-            .notifications
-            .history_for(0)
-            .filter(|notice| notice.kind == NoticeKind::ConstructionStarted)
-            .count(),
-        2
-    );
+    assert_eq!(campaign.notifications.history_for(0).count(), 0);
 }
 
 #[test]
@@ -171,7 +319,6 @@ fn nationwide_edicts_follow_ownership_and_leave_local_focus_and_migration_intact
         Governance {
             food_rations: EdictLevel::High,
             slave_labor: EdictLevel::High,
-            noble_taxes: EdictLevel::High,
             army_wages: EdictLevel::High,
         },
     );
@@ -180,18 +327,16 @@ fn nationwide_edicts_follow_ownership_and_leave_local_focus_and_migration_intact
     assert_eq!(p.policies.slave_labor, SlaveLabor::Harsh);
     assert_eq!(p.policies.focus, ResourceFocus::Metal);
     assert_eq!(p.policies.migration, MigrationPolicy::Closed);
-    assert!(p.tax_income(&campaign.economy.config) > tax_before);
-    assert_eq!(p.noble_tax_happiness, -1.0);
+    assert_eq!(p.tax_income(&campaign.economy.config), tax_before);
     assert_eq!(campaign.economy.provinces[foreign].policies, foreign_policies);
     campaign.politics[foreign] = ProvincePolitics::owned(2, 0);
     campaign.reconcile_provinces();
     assert_eq!(campaign.economy.provinces[foreign].policies.food, FoodPolicy::High);
-    assert_eq!(campaign.economy.provinces[foreign].noble_tax_multiplier, 1.5);
+    assert_eq!(campaign.economy.provinces[foreign].policies.slave_labor, SlaveLabor::Harsh);
     campaign.politics[owned] = ProvincePolitics::owned(2, 1);
     campaign.reconcile_provinces();
     assert_eq!(campaign.economy.provinces[owned].policies.food, FoodPolicy::Normal);
-    assert_eq!(campaign.economy.provinces[owned].noble_tax_multiplier, 1.0);
-    assert_eq!(campaign.economy.provinces[owned].noble_tax_happiness, 0.0);
+    assert_eq!(campaign.economy.provinces[owned].policies.slave_labor, SlaveLabor::Normal);
 }
 
 #[test]
@@ -214,8 +359,8 @@ fn nationwide_wages_charge_real_soldiers_and_change_peaceful_morale_targets() {
     let unit = stationed.iter_mut().find(|u| u.id == unit).unwrap();
     unit.morale = campaign.military.config.base_morale;
     unit.training = 0.0;
-    let manpower = unit.current_manpower;
-    let wage = manpower * campaign.military.config.coin_per_manpower * 1.25;
+    let wage =
+        campaign.military.config.unit(unit.unit_type).coin_per_month * unit.manpower_ratio() * 1.25;
     campaign.pay_army_wages(0, 1.0);
     assert!((campaign.economy.players[0].coin - (100.0 - wage)).abs() < 1e-8);
     assert_eq!(campaign.military.provinces[owned].forces[&owner][0].morale, 51.0);
@@ -245,6 +390,17 @@ fn food_shortage_is_announced_once_until_recovery_for_each_player() {
     for player in 0..2 {
         let notices = campaign.notifications.drain_for(player);
         assert_eq!(notices.iter().filter(|n| n.kind == NoticeKind::FoodShortage).count(), 1);
+        assert_eq!(
+            notices.iter().find(|n| n.kind == NoticeKind::FoodShortage).unwrap().body,
+            format!(
+                "Civilian and military food requests were supplied at {}%.",
+                if player == 0 {
+                    88
+                } else {
+                    80
+                }
+            )
+        );
     }
     campaign.record_economic_events(&MonthlyReport {
         month: 4,
@@ -318,9 +474,12 @@ fn every_live_wonder_can_begin_in_its_atlas_province() {
 fn all_requested_sea_crossings_are_bidirectional_campaign_edges() {
     let c = atlas_campaign();
     for (a, b) in [
+        ("Macedonia", "Apulia"),
         ("Asia", "Achaia"),
         ("Creta", "Achaia"),
         ("Creta", "Asia"),
+        ("Cyprus", "Cilicia"),
+        ("Cyprus", "Syria"),
         ("Sicilia", "Africa Proconsularis"),
         ("Africa Proconsularis", "Sardinia"),
         ("Sardinia", "Etruria"),

@@ -208,7 +208,7 @@ fn province_composer_sends_to_its_current_owner_or_npc_and_keeps_national_drafts
 }
 
 #[test]
-fn province_routes_filter_both_sides_of_offers_and_follow_owner_changes() {
+fn province_open_routes_follow_the_selected_partner_and_owner_changes() {
     let ctx = egui::Context::default();
     let mut campaign = fixture();
     for (id, party_a, party_b) in [
@@ -230,6 +230,7 @@ fn province_routes_filter_both_sides_of_offers_and_follow_owner_changes() {
             TradeFrequency::Monthly,
         );
         trade.id = id;
+        trade.status = TradeStatus::Active;
         campaign.economy.trades.push(trade);
     }
     let key = egui::Id::new(("province-trade-view", 0_usize, 2_usize));
@@ -256,6 +257,14 @@ fn province_routes_filter_both_sides_of_offers_and_follow_owner_changes() {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        assert_eq!(labels.matches("OPEN ROUTES").count(), 1);
+        assert_eq!(labels.matches("NEW AGREEMENT").count(), 1);
+        assert!(!labels.contains("Trading with"));
+        assert!(!labels.contains("Trade routes"));
+        assert!(!labels.contains("PENDING OFFERS"));
+        assert!(
+            text_position(&output, "OPEN ROUTES").y < text_position(&output, "NEW AGREEMENT").y
+        );
         assert!(
             labels.contains(if owned {
                 "#33"

@@ -1,9 +1,10 @@
 //! Icon-led economy and construction tables for the parchment province panel.
 
 use crate::game::economy::*;
+use crate::game::military::MilitaryWorld;
 use bevy_egui::egui;
 
-use super::campaign_widgets::{paint_icon, Icon};
+use super::campaign_widgets::{paint_icon, work_queue, Icon, WorkQueueAction};
 
 const CLASS_NAMES: [&str; 4] = ["Nobles", "Citizens", "Plebeians", "Slaves"];
 const CLASS_ICONS: [Icon; 4] = [Icon::Nobles, Icon::Citizens, Icon::Plebeians, Icon::Slaves];
@@ -12,30 +13,21 @@ const RESOURCE_ICONS: [Icon; 3] = [Icon::Food, Icon::Metal, Icon::Stone];
 const MUTED: egui::Color32 = egui::Color32::from_rgb(112, 91, 71);
 pub(in crate::app) const CIVIC_POWER: &str = "Civic Power";
 
-/// Budget the fixed rows before rendering, including owned wallets and construction.
+/// Budget the fixed rows before rendering, including owned wallets.
 pub(in crate::app) fn overview_height(world: &EconomyWorld, province: usize) -> f32 {
     let p = &world.provinces[province];
-    let civic_power = if p.owner.and_then(|id| world.players.get(id)).is_some() {
-        12.0 + 28.0 + 2.0 * 34.0
+    let economy = if p.owner.is_some() {
+        let civic_power = 12.0 + 28.0 + 2.0 * 34.0;
+        let resources = 12.0 + 28.0 + 3.0 * 34.0;
+        civic_power + resources
     } else {
         0.0
     };
-    48.0 + 10.0
-        + 28.0
-        + 4.0 * 34.0
-        + 12.0
-        + 28.0
-        + 3.0 * 34.0
-        + civic_power
-        + if p.construction.is_some() {
-            50.0
-        } else {
-            0.0
-        }
+    48.0 + 10.0 + 28.0 + 4.0 * 34.0 + economy
 }
 
 /// Paint a value within its column, reducing type only for unusually large numbers.
-fn ledger_text(
+pub(super) fn ledger_text(
     ui: &egui::Ui,
     rect: egui::Rect,
     value: &str,
@@ -63,8 +55,8 @@ fn ledger_text(
     ui.painter().galley(egui::pos2(x, rect.center().y - text.size().y * 0.5), text, color);
 }
 
-/// Equal-width badges use all available space and never wrap onto a second row.
-fn overview_badge(
+/// Equal-width badges stay on a single row.
+pub(super) fn overview_badge(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     symbol: Icon,
@@ -83,31 +75,36 @@ fn overview_badge(
         egui::StrokeKind::Inside,
     );
     let image = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 18.0 * scale, rect.center().y),
-        egui::vec2(25.0, 25.0) * scale,
+        egui::pos2(rect.left() + 22.0 * scale, rect.center().y),
+        egui::vec2(30.0, 30.0) * scale,
     );
     paint_icon(ui, symbol, image);
     let text = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 34.0 * scale, rect.top()),
+        egui::pos2(rect.left() + 41.0 * scale, rect.top()),
         rect.max - egui::vec2(5.0 * scale, 0.0),
     );
     ledger_text(
         ui,
-        egui::Rect::from_min_max(text.min, egui::pos2(text.right(), text.top() + 23.0 * scale)),
+        egui::Rect::from_min_max(
+            text.min + egui::vec2(0.0, 3.0 * scale),
+            egui::pos2(text.right(), text.top() + 23.0 * scale),
+        ),
         caption,
-        11.5 * scale,
+        13.0 * scale,
         MUTED,
         egui::Align::Center,
     );
     ledger_text(
         ui,
-        egui::Rect::from_min_max(egui::pos2(text.left(), text.top() + 22.0 * scale), text.max),
+        egui::Rect::from_min_max(egui::pos2(text.left(), text.top() + 18.0 * scale), text.max),
         value,
         16.0 * scale,
         value_color,
         egui::Align::Center,
     );
-    ui.interact(rect, ui.id().with(caption), egui::Sense::hover()).on_hover_text(tip);
+    if !tip.is_empty() {
+        ui.interact(rect, ui.id().with(caption), egui::Sense::hover()).on_hover_text(tip);
+    }
 }
 
 /// Fixed full-width rows align portraits, values and icon headers in both ledgers.
@@ -156,7 +153,9 @@ pub(in crate::app) fn ledger_header(
         for (cell, &(symbol, tip)) in cells[1..].iter().zip(headers) {
             let rect = egui::Rect::from_center_size(cell.center(), egui::vec2(22.0, 22.0) * scale);
             paint_icon(ui, symbol, rect);
-            ui.interact(rect, ui.id().with(tip), egui::Sense::hover()).on_hover_text(tip);
+            ui.interact(rect, ui.id().with((title, tip)), egui::Sense::hover()).on_hover_ui(|ui| {
+                ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Extend));
+            });
         }
     });
 }
@@ -205,11 +204,160 @@ pub(in crate::app) fn ledger_value(
     .on_hover_text(tip);
 }
 
+/// Explain a provincial contribution with illustrated bullets instead of formulas.
+fn ledger_breakdown_value(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    value: &str,
+    title: &str,
+    entries: &[(Icon, String)],
+    color: egui::Color32,
+    scale: f32,
+) {
+    ledger_text(
+        ui,
+        rect.shrink2(egui::vec2(4.0 * scale, 0.0)),
+        value,
+        16.0 * scale,
+        color,
+        egui::Align::Center,
+    );
+    ui.interact(
+        rect,
+        ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
+        egui::Sense::hover(),
+    )
+    .on_hover_ui(|ui| {
+        ui.strong(title);
+        for (symbol, text) in entries {
+            ui.horizontal(|ui| {
+                ui.label("•");
+                super::campaign_widgets::icon(ui, *symbol, 22.0 * scale);
+                ui.label(text);
+            });
+        }
+    });
+}
+
+/// Colour the displayed contribution, keeping rounded zero neutral.
+fn signed_contribution(value: f64, decimals: usize) -> (String, egui::Color32) {
+    let displayed = if decimals == 0 {
+        value.round()
+    } else {
+        let factor = 10_f64.powi(decimals as i32);
+        (value * factor).round() / factor
+    };
+    if displayed == 0.0 {
+        ("0".to_owned(), egui::Color32::BLACK)
+    } else {
+        (format!("{displayed:+.decimals$}"), super::resource_hud::hud_delta_color(displayed))
+    }
+}
+
+fn rounded_breakdown_total(entries: &[(&str, f64)]) -> f64 {
+    entries.iter().map(|(_, amount)| amount.round()).sum()
+}
+
+#[cfg(test)]
+#[test]
+fn population_growth_total_matches_the_displayed_contributions() {
+    let all_zero =
+        [("Births", 0.2), ("Natural deaths", -0.4), ("Famine deaths", 0.0), ("Migration", -0.3)];
+    assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 0).0 == "0"));
+    assert_eq!(rounded_breakdown_total(&all_zero), 0.0);
+
+    let mixed = [("Births", 1.6), ("Natural deaths", -0.4), ("Migration", -0.4)];
+    assert_eq!(rounded_breakdown_total(&mixed), 2.0);
+    assert_eq!(signed_contribution(-0.6, 0).0, "-1");
+}
+
+fn food_demand_amount(amount: f64) -> (String, egui::Color32) {
+    (
+        super::resource_hud::format_food_demand(amount),
+        super::resource_hud::hud_delta_color(-amount.abs().floor()),
+    )
+}
+
+fn tooltip_numeric_bullet(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &str,
+    color: egui::Color32,
+    indent: f32,
+) {
+    ui.scope(|ui| {
+        // Text-only bullet rows should not inherit the minimum button height.
+        ui.spacing_mut().interact_size.y = 0.0;
+        ui.horizontal(|ui| {
+            if indent > 0.0 {
+                ui.add_space(indent);
+            }
+            ui.label(egui::RichText::new(format!("• {label}:")).color(egui::Color32::BLACK));
+            ui.label(egui::RichText::new(value).color(color));
+        });
+    });
+}
+
+fn ledger_signed_breakdown_value(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    value: &str,
+    entries: &[(&str, f64)],
+    decimals: usize,
+    color: egui::Color32,
+    scale: f32,
+    consequence: Option<&str>,
+) {
+    ledger_text(
+        ui,
+        rect.shrink2(egui::vec2(4.0 * scale, 0.0)),
+        value,
+        16.0 * scale,
+        color,
+        egui::Align::Center,
+    );
+    ui.interact(
+        rect,
+        ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
+        egui::Sense::hover(),
+    )
+    .on_hover_ui(|ui| {
+        if let Some(consequence) = consequence {
+            ui.label(consequence);
+            ui.separator();
+        }
+        for &(label, amount) in entries {
+            let (value, color) = signed_contribution(amount, decimals);
+            tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+        }
+    });
+}
+
 /// Population and resource ledgers fill the inspector without a scroll container.
 pub(in crate::app) fn overview(
     ui: &mut egui::Ui,
     world: &EconomyWorld,
+    military: &MilitaryWorld,
     province: usize,
+    scale: f32,
+) {
+    overview_for_player(
+        ui,
+        world,
+        military,
+        province,
+        world.provinces.get(province).and_then(|p| p.owner),
+        scale,
+    );
+}
+
+/// Local facts are public; food fulfillment and national balances belong to the owner.
+pub(in crate::app) fn overview_for_player(
+    ui: &mut egui::Ui,
+    world: &EconomyWorld,
+    military: &MilitaryWorld,
+    province: usize,
+    player: Option<usize>,
     scale: f32,
 ) {
     let Some(p) = world.provinces.get(province) else {
@@ -223,6 +371,7 @@ pub(in crate::app) fn overview(
     let (badges, _) = ui
         .allocate_exact_size(egui::vec2(ui.available_width(), 48.0 * scale), egui::Sense::hover());
     let gap = 6.0 * scale;
+    let show_food = p.owner.is_some() && p.owner == player;
     let badge_width = (badges.width() - 2.0 * gap) / 3.0;
     let badge = |index: usize| {
         egui::Rect::from_min_size(
@@ -230,35 +379,166 @@ pub(in crate::app) fn overview(
             egui::vec2(badge_width, badges.height()),
         )
     };
-    overview_badge(ui, badge(0), Icon::Population, "Population", &format!("{} / {}", super::resource_hud::format_population(p.total_population()), super::resource_hud::format_population(capacity)),
-            &format!("Population / comfortable capacity ({:.0}% occupied).\nArea {:.1} × scale {:.1} × terrain {:.2}; city +{:.0}; buildings +{:.0}.\nOvercrowding lowers happiness and births and encourages migration. Capacity is not a hard cap.",
-                ratio * 100.0, p.capacity_area, world.config.area_to_capacity_scale,
-                world.config.terrain_capacity[p.terrain as usize], if p.has_city {world.config.city_capacity} else {0.0},
-                p.building_effects(&world.config).capacity), if p.total_population() > capacity { super::resource_hud::hud_delta_color(-1.0) } else { ink }, scale);
-    overview_badge(ui, badge(1), Icon::Food, "Food demand", &format!("−{:.1}/mo", p.food_request(&world.config)),
-            "Civilian Food request. All owned provinces and military share the same proportional supply. Construction-assigned slaves still eat.", ink, scale);
-    overview_badge(ui, badge(2), Icon::Food, "Food supplied", &last.map_or_else(|| "—".to_owned(), |last| format!("{:.0}%", (last.food_supply_ratio * 100.0).floor())),
-            "Last month's Food fulfillment. Partial shortages proportionally lower happiness and births and cause famine deaths. A dash means no month has resolved yet.", if last.is_some_and(|last| last.food_supply_ratio < 1.0) { super::resource_hud::hud_delta_color(-1.0) } else { ink }, scale);
+    overview_badge(
+        ui,
+        badge(0),
+        Icon::Population,
+        "Population",
+        &format!(
+            "{} / {}",
+            super::resource_hud::format_population(p.total_population()),
+            super::resource_hud::format_population(capacity)
+        ),
+        "",
+        if p.total_population() > capacity {
+            super::resource_hud::hud_delta_color(-1.0)
+        } else {
+            ink
+        },
+        scale,
+    );
+    ui.interact(badge(0), ui.id().with("population-capacity"), egui::Sense::hover()).on_hover_ui(
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0 * scale;
+            ui.strong("Population capacity");
+            tooltip_numeric_bullet(
+                ui,
+                "Area",
+                &format!("{:.1}", p.capacity_area),
+                egui::Color32::BLACK,
+                0.0,
+            );
+            let terrain = world.config.terrain_capacity[p.terrain as usize];
+            let terrain_displayed = (terrain * 10.0).round() / 10.0;
+            let terrain_color = if terrain_displayed == 1.0 {
+                egui::Color32::BLACK
+            } else {
+                super::resource_hud::hud_delta_color(terrain_displayed - 1.0)
+            };
+            tooltip_numeric_bullet(
+                ui,
+                "Terrain modifier",
+                &format!("{terrain:.1}"),
+                terrain_color,
+                0.0,
+            );
+            for (label, amount) in [
+                (
+                    "City",
+                    if p.has_city {
+                        world.config.city_capacity
+                    } else {
+                        0.0
+                    },
+                ),
+                ("Buildings", p.building_effects(&world.config).capacity),
+            ] {
+                let (value, color) = signed_contribution(amount, 1);
+                tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+            }
+        },
+    );
+    if show_food {
+        let civilian_food = p.food_request(&world.config);
+        let military_food: f64 = military
+            .provinces
+            .get(province)
+            .into_iter()
+            .flat_map(|state| state.forces.values().flatten())
+            .chain(
+                military.battles.iter().filter(|battle| battle.province == province).flat_map(
+                    |battle| battle.attackers.units.iter().chain(&battle.defenders.units),
+                ),
+            )
+            .map(|unit| unit.food_demand(&military.config))
+            .sum();
+        let food_request = civilian_food + military_food;
+        let food_policy = world.config.food_policy[p.policies.food as usize].consumption;
+        let (food_value, food_color) = food_demand_amount(food_request);
+        overview_badge(
+            ui,
+            badge(1),
+            Icon::Food,
+            "Food demand",
+            &format!("{food_value}/mo"),
+            "",
+            food_color,
+            scale,
+        );
+        ui.interact(badge(1), ui.id().with("food-demand-breakdown"), egui::Sense::hover()).on_hover_ui(
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0 * scale;
+            ui.strong("Food demand per month");
+            ui.label("Food consumed each month, not a food deficit. Your national food stock supplies this demand.");
+            let (value, color) = food_demand_amount(civilian_food);
+            tooltip_numeric_bullet(ui, "Civilians", &value, color, 0.0);
+            for (class, name) in CLASS_NAMES.iter().enumerate() {
+                let amount = p.population[class] * world.config.food_per_class[class] * food_policy;
+                let (value, color) = food_demand_amount(amount);
+                tooltip_numeric_bullet(ui, name, &value, color, 14.0 * scale);
+            }
+            let (value, color) = food_demand_amount(military_food);
+            tooltip_numeric_bullet(ui, "Military", &value, color, 0.0);
+        },
+    );
+        let supply_color = last.map_or(ink, |month| {
+            super::resource_hud::hud_delta_color(if month.food_supply_ratio < 1.0 {
+                -1.0
+            } else {
+                1.0
+            })
+        });
+        overview_badge(ui, badge(2), Icon::Food, "Food supplied", &last.map_or_else(|| "—".to_owned(), |last| format!("{:.0}%", (last.food_supply_ratio * 100.0).floor())),
+            "Last month's food fulfillment\n\n100% means all food demand was covered by the owner's national food stock. Shortages proportionally lower happiness and births and can potentially cause famines.", supply_color, scale);
+    }
     ui.add_space(10.0 * scale);
-    ledger_header(ui, "Population", &[(Icon::Amount, "Amount: total population"), (Icon::Delta, "Monthly population change: births minus normal/famine deaths plus migration. Automatic class changes are excluded."), (Icon::Happiness, "Class happiness")], scale);
+    ledger_header(
+        ui,
+        "Population",
+        &[
+            (Icon::Amount, "Total population"),
+            (Icon::Delta, "Monthly growth"),
+            (Icon::Happiness, "Happiness"),
+        ],
+        scale,
+    );
     for class in 0..4 {
         ledger_row(ui, 4, 34.0 * scale, class % 2 == 0, |ui, cells| {
             ledger_name(ui, cells[0], CLASS_ICONS[class], CLASS_NAMES[class], scale);
-            ledger_value(
+            ledger_text(
                 ui,
-                cells[1],
+                cells[1].shrink2(egui::vec2(4.0 * scale, 0.0)),
                 &super::resource_hud::format_population(p.population[class]),
-                "Total population in this class.",
+                16.0 * scale,
                 ink,
-                scale,
+                egui::Align::Center,
             );
             if let Some(month) = last {
-                let change =
-                    month.births[class] - month.normal_deaths[class] - month.famine_deaths[class]
-                        + month.migration[class];
-                ledger_value(ui, cells[2], &super::resource_hud::format_population_delta(change), &format!(
-                    "Births +{}\nNatural deaths −{}\nFamine deaths −{}\nMigration {}\nClass promotions/manumission separately conserve total population. Displayed counts round down.",
-                    super::resource_hud::format_population(month.births[class]), super::resource_hud::format_population(month.normal_deaths[class]), super::resource_hud::format_population(month.famine_deaths[class]), super::resource_hud::format_population_delta(month.migration[class])), super::resource_hud::hud_delta_color(change), scale);
+                let mut entries = vec![
+                    ("Births", month.births[class]),
+                    ("Natural deaths", -month.normal_deaths[class]),
+                    ("Famine deaths", -month.famine_deaths[class]),
+                    ("Migration", month.migration[class]),
+                ];
+                if class == 3 && month.slave_revolt_loss > 0.0 {
+                    entries.push(("Slave revolt", -month.slave_revolt_loss));
+                }
+                let change = rounded_breakdown_total(&entries);
+                let change_color = if change == 0.0 {
+                    egui::Color32::BLACK
+                } else {
+                    super::resource_hud::hud_delta_color(change)
+                };
+                ledger_signed_breakdown_value(
+                    ui,
+                    cells[2],
+                    &super::resource_hud::format_population_delta(change),
+                    &entries,
+                    0,
+                    change_color,
+                    scale,
+                    None,
+                );
             } else {
                 ledger_value(ui, cells[2], "—", "No month has resolved yet.", MUTED, scale);
             }
@@ -267,120 +547,239 @@ pub(in crate::app) fn overview(
             let supply = last.map_or(1.0, |month| month.food_supply_ratio);
             let food = world.config.food_policy[p.policies.food as usize];
             let slave = world.config.slave_policy[p.policies.slave_labor as usize];
-            ledger_value(ui, cells[3], &format!("{:.0}%", p.happiness[class]), &format!(
-                "Neutral 50\nFood policy {:+.1}\nBuildings {:+.1}\nEvents / unrest {:+.1}\nSlave labor {:+.1}\nNoble taxes {:+.1}\nOvercrowding −{overcrowding:.1}\nFood shortage −{:.1}\nBirth factors: happiness {:.2}×, space {:.2}×, rations {:.2}×, supply {:.2}×.\nSpace factor is min(1, {:.2} / population-to-capacity ratio). Happiness and space never directly increase natural mortality.",
-                food.happiness, p.building_effects(&world.config).happiness[class],
-                p.happiness_modifiers[class] + p.temporary_happiness[class], if class == 3 {slave.happiness} else {0.0},
-                if class == 0 { p.noble_tax_happiness } else { 0.0 },
-                (1.0-supply)*world.config.shortage_happiness_penalty, birth_modifier(p.happiness[class]),
-                p.crowding_birth_modifier(&world.config), food.births, supply, world.config.crowding_birth_threshold), ink, scale);
-        });
-    }
-    let (labor, production) = p.production(&world.config);
-    let owner = p.owner.and_then(|id| world.players.get(id));
-    if let Some(owner) = owner {
-        ui.add_space(12.0 * scale);
-        ledger_header(ui, CIVIC_POWER, &[(Icon::Amount, "Amount: shared Influence and Coin. Neither has a storage cap."), (Icon::Delta, "Monthly provincial Influence income or taxes. Player-wide net changes also include trade, spending, rank and vassal income.")], scale);
-        let noble = p.population[0] * world.config.influence_per_noble;
-        let buildings = p.building_effects(&world.config).influence;
-        let wonder = p
-            .completed_wonder
-            .and_then(|id| world.config.wonders.iter().find(|d| d.wonder_id == id))
-            .map_or(0.0, |d| d.monthly_influence);
-        ledger_row(ui, 3, 34.0 * scale, true, |ui, cells| {
-            ledger_name(ui, cells[0], Icon::Influence, "Influence", scale);
-            ledger_value(
-                ui,
-                cells[1],
-                &format!("{:.0}", owner.influence),
-                "Player Influence; no storage cap.",
-                ink,
-                scale,
-            );
-            ledger_value(ui, cells[2], &format!("+{:.2}",noble+buildings+wonder), &format!(
-                "Nobles: {} × {:.2} = +{noble:.2}\nCity buildings +{buildings:.2}\nCompleted wonder +{wonder:.2}\nRank and vassal income are additional player sources.",
-                super::resource_hud::format_population(p.population[0]),world.config.influence_per_noble), super::resource_hud::hud_delta_color(noble+buildings+wonder), scale);
-        });
-        ledger_row(ui, 3, 34.0 * scale, false, |ui, cells| {
-            ledger_name(ui, cells[0], Icon::Coin, "Coin", scale);
-            ledger_value(
-                ui,
-                cells[1],
-                &format!("{:.0}", owner.coin),
-                "Player Coin treasury; no storage cap.",
-                ink,
-                scale,
-            );
-            ledger_value(ui, cells[2], &format!("+{:.1}", p.tax_income(&world.config)), &format!(
-                "Monthly provincial taxes. Per Noble {:.2}, Citizen {:.2}, Plebeian {:.2}; no direct slave tax.\nBuilding tax multiplier {:.2}×.",
-                world.config.tax_rates[0] * p.noble_tax_multiplier, world.config.tax_rates[1], world.config.tax_rates[2],1.0+p.building_effects(&world.config).tax), super::resource_hud::hud_delta_color(p.tax_income(&world.config)), scale);
-        });
-    }
-    ui.add_space(12.0 * scale);
-    ledger_header(ui, "Resources", &[(Icon::Amount, "Amount: total shared stock / storage capacity."), (Icon::Delta, "Monthly provincial production. Player-wide net changes also include trade, consumption and spending.")], scale);
-    for resource in 0..3 {
-        ledger_row(ui, 3, 34.0 * scale, resource % 2 == 0, |ui, cells| {
-            ledger_name(ui, cells[0], RESOURCE_ICONS[resource], RESOURCE_NAMES[resource], scale);
-            ledger_value(ui, cells[2], &format!("+{:.1}", production[resource]), &format!(
-                "Labor {} × potential {:.1} × scale {:.2} × building multiplier {:.2}.\nLabor is allocated only once across all three sectors; zero-potential sectors get none.",
-                super::resource_hud::format_population(labor[resource]), p.potential[resource], world.config.production_scale[resource], 1.0+p.building_effects(&world.config).production[resource]), super::resource_hud::hud_delta_color(production[resource]), scale);
-            if let Some(owner) = owner {
-                ledger_value(ui, cells[1], &format!("{:.0} / {:.0}", owner.resources[resource], owner.storage[resource]),
-                    "Shared player stockpile and maximum storage. Province storage buildings add global capacity. Excess is discarded after production, trade and consumption.", ink, scale);
-            } else {
-                ledger_value(ui, cells[1], "—", "NPC resources use monthly production, export capacity and import demand instead of physical stockpiles.", MUTED, scale);
+            let mut entries = vec![
+                ("Base happiness", 50.0),
+                ("Food policy", food.happiness),
+                ("Buildings", p.building_effects(&world.config).happiness[class]),
+                (
+                    "Manumission policy",
+                    world.config.manumission_happiness[p.policies.manumission as usize][class],
+                ),
+                ("Events / unrest", p.happiness_modifiers[class] + p.temporary_happiness[class]),
+            ];
+            if class == 1 || class == 2 {
+                entries.push(("Recruitment", p.recruitment_happiness));
             }
+            if class == 3 {
+                entries.push(("Slave labor", slave.happiness));
+            } else {
+                entries.push((
+                    "Migration policy",
+                    world.config.migration_happiness[p.policies.migration as usize],
+                ));
+                entries.push(("Civic spending", p.civic_happiness));
+            }
+            entries.push(("Overcrowding", -overcrowding));
+            entries.push((
+                "Food shortage",
+                -(1.0 - supply.clamp(0.0, 1.0)) * world.config.shortage_happiness_penalty,
+            ));
+            let affected =
+                ["Noble Influence", "Citizen taxes", "Plebeian resources", "Slave resources"]
+                    [class];
+            let threshold = UNHAPPINESS_THRESHOLDS[class];
+            let mut consequence = format!(
+                "Below {threshold:.0}% happiness, {affected} fall with happiness. Current output: {:.0}%.",
+                happiness_output_multiplier(class, p.happiness[class], &world.config) * 100.0
+            );
+            if class == 3 {
+                consequence.push_str(" At 5% or lower, Slaves can revolt.");
+            }
+            ledger_signed_breakdown_value(
+                ui,
+                cells[3],
+                &format!("{:.0}%", p.happiness[class]),
+                &entries,
+                1,
+                ink,
+                scale,
+                Some(&consequence),
+            );
         });
     }
-    if let Some(project) = &p.construction {
-        ui.add_space(8.0 * scale);
-        overview_project(ui, project, &world.config, p.policies.construction, scale);
+    if p.owner.is_some() {
+        let (_, production) = p.production(&world.config);
+        let workers = p.production_workers(&world.config);
+        let effects = p.building_effects(&world.config);
+        let owner = p.owner.and_then(|id| world.players.get(id));
+        let own_wallet = p.owner.is_some() && p.owner == player;
+        let balance = |amount: fn(&PlayerEconomy) -> f64| {
+            owner.filter(|_| own_wallet).map_or_else(
+                || {
+                    if owner.is_some() {
+                        "?"
+                    } else {
+                        "—"
+                    }
+                    .into()
+                },
+                |owner| format!("{:.0}", amount(owner)),
+            )
+        };
+        {
+            ui.add_space(12.0 * scale);
+            ledger_header(
+                ui,
+                CIVIC_POWER,
+                &[(Icon::Amount, "Total amount"), (Icon::Delta, "Monthly income")],
+                scale,
+            );
+            let noble = p.population[0] * world.config.influence_per_noble;
+            let buildings = p.building_effects(&world.config).influence;
+            let wonder = p
+                .completed_wonder
+                .and_then(|id| world.config.wonders.iter().find(|d| d.wonder_id == id))
+                .map_or(0.0, |d| d.monthly_influence);
+            let displayed_noble = noble.round();
+            let displayed_buildings = buildings.round();
+            let displayed_wonder = wonder.round();
+            let displayed_income = displayed_noble + displayed_buildings + displayed_wonder;
+            ledger_row(ui, 3, 34.0 * scale, true, |ui, cells| {
+                ledger_name(ui, cells[0], Icon::Influence, "Influence", scale);
+                ledger_text(
+                    ui,
+                    cells[1].shrink2(egui::vec2(4.0 * scale, 0.0)),
+                    &balance(|owner| owner.influence),
+                    16.0 * scale,
+                    ink,
+                    egui::Align::Center,
+                );
+                let mut entries = vec![(
+                    Icon::Nobles,
+                    format!(
+                        "{} Nobles: {} Influence",
+                        super::resource_hud::format_population(p.population[0]),
+                        signed_contribution(displayed_noble, 0).0,
+                    ),
+                )];
+                if buildings != 0.0 {
+                    entries.push((
+                        Icon::Construction,
+                        format!(
+                            "Buildings: {} Influence",
+                            signed_contribution(displayed_buildings, 0).0
+                        ),
+                    ));
+                }
+                if let Some(id) = p.completed_wonder.filter(|_| wonder != 0.0) {
+                    entries.push((
+                        Icon::Wonder(id),
+                        format!(
+                            "Completed wonder: {} Influence",
+                            signed_contribution(displayed_wonder, 0).0
+                        ),
+                    ));
+                }
+                ledger_breakdown_value(
+                    ui,
+                    cells[2],
+                    &signed_contribution(displayed_income, 0).0,
+                    "Influence per month",
+                    &entries,
+                    super::resource_hud::hud_delta_color(displayed_income),
+                    scale,
+                );
+            });
+            ledger_row(ui, 3, 34.0 * scale, false, |ui, cells| {
+                ledger_name(ui, cells[0], Icon::Coin, "Sestertius", scale);
+                ledger_text(
+                    ui,
+                    cells[1].shrink2(egui::vec2(4.0 * scale, 0.0)),
+                    &balance(|owner| owner.coin),
+                    16.0 * scale,
+                    ink,
+                    egui::Align::Center,
+                );
+                let mut entries: Vec<_> = (1..=2)
+                    .filter_map(|class| {
+                        let income = p.population[class] * world.config.tax_rates[class];
+                        (income != 0.0).then(|| {
+                            (
+                                CLASS_ICONS[class],
+                                format!(
+                                    "{} {}: +{income:.1}",
+                                    super::resource_hud::format_population(p.population[class]),
+                                    CLASS_NAMES[class],
+                                ),
+                            )
+                        })
+                    })
+                    .collect();
+                if effects.tax != 0.0 {
+                    entries.push((
+                        Icon::Construction,
+                        format!("Buildings: {:+.0}% taxes", effects.tax * 100.0),
+                    ));
+                }
+                ledger_breakdown_value(
+                    ui,
+                    cells[2],
+                    &format!("{:+.0}", p.tax_income(&world.config).floor()),
+                    "Sestertii per month",
+                    &entries,
+                    super::resource_hud::hud_delta_color(p.tax_income(&world.config)),
+                    scale,
+                );
+            });
+        }
+        ui.add_space(12.0 * scale);
+        ledger_header(
+            ui,
+            "Resources",
+            &[(Icon::BaseAmount, "Base amount"), (Icon::Delta, "Monthly production")],
+            scale,
+        );
+        for resource in 0..3 {
+            ledger_row(ui, 3, 34.0 * scale, resource % 2 == 0, |ui, cells| {
+                ledger_name(
+                    ui,
+                    cells[0],
+                    RESOURCE_ICONS[resource],
+                    RESOURCE_NAMES[resource],
+                    scale,
+                );
+                ledger_value(
+                    ui,
+                    cells[1],
+                    &p.potential[resource].to_string(),
+                    "This province's natural resource potential.",
+                    ink,
+                    scale,
+                );
+                let mut entries: Vec<_> = [2, 3]
+                    .into_iter()
+                    .map(|class| {
+                        (
+                            CLASS_ICONS[class],
+                            format!(
+                                "{} {} working",
+                                super::resource_hud::format_population(workers[resource][class]),
+                                CLASS_NAMES[class],
+                            ),
+                        )
+                    })
+                    .collect();
+                if effects.production[resource] != 0.0 {
+                    entries.push((
+                        Icon::Construction,
+                        format!(
+                            "Buildings: {:+.0}% production",
+                            effects.production[resource] * 100.0,
+                        ),
+                    ));
+                }
+                ledger_breakdown_value(
+                    ui,
+                    cells[2],
+                    &format!("{:+.0}", production[resource].floor()),
+                    &format!("{} production per month", RESOURCE_NAMES[resource]),
+                    &entries,
+                    super::resource_hud::hud_delta_color(production[resource]),
+                    scale,
+                );
+            });
+        }
     }
-}
-
-/// Overview construction remains one bounded row even at compact panel sizes.
-pub(in crate::app) fn overview_project(
-    ui: &mut egui::Ui,
-    project: &ConstructionProject,
-    config: &EconomyConfig,
-    pace: ConstructionPace,
-    scale: f32,
-) {
-    let (progress, required) = project.progress();
-    let name = match project {
-        ConstructionProject::Building(p) => {
-            format!("{} · Lv {}", p.building.name(), p.target_level)
-        },
-        ConstructionProject::Wonder(p) => {
-            crate::map::wonder_name(p.wonder_id).unwrap_or("Wonder").to_owned()
-        },
-    };
-    let (rect, response) = ui
-        .allocate_exact_size(egui::vec2(ui.available_width(), 42.0 * scale), egui::Sense::hover());
-    let completion = (progress / required.max(0.001)).clamp(0.0, 1.0) as f32;
-    let track = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, 31.0 * scale), rect.max);
-    ui.painter().rect_filled(track, 2.0 * scale, super::province_panel::TABLE_STRIPE);
-    ui.painter().rect_filled(
-        egui::Rect::from_min_size(
-            track.min,
-            egui::vec2(track.width() * completion, track.height()),
-        ),
-        2.0 * scale,
-        egui::Color32::from_rgb(190, 150, 76),
-    );
-    ledger_text(
-        ui,
-        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), track.top())),
-        &format!(
-            "{name} · {:.0}% · {}mo",
-            completion * 100.0,
-            project.months_remaining(config, pace)
-        ),
-        12.0 * scale,
-        MUTED,
-        egui::Align::Center,
-    );
-    response.on_hover_text(format!("{progress:.1}/{required:.1} work; {:.2} work/month.\nConstruction pace: {pace:?}. Progress remains with the province after capture. Slave acceleration has diminishing returns.", project.speed(config, pace)));
 }
 
 /// Province-local policies share the nationwide Governance card treatment.
@@ -396,6 +795,105 @@ pub(in crate::app) fn policies(
 const BUILDING_CELL_SIZE: egui::Vec2 = egui::vec2(108.0, 120.0);
 const BUILDING_COLUMNS: usize = 4;
 
+/// Preview the work accruing this month; completion still belongs to the monthly tick.
+fn construction_completion(
+    ui: &egui::Ui,
+    project: &ConstructionProject,
+    config: &EconomyConfig,
+    pace: ConstructionPace,
+    province: usize,
+    month: u32,
+) -> f32 {
+    let fraction = ui.ctx().data(|data| {
+        let fraction = data
+            .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
+            .unwrap_or(0.0);
+        let start = data
+            .get_temp::<(u32, f32)>(egui::Id::new(("construction-preview-start", province)))
+            .filter(|(start_month, _)| *start_month == month)
+            .map_or(0.0, |(_, start_fraction)| start_fraction);
+        (fraction - start).max(0.0)
+    });
+    let (progress, required) = project.progress();
+    ((progress + project.speed(config, pace) * f64::from(fraction)) / required.max(0.001))
+        .clamp(0.0, 0.9999) as f32
+}
+
+#[derive(Clone, Copy)]
+enum BuildingCellAction {
+    Build,
+}
+
+struct BuildingHover {
+    level: Option<u32>,
+    reason: Option<&'static str>,
+    description: &'static str,
+    effects: String,
+}
+
+fn building_description(building: BuildingType) -> &'static str {
+    use BuildingType::*;
+    match building {
+        Granary => "A sheltered storehouse keeps the harvest dry and ready for lean seasons.",
+        Warehouse => {
+            "Sturdy storerooms hold metal, stone and supplies for the province's workshops."
+        },
+        Road => {
+            "A paved road connects settlements, carrying merchants, messengers and marching armies."
+        },
+        Aqueduct => "Stone channels bring fresh water from distant springs to growing settlements.",
+        Forum => {
+            "A public square brings together civic business, debate and the bustle of daily life."
+        },
+        Baths => "Public baths offer a place to wash, unwind and meet neighbours.",
+        UrbanMarket => {
+            "Market stalls gather traders and craftspeople around the exchange of local goods."
+        },
+        Temple => {
+            "A sanctuary welcomes worshippers, offerings and the province's religious festivals."
+        },
+        Arena => "An arena gathers crowds for spectacles, contests and public celebrations.",
+        CityWalls => "Strong walls and guarded gates shelter the city from approaching enemies.",
+        Academy => "A place of study where scholars share ideas and teach the next generation.",
+        Foundry => "Furnaces and workshops turn raw metal into tools and fittings.",
+    }
+}
+
+fn wonder_description(wonder: usize) -> &'static str {
+    match wonder {
+        0 => "A towering stone pyramid stands as an enduring monument to royal ambition.",
+        1 => "A circle of great standing stones creates a solemn gathering place beneath the open sky.",
+        2 => "A grand sanctuary honours Zeus with stately columns and a richly adorned hall.",
+        3 => "A royal palace brings together grand halls, courtyards and the splendour of the Argead court.",
+        4 => "A colossal bronze figure watches over Rhodes, celebrating the island's pride.",
+        5 => "Ranks of stone arches carry fresh water across the landscape to Segovia.",
+        6 => "A monumental bridge of arches carries an aqueduct high above the river.",
+        _ => "A landmark built to inspire generations and celebrate the province's achievements.",
+    }
+}
+
+fn wonder_effects_text(definition: &WonderDefinition) -> String {
+    format!(
+        "+{:.0} Influence on completion\n+{:.1} Influence/month after completion",
+        definition.completion_influence, definition.monthly_influence
+    )
+}
+
+fn resource_shortage(
+    world: &EconomyWorld,
+    player: usize,
+    stone: f64,
+    metal: f64,
+) -> Option<&'static str> {
+    let resources = world.players.get(player).map(|wallet| wallet.resources).unwrap_or([0.0; 3]);
+    match (resources[2] < stone, resources[1] < metal) {
+        (true, true) => Some("Not enough Stone and Metal."),
+        (true, false) => Some("Not enough Stone."),
+        (false, true) => Some("Not enough Metal."),
+        _ => None,
+    }
+}
+
 /// Keep four columns, shrinking the contents only when the viewport is narrow.
 fn building_grid_layout(available_width: f32, scale: f32) -> (usize, f32) {
     let row_width =
@@ -403,30 +901,17 @@ fn building_grid_layout(available_width: f32, scale: f32) -> (usize, f32) {
     (BUILDING_COLUMNS, scale.min(available_width / row_width))
 }
 
-/// Each category starts its own grid; empty categories without a message are hidden.
-fn building_section(
+fn building_section_header(ui: &mut egui::Ui, title: &str, scale: f32) {
+    super::policy_widgets::section(ui, scale, title);
+}
+
+fn building_grid(
     ui: &mut egui::Ui,
-    title: &str,
     empty: Option<&str>,
     count: usize,
     columns: usize,
     scale: f32,
 ) -> Vec<egui::Rect> {
-    use super::province_panel::{INK, RULE};
-    if count == 0 && empty.is_none() {
-        return Vec::new();
-    }
-    let (header, _) = ui
-        .allocate_exact_size(egui::vec2(ui.available_width(), 26.0 * scale), egui::Sense::hover());
-    ui.painter().text(
-        header.left_center(),
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(15.0 * scale),
-        INK,
-    );
-    ui.painter().hline(header.x_range(), header.bottom(), egui::Stroke::new(scale, RULE));
-    ui.add_space(6.0 * scale);
     if count == 0 {
         if let Some(empty) = empty {
             ui.label(egui::RichText::new(empty).small().color(MUTED));
@@ -444,7 +929,7 @@ fn building_section(
         egui::vec2(ui.available_width(), rows as f32 * (size.y + gap) - gap),
         egui::Sense::hover(),
     );
-    ui.add_space(6.0 * scale);
+    ui.add_space(2.0 * scale);
     (0..count)
         .map(|index| {
             egui::Rect::from_min_size(
@@ -469,12 +954,10 @@ fn building_cell(
     stone: f64,
     metal: f64,
     enabled: bool,
-    active: bool,
-    progress: Option<(f32, u32)>,
-    tooltip: &str,
+    hover: &BuildingHover,
     scale: f32,
-) -> bool {
-    use super::province_panel::{INK, RULE, TABLE_STRIPE};
+) -> Option<BuildingCellAction> {
+    use super::province_panel::{INK, RULE};
     let response = ui.interact(
         rect,
         ui.id().with(("building-cell", symbol)),
@@ -484,46 +967,49 @@ fn building_cell(
             egui::Sense::hover()
         },
     );
-    let gold = egui::Color32::from_rgb(190, 150, 76);
-    let fill = if enabled && response.is_pointer_button_down_on() {
-        egui::Color32::from_rgb(207, 180, 137)
-    } else if response.hovered() {
-        egui::Color32::from_rgb(226, 210, 180)
-    } else {
-        TABLE_STRIPE
-    };
-    ui.painter().rect_filled(rect, 5.0 * scale, fill);
+    let fill = super::campaign_widgets::paint_purchase_background(
+        ui,
+        rect,
+        enabled,
+        response.hovered(),
+        response.is_pointer_button_down_on(),
+        5.0 * scale,
+        scale,
+    );
     ui.painter().rect_stroke(
         rect,
         5.0 * scale,
-        egui::Stroke::new(
-            if active {
-                2.0 * scale
-            } else {
-                scale
-            },
-            if active {
-                gold
-            } else {
-                RULE
-            },
-        ),
+        egui::Stroke::new(scale, RULE),
         egui::StrokeKind::Inside,
     );
+    let long_name = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), egui::FontId::proportional(14.0 * scale), INK)
+        .size()
+        .x
+        > rect.width() - 10.0 * scale;
+    let (name_top, name_height) = if long_name {
+        (78.0, 36.0)
+    } else {
+        (78.0, 18.0)
+    };
+    let content_offset =
+        egui::vec2(0.0, (120.0_f32 - name_top - name_height).clamp(0.0, 14.0) * scale);
     let image = egui::Rect::from_center_size(
         egui::pos2(rect.center().x, rect.top() + 41.0 * scale),
-        egui::vec2(70.0, 70.0) * scale,
-    );
+        egui::Vec2::splat(70.0 * scale),
+    )
+    .translate(content_offset);
     ui.scope(|ui| {
-        if !enabled && !active {
-            ui.set_opacity(0.45);
+        if !enabled {
+            ui.set_opacity(0.85);
         }
         paint_icon(ui, symbol, image);
     });
-    let ink = if enabled || active {
+    let ink = if enabled {
         INK
     } else {
-        MUTED
+        super::campaign_widgets::UNAVAILABLE_PURCHASE_INK
     };
     let text_row = |top: f32, height: f32| {
         egui::Rect::from_min_size(
@@ -531,27 +1017,44 @@ fn building_cell(
             egui::vec2(rect.width() - 10.0 * scale, height * scale),
         )
     };
-    ledger_text(ui, text_row(78.0, 18.0), name, 14.0 * scale, ink, egui::Align::Center);
-    ledger_text(ui, text_row(96.0, 14.0), level, 11.0 * scale, MUTED, egui::Align::Center);
-    if let Some((completion, months)) = progress {
-        let track = text_row(108.0, 11.0);
-        ui.painter().rect_filled(track, 2.0 * scale, RULE);
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                track.min,
-                egui::vec2(track.width() * completion, track.height()),
-            ),
-            2.0 * scale,
-            gold,
+    let name_rect = text_row(name_top, name_height).translate(content_offset);
+    let mut font_size = 14.0 * scale;
+    let name_galley = loop {
+        let mut job = egui::text::LayoutJob::simple(
+            name.to_owned(),
+            egui::FontId::proportional(font_size),
+            ink,
+            name_rect.width(),
         );
-        ledger_text(
-            ui,
-            track,
-            &format!("{:.0}% · {months}mo", completion * 100.0),
-            9.0 * scale,
-            INK,
-            egui::Align::Center,
+        job.halign = egui::Align::Center;
+        let galley = ui.painter().layout_job(job);
+        if galley.rows.len() <= 2
+            && galley.size().x <= name_rect.width()
+            && galley.size().y <= name_rect.height()
+        {
+            break galley;
+        }
+        font_size *= 0.93;
+    };
+    let name_pos = name_rect.center() - name_galley.rect.center().to_vec2();
+    ui.painter().with_clip_rect(ui.clip_rect().intersect(name_rect)).galley(
+        name_pos,
+        name_galley,
+        ink,
+    );
+    if !level.is_empty() && matches!(symbol, Icon::Building(_)) {
+        let label = ui.painter().layout_no_wrap(
+            level.to_owned(),
+            egui::FontId::proportional(11.0 * scale),
+            MUTED,
         );
+        let position =
+            egui::pos2(rect.right() - 6.0 * scale - label.size().x, rect.top() + 5.0 * scale);
+        let badge = egui::Rect::from_min_size(position, label.size()).expand(2.0 * scale);
+        ui.painter().rect_filled(badge, 2.0 * scale, fill);
+        ui.painter().galley(position, label, MUTED);
+    } else if !level.is_empty() {
+        ledger_text(ui, text_row(96.0, 14.0), level, 11.0 * scale, MUTED, egui::Align::Center);
     }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
@@ -561,19 +1064,25 @@ fn building_cell(
         )
     });
     let response = response.on_hover_ui(|ui| {
-        let width = (340.0 * scale).min(ui.ctx().content_rect().width() - 24.0);
+        let width = (440.0 * scale).min(ui.ctx().content_rect().width() - 24.0);
         ui.set_width(width.max(120.0));
         ui.horizontal_top(|ui| {
-            super::campaign_widgets::icon(ui, symbol, 64.0 * scale);
+            super::campaign_widgets::icon(ui, symbol, 112.0 * scale);
+            ui.add_space(8.0 * scale);
             let width = ui.available_width();
             ui.vertical(|ui| {
                 ui.set_width(width);
-                ui.strong(egui::RichText::new(name).size(16.0 * scale));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(name).strong().size(20.0 * scale)).wrap(),
+                );
                 ui.horizontal_wrapped(|ui| {
                     for (symbol, cost, name) in
                         [(Icon::Stone, stone, "Stone"), (Icon::Metal, metal, "Metal")]
                     {
-                        super::campaign_widgets::icon(ui, symbol, 17.0 * scale);
+                        if cost == 0.0 {
+                            continue;
+                        }
+                        super::campaign_widgets::icon(ui, symbol, 28.0 * scale).on_hover_text(name);
                         let cost = if !cost.is_finite() {
                             "—".into()
                         } else if cost >= 100_000.0 {
@@ -581,10 +1090,41 @@ fn building_cell(
                         } else {
                             format!("{cost:.0}")
                         };
-                        ui.label(egui::RichText::new(format!("{cost} {name}")).size(12.0 * scale));
+                        ui.label(egui::RichText::new(cost).strong().size(17.0 * scale));
                     }
                 });
-                ui.add(egui::Label::new(egui::RichText::new(tooltip).size(12.0 * scale)).wrap());
+                if let Some(reason) = hover.reason {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(reason)
+                                .size(14.0 * scale)
+                                .color(egui::Color32::from_rgb(170, 45, 35)),
+                        )
+                        .wrap(),
+                    );
+                }
+                ui.add_space(6.0 * scale);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(hover.description).size(14.0 * scale))
+                        .wrap(),
+                );
+                ui.add_space(6.0 * scale);
+                ui.strong(
+                    egui::RichText::new(if hover.level.is_some() {
+                        "Each completed level:"
+                    } else {
+                        "When completed:"
+                    })
+                    .size(14.0 * scale),
+                );
+                for effect in hover.effects.lines() {
+                    ui.horizontal_top(|ui| {
+                        ui.label(egui::RichText::new("•").size(14.0 * scale));
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(effect).size(14.0 * scale)).wrap(),
+                        );
+                    });
+                }
             });
         });
     });
@@ -593,7 +1133,72 @@ fn building_cell(
     } else {
         response
     };
-    enabled && response.clicked()
+    if enabled && response.clicked() {
+        Some(BuildingCellAction::Build)
+    } else {
+        None
+    }
+}
+
+/// Separate construction from the province image and building cards.
+pub(in crate::app) fn construction_queue_view(
+    ui: &mut egui::Ui,
+    world: &EconomyWorld,
+    province: usize,
+    owned: bool,
+    scale: f32,
+) -> Option<WorkQueueAction> {
+    let p = &world.provinces[province];
+    if p.construction.is_none() && p.construction_queue.is_empty() {
+        return None;
+    }
+    building_section_header(ui, "Construction", scale);
+    let details = |project: &ConstructionProject| match project {
+        ConstructionProject::Building(project) => (
+            Icon::Building(project.building),
+            format!("{} level {}", project.building.name(), project.target_level),
+        ),
+        ConstructionProject::Wonder(project) => (
+            Icon::Wonder(project.wonder_id),
+            crate::map::wonder_name(project.wonder_id).unwrap_or("Wonder").to_owned(),
+        ),
+    };
+    let active = p.construction.as_ref().map(|project| {
+        let (art, name) = details(project);
+        (
+            art,
+            construction_completion(
+                ui,
+                project,
+                &world.config,
+                p.policies.construction,
+                province,
+                world.month,
+            ),
+            format!(
+                "{name}, {} months left",
+                project.months_remaining(&world.config, p.policies.construction)
+            ),
+        )
+    });
+    let queued: Vec<_> = p
+        .construction_queue
+        .iter()
+        .enumerate()
+        .map(|(index, project)| {
+            let (art, name) = details(project);
+            (index, art, name)
+        })
+        .collect();
+    work_queue(
+        ui,
+        egui::Id::new(("construction-queue", province)),
+        "In progress",
+        active,
+        &queued,
+        owned,
+        scale,
+    )
 }
 
 /// Four equal columns fill each City, Countryside and Wonders section.
@@ -616,37 +1221,73 @@ pub(in crate::app) fn readonly_buildings(
             .iter()
             .filter(|d| d.requires_city == city && (!city || p.has_city))
             .collect();
-        let cells = building_section(ui, title, empty, definitions.len(), columns, scale);
+        if definitions.is_empty() && empty.is_none() {
+            continue;
+        }
+        building_section_header(ui, title, scale);
+        let cells = building_grid(ui, empty, definitions.len(), columns, scale);
         for (definition, cell) in definitions.into_iter().zip(cells) {
             let level = p.level(definition.building);
-            building_cell(ui, cell, Icon::Building(definition.building), definition.building.name(),
-                &format!("Level {level}"), 0.0, 0.0, false, level > 0, None,
-                &format!("Public completed level: {level}.\nEach completed level:\n{}\nDirect ownership required.\nOnly the direct owner can build or upgrade.", building_effects_text(definition, &world.config)), scale);
+            let quote = definition.quote(p.planned_building_level(definition.building));
+            let started = matches!(&p.construction, Some(ConstructionProject::Building(project)) if project.building == definition.building);
+            let hover = BuildingHover {
+                level: Some(level),
+                reason: Some(if started {
+                    "Being constructed."
+                } else {
+                    "Province not owned."
+                }),
+                description: building_description(definition.building),
+                effects: building_effects_text(definition, &world.config),
+            };
+            building_cell(
+                ui,
+                cell,
+                Icon::Building(definition.building),
+                definition.building.name(),
+                &format!("Level {level}"),
+                quote.stone,
+                quote.metal,
+                false,
+                &hover,
+                scale,
+            );
         }
     }
-    let cells = building_section(ui, "Wonders", None, p.wonder_sites.len(), columns, scale);
+    let cells = if p.wonder_sites.is_empty() {
+        Vec::new()
+    } else {
+        building_section_header(ui, "Wonders", scale);
+        building_grid(ui, None, p.wonder_sites.len(), columns, scale)
+    };
     for (&wonder, cell) in p.wonder_sites.iter().zip(cells) {
+        let Some(definition) = world.config.wonders.iter().find(|d| d.wonder_id == wonder) else {
+            continue;
+        };
         let completed = p.completed_wonder == Some(wonder);
         let started = matches!(&p.construction, Some(ConstructionProject::Wonder(w)) if w.wonder_id == wonder);
-        let status = if completed {
-            "Completed"
-        } else if started {
-            "Under construction"
-        } else {
-            "Not built"
+        let hover = BuildingHover {
+            level: None,
+            reason: Some(if completed {
+                "Already built."
+            } else if started {
+                "Being constructed."
+            } else {
+                "Province not owned."
+            }),
+            description: wonder_description(wonder),
+            effects: wonder_effects_text(definition),
         };
         building_cell(
             ui,
             cell,
             Icon::Wonder(wonder),
             crate::map::wonder_name(wonder).unwrap_or("Wonder"),
-            status,
-            0.0,
-            0.0,
+            "",
+            definition.stone_cost,
+            definition.metal_cost,
             false,
-            started || completed,
-            None,
-            "Wonder starts and completions are public.",
+            &hover,
             scale,
         );
     }
@@ -670,26 +1311,9 @@ pub(in crate::app) fn buildings(
         .filter_map(|id| world.config.wonders.iter().find(|d| d.wonder_id == *id))
         .cloned()
         .collect();
-    let header = match p.construction {
-        Some(ConstructionProject::Wonder(_)) => 80.0,
-        Some(ConstructionProject::Building(_)) => 40.0,
-        None => 0.0,
-    };
     let (columns, scale) = building_grid_layout(ui.available_width().max(1.0), scale);
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut message = None;
-    if let Some(project) = &p.construction {
-        message = project_controls(ui, world, province, player, project, header * scale, scale);
-    }
-    // Cancellation releases the slot immediately; other cell actions are applied after painting.
-    let p = &world.provinces[province];
-    let progress = p.construction.as_ref().map(|project| {
-        let (progress, required) = project.progress();
-        (
-            (progress / required.max(0.001)).clamp(0.0, 1.0) as f32,
-            project.months_remaining(&world.config, p.policies.construction),
-        )
-    });
     let mut building_action = None;
     let mut wonder_action = None;
     for (title, empty, city) in [
@@ -697,10 +1321,14 @@ pub(in crate::app) fn buildings(
         ("Countryside", Some("No countryside improvements available."), false),
     ] {
         let definitions: Vec<_> = definitions.iter().filter(|d| d.requires_city == city).collect();
-        let cells = building_section(ui, title, empty, definitions.len(), columns, scale);
+        if definitions.is_empty() && empty.is_none() {
+            continue;
+        }
+        building_section_header(ui, title, scale);
+        let cells = building_grid(ui, empty, definitions.len(), columns, scale);
         for (definition, cell) in definitions.iter().zip(cells) {
             let level = p.level(definition.building);
-            let quote = definition.quote(level);
+            let quote = definition.quote(p.planned_building_level(definition.building));
             let affordable = world
                 .players
                 .get(player)
@@ -711,26 +1339,27 @@ pub(in crate::app) fn buildings(
                 && quote.required_progress.is_finite();
             let active = matches!(&p.construction, Some(ConstructionProject::Building(project)) if project.building == definition.building);
             let reason = if !owned {
-                "Direct ownership required."
-            } else if p.construction.is_some() {
-                "Construction slot occupied."
+                Some("Province not owned.")
+            } else if p.construction_queue_full() {
+                Some("Construction queue is full (maximum 10 orders).")
             } else if !supported {
-                "Further upgrades exceed the supported numeric range."
-            } else if !affordable {
-                "Insufficient global Stone or Metal."
+                Some("Further upgrades exceed the supported numeric range.")
             } else {
-                "Click anywhere in this cell to build the next level."
+                resource_shortage(world, player, quote.stone, quote.metal)
             };
-            let tooltip = format!("Next level: {} · {:.0} months\n\nEach completed level:\n{}\n\nFull cost paid at start; one shared building/wonder slot.\nCosts ×{:.2} per upgrade.{}\n\n{reason}",
-            level.saturating_add(1), quote.required_progress.ceil(), building_effects_text(definition, &world.config), definition.cost_growth,
-            if definition.requires_city { "\nCity province required." } else { "" });
+            let hover = BuildingHover {
+                level: Some(level),
+                reason,
+                description: building_description(definition.building),
+                effects: building_effects_text(definition, &world.config),
+            };
             let name = definition.building.name();
             let level_label = if active {
                 format!("Level {level} → {}", level.saturating_add(1))
             } else {
                 format!("Level {level}")
             };
-            if building_cell(
+            match building_cell(
                 ui,
                 cell,
                 Icon::Building(definition.building),
@@ -738,148 +1367,161 @@ pub(in crate::app) fn buildings(
                 &level_label,
                 quote.stone,
                 quote.metal,
-                owned && p.construction.is_none() && affordable && supported,
-                active,
-                if active {
-                    progress
-                } else {
-                    None
-                },
-                &tooltip,
+                owned && affordable && supported && !p.construction_queue_full(),
+                &hover,
                 scale,
             ) {
-                building_action = Some(definition.building);
+                Some(BuildingCellAction::Build) => building_action = Some(definition.building),
+                None => {},
             }
         }
     }
-    let cells = building_section(ui, "Wonders", None, wonders.len(), columns, scale);
+    let cells = if wonders.is_empty() {
+        Vec::new()
+    } else {
+        building_section_header(ui, "Wonders", scale);
+        building_grid(ui, None, wonders.len(), columns, scale)
+    };
     for (definition, cell) in wonders.iter().zip(cells) {
         let wonder = definition.wonder_id;
         let completed = p.completed_wonder == Some(wonder);
         let active = matches!(&p.construction, Some(ConstructionProject::Wonder(project)) if project.wonder_id == wonder);
+        let queued = p
+            .construction_queue
+            .iter()
+            .any(|project| matches!(project, ConstructionProject::Wonder(_)));
         let name = crate::map::wonder_name(wonder).unwrap_or("Wonder");
         let affordable = world.players.get(player).is_some_and(|w| {
             w.resources[1] >= definition.metal_cost && w.resources[2] >= definition.stone_cost
         });
         let reason = if completed {
-            "Completed."
-        } else if !owned {
-            "Direct ownership required."
-        } else if p.completed_wonder.is_some() {
-            "This province already has a completed wonder."
-        } else if p.construction.is_some() {
-            "Construction slot occupied."
-        } else if !affordable {
-            "Insufficient global Stone or Metal."
-        } else {
-            "Click anywhere in this cell to begin construction."
-        };
-        let tooltip = format!("Construction: {:.0} months\n\nCompletion: +{:.0} Influence\nAfter completion: +{:.1} Influence/month to the direct owner.\nOne completed wonder per province. Canonical site and direct ownership required.\nAssigned slaves speed work but stop resource production.\n{}\n\n{reason}", definition.required_progress.ceil(), definition.completion_influence, definition.monthly_influence, wonder_labor_tooltip(&world.config));
-        let level = if completed {
-            "Completed"
+            Some("Already built.")
         } else if active {
-            "Under construction"
+            Some("Being constructed.")
+        } else if !owned {
+            Some("Province not owned.")
+        } else if p.completed_wonder.is_some() {
+            Some("This province already has a completed wonder.")
+        } else if queued {
+            Some("A wonder is already queued.")
+        } else if p.construction_queue_full() {
+            Some("Construction queue is full (maximum 10 orders).")
         } else {
-            "Not built"
+            resource_shortage(world, player, definition.stone_cost, definition.metal_cost)
         };
-        if building_cell(
+        let hover = BuildingHover {
+            level: None,
+            reason,
+            description: wonder_description(wonder),
+            effects: wonder_effects_text(definition),
+        };
+        match building_cell(
             ui,
             cell,
             Icon::Wonder(wonder),
             name,
-            level,
+            "",
             definition.stone_cost,
             definition.metal_cost,
-            owned && p.completed_wonder.is_none() && p.construction.is_none() && affordable,
-            active || completed,
-            if active {
-                progress
-            } else {
-                None
-            },
-            &tooltip,
+            owned
+                && p.completed_wonder.is_none()
+                && !active
+                && !queued
+                && affordable
+                && !p.construction_queue_full(),
+            &hover,
             scale,
         ) {
-            wonder_action = Some(wonder);
+            Some(BuildingCellAction::Build) => wonder_action = Some(wonder),
+            None => {},
         }
     }
     if let Some(building) = building_action {
-        message = Some(match world.start_building(player, province, building) {
-            Ok(()) => format!("{} started.", building.name()),
-            Err(error) => error,
-        });
+        match world.start_building(player, province, building) {
+            Ok(()) => super::audio_controls::request_construction_sound(ui.ctx()),
+            Err(error) => message = Some(error),
+        }
     } else if let Some(wonder) = wonder_action {
-        message = Some(match world.start_wonder(player, province, wonder) {
-            Ok(()) => "Wonder construction started.".into(),
-            Err(error) => error,
-        });
+        match world.start_wonder(player, province, wonder) {
+            Ok(()) => super::audio_controls::request_construction_sound(ui.ctx()),
+            Err(error) => message = Some(error),
+        }
+    } else if let Some(ConstructionProject::Wonder(wonder)) = &p.construction {
+        message = wonder_labor_controls(ui, world, province, player, wonder, scale);
     }
     message
 }
 
-/// A compact strip keeps cancellation and wonder labor controls above the cards.
-fn project_controls(
+/// Apply the banner's cancellation and reset the next project's progress preview.
+pub(in crate::app) fn cancel_construction_order(
+    ctx: &egui::Context,
+    world: &mut EconomyWorld,
+    province: usize,
+    player: usize,
+    action: WorkQueueAction,
+) -> String {
+    let result = match action {
+        WorkQueueAction::CancelActive => {
+            let result = world.cancel_construction(player, province);
+            if result.is_ok() {
+                ctx.data_mut(|data| {
+                    let fraction = data
+                        .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
+                        .unwrap_or(0.0);
+                    data.insert_temp(
+                        egui::Id::new(("construction-preview-start", province)),
+                        (world.month, fraction),
+                    );
+                });
+            }
+            result
+        },
+        WorkQueueAction::CancelQueued(index) => {
+            world.cancel_queued_construction(player, province, index)
+        },
+    };
+    result.map(|()| "Construction cancelled.".into()).unwrap_or_else(|error| error)
+}
+
+/// Keep labor assignment beside the wonder grid after removing the duplicate project strip.
+fn wonder_labor_controls(
     ui: &mut egui::Ui,
     world: &mut EconomyWorld,
     province: usize,
     player: usize,
-    project: &ConstructionProject,
-    height: f32,
+    wonder: &WonderProject,
     scale: f32,
 ) -> Option<String> {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-    let (symbol, name) = match project {
-        ConstructionProject::Building(p) => (
-            Icon::Building(p.building),
-            format!("{} · Level {}", p.building.name(), p.target_level),
-        ),
-        ConstructionProject::Wonder(p) => (
-            Icon::Wonder(p.wonder_id),
-            crate::map::wonder_name(p.wonder_id).unwrap_or("Wonder").to_owned(),
-        ),
-    };
-    paint_icon(ui, symbol, egui::Rect::from_min_size(rect.min, egui::vec2(32.0, 32.0) * scale));
-    let title = egui::Rect::from_min_max(
-        rect.min + egui::vec2(48.0, 0.0) * scale,
-        egui::pos2(rect.right() - 72.0 * scale, rect.top() + 23.0 * scale),
-    );
-    ledger_text(ui, title, &name, 14.0 * scale, super::province_panel::INK, egui::Align::Min);
-    let (progress, required) = project.progress();
-    let completion = (progress / required.max(0.001)).clamp(0.0, 1.0) as f32;
-    let pace = world.provinces[province].policies.construction;
-    response.on_hover_text(format!("{name}\n{progress:.1}/{required:.1} work ({:.0}%).\n{} months remaining; {:.2} work/month.\nConstruction pace: {pace:?}. Progress remains with the province after capture.", completion * 100.0, project.months_remaining(&world.config, pace), project.speed(&world.config, pace)));
+    let (rect, _) = ui
+        .allocate_exact_size(egui::vec2(ui.available_width(), 36.0 * scale), egui::Sense::hover());
     let owned = world.provinces[province].owner == Some(player);
-    let cancel = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - 66.0 * scale, rect.top() + 7.0 * scale),
-        egui::vec2(66.0, 28.0) * scale,
-    );
     let mut message = None;
-    ui.scope(|ui| {
-        *ui.style_mut() = super::campaign_widgets::map_style(scale);
-        if ui.put(cancel, egui::Button::new("Cancel").sense(if owned { egui::Sense::click() } else { egui::Sense::hover() }))
-            .on_hover_text("Cancel this project. The entire Stone/Metal payment is lost; no refund. Direct ownership required.")
-            .clicked() && owned {
-            message = Some(match world.cancel_construction(player, province) { Ok(()) => "Construction cancelled.".into(), Err(error) => error });
+    let icon_rect = egui::Rect::from_min_size(
+        rect.min + egui::vec2(0.0, 6.0) * scale,
+        egui::vec2(24.0, 24.0) * scale,
+    );
+    paint_icon(ui, Icon::Slaves, icon_rect);
+    let slider_rect = egui::Rect::from_min_max(
+        rect.min + egui::vec2(32.0, 5.0) * scale,
+        rect.max - egui::vec2(0.0, 5.0) * scale,
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(slider_rect), |ui| {
+        if !owned {
+            ui.disable();
         }
-        if let ConstructionProject::Wonder(wonder) = project {
-            let icon_rect = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 48.0) * scale, egui::vec2(24.0, 24.0) * scale);
-            paint_icon(ui, Icon::Slaves, icon_rect);
-            let slider_rect = egui::Rect::from_min_max(rect.min + egui::vec2(32.0, 47.0) * scale, rect.max - egui::vec2(0.0, 7.0 * scale));
-            ui.scope_builder(egui::UiBuilder::new().max_rect(slider_rect), |ui| {
-                if !owned {
-                    ui.disable();
-                }
-                ui.spacing_mut().interact_size.x = 40.0 * scale;
-                ui.spacing_mut().slider_width = (slider_rect.width() - 90.0 * scale).max(0.0);
-                let mut assigned = wonder.assigned_slaves;
-                let response = ui.add(egui::Slider::new(&mut assigned, 0.0..=world.provinces[province].population[3])
-                    .custom_formatter(|value, _| super::resource_hud::format_population(value)))
-                    .on_hover_text(wonder_labor_tooltip(&world.config));
-                if response.changed() {
-                    if let Err(error) = world.assign_wonder_slaves(player, province, assigned) { message = Some(error); }
-                }
-            });
+        ui.spacing_mut().interact_size.x = 40.0 * scale;
+        ui.spacing_mut().slider_width = (slider_rect.width() - 90.0 * scale).max(0.0);
+        let mut assigned = wonder.assigned_slaves;
+        let response = ui
+            .add(
+                egui::Slider::new(&mut assigned, 0.0..=world.provinces[province].population[3])
+                    .custom_formatter(|value, _| super::resource_hud::format_population(value)),
+            )
+            .on_hover_text(wonder_labor_tooltip(&world.config));
+        if response.changed() {
+            if let Err(error) = world.assign_wonder_slaves(player, province, assigned) {
+                message = Some(error);
+            }
         }
     });
     message

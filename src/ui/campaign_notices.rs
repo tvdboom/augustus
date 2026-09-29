@@ -9,9 +9,7 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
     use NoticeKind::*;
     match kind {
         FoodShortage => Icon::Food,
-        ConstructionStarted | BuildingCompleted | WonderStarted | WonderCompleted => {
-            Icon::Building(crate::game::economy::BuildingType::Forum)
-        },
+        BuildingCompleted | WonderStarted | WonderCompleted => Icon::Construction,
         TradeInterrupted => Icon::Trade,
         RecruitmentCompleted
         | UnitsDestroyed
@@ -24,22 +22,34 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | MilitaryAccessRevoked
         | MilitaryMovementStopped
         | GarrisonWeakened
+        | SlaveRevolt
         | MilitaryRankIncreased => Icon::Attack,
         SenateOfficeAppointed | ConsulRemoved | ConsulTermExpired | AugustusVictory => Icon::Eagle,
         SpyDetected | SpyWithdrawn | ScandalDiscovered => Icon::Spy,
         ForeignUnrest => Icon::Happiness,
         ControlFifty | ControlFull | VassalWeakened | HostileRelation | VeryHostileRelation
-        | VassalRelationDecay => Icon::Control,
+        | VassalRelationDecay => Icon::Diplomacy,
     }
 }
 
 pub(in crate::app) fn province_section(kind: NoticeKind) -> usize {
     match symbol(kind) {
         Icon::Food => 1,
-        Icon::Building(_) => 2,
+        Icon::Construction => 2,
         Icon::Attack => 3,
         Icon::Trade => 5,
         _ => 4,
+    }
+}
+
+/// Retain the event's original artwork even after its project has finished.
+pub(in crate::app) fn notice_symbol(notice: &CampaignNotice) -> Icon {
+    if let Some(building) = notice.building {
+        Icon::Building(building)
+    } else if let Some(wonder) = notice.wonder {
+        Icon::Wonder(wonder)
+    } else {
+        symbol(notice.kind)
     }
 }
 
@@ -59,7 +69,7 @@ pub(in crate::app) fn card(
     message_card(
         ui,
         Message {
-            icon: symbol(notice.kind),
+            icon: notice_symbol(notice),
             title: &notice.title,
             body: &notice.body,
             month: notice.month,
@@ -167,9 +177,7 @@ pub(in crate::app) fn message_card(
         egui::Stroke::new(2.0 * scale, accent),
     );
     if message.actionable {
-        response
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Open the related panel")
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
         response
     }

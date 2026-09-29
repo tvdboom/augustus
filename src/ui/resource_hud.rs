@@ -50,6 +50,9 @@ pub(in crate::app) fn hud_delta_color(delta: f64) -> egui::Color32 {
 
 pub(in crate::app) fn format_hud_number(value: f64) -> String {
     let value = value.floor();
+    if value == 0.0 {
+        return "0".into();
+    }
     let magnitude = value.abs();
     if magnitude < 1_000.0 {
         return format!("{value:.0}");
@@ -71,20 +74,43 @@ pub(in crate::app) fn format_hud_number(value: f64) -> String {
 }
 
 pub(in crate::app) fn format_hud_delta(value: f64) -> String {
-    if value >= 0.0 {
-        format!("+{}", format_hud_number(value))
+    let number = format_hud_number(value);
+    if number == "0" {
+        number
+    } else if value > 0.0 {
+        format!("+{number}")
     } else {
-        format_hud_number(value)
+        number
+    }
+}
+
+/// Food consumption uses whole units, with one minus sign and unsigned zero.
+pub(in crate::app) fn format_food_demand(amount: f64) -> String {
+    let magnitude = amount.abs().floor();
+    if magnitude == 0.0 {
+        "0".to_owned()
+    } else {
+        format!("−{magnitude:.0}")
     }
 }
 
 /// Civilian and soldier counts always round down, without fractional abbreviations.
 pub(in crate::app) fn format_population(value: f64) -> String {
-    format!("{:.0}", value.floor())
+    let value = value.floor();
+    if value == 0.0 {
+        "0".into()
+    } else {
+        format!("{value:.0}")
+    }
 }
 
 pub(in crate::app) fn format_population_delta(value: f64) -> String {
-    format!("{:+.0}", value.floor())
+    let value = value.floor();
+    if value == 0.0 {
+        "0".into()
+    } else {
+        format!("{value:+.0}")
+    }
 }
 
 pub(in crate::app) fn paint_hud_resources(
@@ -111,7 +137,7 @@ pub(in crate::app) fn paint_hud_resources(
             format_hud_number(resource.amount)
         };
         let delta = if index == 5 {
-            format!("{}/mo", format_population_delta(resource.monthly_delta))
+            format_population_delta(resource.monthly_delta)
         } else {
             format_hud_delta(resource.monthly_delta)
         };

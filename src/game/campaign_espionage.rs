@@ -9,11 +9,35 @@ use crate::game::politics::espionage::{
 };
 
 impl Campaign {
+    /// Monthly coin obligation for all of this player's currently deployed spies.
+    pub fn spy_upkeep(&self, player: usize) -> f64 {
+        self.espionage
+            .missions
+            .iter()
+            .filter(|mission| mission.owner == player)
+            .filter_map(|mission| {
+                self.espionage_config.monthly_cost_at(self.distance(player, mission.province)).ok()
+            })
+            .sum()
+    }
+
     /// Resolve networks from actual post-demographic happiness, food supply and policy.
     /// This adapter never manufactures a human player's misconduct.
     pub fn advance_espionage(&mut self) {
         if self.espionage.last_resolution_month().is_some_and(|last| self.economy.month <= last) {
             return;
+        }
+        let routes: Vec<_> = self
+            .espionage
+            .missions
+            .iter()
+            .map(|mission| self.distance(mission.owner, mission.province))
+            .collect();
+        for (mission, route) in self.espionage.missions.iter_mut().zip(routes) {
+            mission.reachable = route.is_some();
+            if let Some(distance) = route {
+                mission.distance = distance;
+            }
         }
         let provinces: Vec<_> = self
             .economy
@@ -94,12 +118,27 @@ impl Campaign {
             &mut self.politics,
             &self.espionage_config,
         );
-        // Only paid networks that survived detection can deliver provincial reports.
-        self.refresh_intelligence_reports();
         for event in events {
             match event {
+                EspionageEvent::PopulationUndermined(player, province, class, points) => {
+                    let target = &mut self.economy.provinces[province];
+                    let mut changes = [0.0; 4];
+                    let happiness = &mut target.happiness[class];
+                    let reduced = (*happiness - points).clamp(0.0, 100.0);
+                    changes[class] = reduced - *happiness;
+                    target.temporary_happiness[class] += changes[class];
+                    *happiness = reduced;
+                    if let Some(mission) = self.espionage.missions.iter_mut().find(|mission| {
+                        mission.owner == player && mission.province == province
+                    }) {
+                        mission.totals.happiness_reduced -= changes[class];
+                    }
+                    if let Some(owner) = target.owner {
+                        self.notifications.record_foreign_happiness(player, owner, province, changes);
+                    }
+                },
                 EspionageEvent::Withdrawn(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyWithdrawn,
-                    format!("Spy withdrawn from {}", self.economy.provinces[province].name), "The network could not pay maintenance or the province was no longer a foreign target."),
+                    format!("Spy withdrawn from {}", self.economy.provinces[province].name), "The network could not pay maintenance, lost its political route, or the province was no longer a foreign target."),
                 EspionageEvent::Detected(player, province) => {
                     let consequence = provinces[province].owner.map_or_else(|| format!("Relation toward us decreased by {:.0}.", self.espionage_config.npc_detection_relation_loss), |victim| format!("Player {} gained an espionage scandal against us.", victim + 1));
                     self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyDetected,
@@ -110,7 +149,7 @@ impl Campaign {
                     if let Some(scandal) = scandal {
                         self.notifications.push(CampaignNotice { id: 0, recipient: player, severity: NoticeSeverity::Info,
                             title: "Scandal discovered".into(), body: format!("Our spies uncovered {}.", scandal.kind.label()),
-                            kind: NoticeKind::ScandalDiscovered, province: scandal.province, wonder: None, scandal: Some(id),
+                            kind: NoticeKind::ScandalDiscovered, province: scandal.province, building: None, wonder: None, scandal: Some(id),
                             month: self.economy.month, action: NoticeAction::OpenScandal { scandal: id, province: match scandal.target { ScandalTarget::Province(province) => Some(province), ScandalTarget::Player(_) => None } } });
                     }
                 },

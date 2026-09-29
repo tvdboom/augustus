@@ -1,6 +1,93 @@
 use super::*;
 
 #[test]
+fn politics_directory_reports_player_control_and_capital_exception() {
+    let mut province = ProvincePolitics::independent(2);
+    assert_eq!(politics_reading(&province, 0), ("Independent", 0.0, Some(50.0)));
+    province.state = PoliticalState::Independent {
+        local: 70.0,
+        shares: vec![25.0, 5.0],
+    };
+    province.change_relation(0, 20.0);
+    assert_eq!(politics_reading(&province, 0), ("Independent", 25.0, Some(70.0)));
+    province.state = PoliticalState::Vassal {
+        overlord: 1,
+        control: 80.0,
+        tribute: Tribute::Normal,
+    };
+    assert_eq!(politics_reading(&province, 0), ("Foreign vassal", 0.0, Some(70.0)));
+    assert_eq!(politics_reading(&province, 1), ("Your vassal", 80.0, Some(50.0)));
+    province.state = PoliticalState::Owned {
+        owner: 0,
+    };
+    assert_eq!(politics_reading(&province, 0), ("Your province", 100.0, Some(100.0)));
+    province.state = PoliticalState::Rome;
+    assert_eq!(politics_reading(&province, 0), ("Capital", 0.0, None));
+}
+
+#[test]
+fn acquisition_actions_use_actual_thresholds_and_preserve_both_choices_at_full_control() {
+    let mut politics = ProvincePolitics::independent(2);
+    for (control, expected) in [(50.0, 0), (50.25, 1), (75.0, 1), (100.0, 2)] {
+        politics.state = PoliticalState::Independent {
+            local: 100.0 - control,
+            shares: vec![control, 0.0],
+        };
+        assert_eq!(acquisition_actions(&politics, 0).len(), expected);
+    }
+    politics.state = PoliticalState::Vassal {
+        overlord: 0,
+        control: 100.0,
+        tribute: Tribute::Normal,
+    };
+    assert_eq!(acquisition_actions(&politics, 0).len(), 1);
+    assert!(acquisition_actions(&politics, 1).is_empty());
+    politics.state = PoliticalState::Owned {
+        owner: 1,
+    };
+    assert!(acquisition_actions(&politics, 0).is_empty());
+}
+
+#[test]
+fn distance_prices_increase_by_quarters_and_cap_at_two_and_a_half() {
+    for (steps, expected) in [
+        (0, 1.0),
+        (1, 1.0),
+        (2, 1.25),
+        (4, 1.5),
+        (6, 1.75),
+        (8, 2.0),
+        (10, 2.25),
+        (12, 2.5),
+        (100, 2.5),
+    ] {
+        assert_eq!(distance_multiplier(Some(steps)).unwrap(), expected);
+    }
+    assert!(distance_multiplier(None).is_err());
+}
+
+#[test]
+fn map_army_clicks_leave_province_navigation_alone() {
+    let ctx = egui::Context::default();
+    let mut view = CampaignUi::default();
+    view.open_province_section(1, 3);
+    let detail = ProvincePanelOpen(Some(MapDetail::Province(1)));
+    open_map_army(&ctx, 0, ForceOwner::Player(0), None, 0);
+    assert_eq!(view.open, Some(CampaignTab::Province));
+    assert_eq!(view.province, Some(1));
+    assert_eq!(detail.0, Some(MapDetail::Province(1)));
+    assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
+    view.open = None;
+    assert_eq!(
+        campaign_military::selected_army_province(&ctx),
+        Some(0),
+        "Closing the province leaves the army open"
+    );
+    open_map_army(&ctx, 1, ForceOwner::Player(1), None, 0);
+    assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
+}
+
+#[test]
 fn army_overview_navigation_keeps_military_selected_when_map_detail_updates() {
     let ctx = egui::Context::default();
     let mut view = CampaignUi {
@@ -18,33 +105,6 @@ fn army_overview_navigation_keeps_military_selected_when_map_detail_updates() {
     assert_eq!(detail.0, Some(MapDetail::Province(0)));
     assert_eq!(view.last_detail, detail.0, "The following frame must not reset to Overview");
     assert!(view.notice.is_empty());
-}
-
-#[test]
-fn political_preview_prices_distance_without_spending_or_queuing_pressure() {
-    let province = ProvincePolitics::independent(1);
-    let actor = PoliticalPlayer {
-        coin: 100.0,
-        ..Default::default()
-    };
-    let config = DiplomacyConfig::default();
-    let quote = political_quote(&province, &actor, Currency::Coin, |p, a| {
-        p.improve_relation(0, a, Currency::Coin, 5.0, Some(4), &config)
-    })
-    .unwrap();
-    assert!((quote.cost - 150.0).abs() < 0.000_001);
-    assert!(!quote.affordable);
-    assert_eq!(actor.coin, 100.0);
-    assert_eq!(province.relation(0), 50.0);
-    assert!(political_quote(&province, &actor, Currency::Coin, |p, a| p.improve_relation(
-        0,
-        a,
-        Currency::Coin,
-        5.0,
-        None,
-        &config
-    ))
-    .is_err());
 }
 
 #[test]

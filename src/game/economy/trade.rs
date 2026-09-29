@@ -493,7 +493,7 @@ impl EconomyWorld {
             quote.fulfillment = self.npc_fulfillment(npc, agreement, efficiency);
             if quote.fulfillment + 1e-9 < self.config.trade.minimum_fulfillment {
                 return Err(format!(
-                    "NPC supply, import demand, or Coin budget supports only {:.0}% of this deal",
+                    "NPC supply, import demand, or sestertii budget supports only {:.0}% of this deal",
                     quote.fulfillment * 100.0
                 ));
             }

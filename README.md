@@ -8,35 +8,6 @@
 <br><br>
 </div>
 
-The repository contains a playable **local campaign for one to four players**, alongside the retained
-menu and offline lobby preview. Local players share a computer and switch viewpoints using the player
-list. The published itch.io build may lag behind the working tree.
-
-Augustus combines provincial government, trade, political influence, espionage, and military forces
-on the existing 54-province historical map. The current campaign runs locally. The lobby/Supabase
-boundary does **not** provide a networked campaign or server-authoritative turns.
-
-## Play locally
-
-Run `just run`, choose the local game, choose one to four players and a color, and start. Players begin
-in provinces with the existing assigned colors; independent provinces have configured local defenders.
-Switch between players using the lower-right player list to make decisions and accept trade proposals.
-
-| Control | Action |
-| --- | --- |
-| Click a province or city | Open its contextual overview and campaign tabs |
-| Left-side Governance / Military / Trade / Politics banners | Open the corresponding campaign panel |
-| Province selector inside a panel | Inspect another province |
-| Mouse wheel / map drag | Zoom and pan |
-| Space or the date/pause control | Pause or resume the monthly simulation |
-| Ctrl + Left / Right, or speed − / + | Change simulation speed |
-| Escape | Close the active panel; otherwise open/close the game menu |
-| Enter in the game menu | Resume |
-| Hover statistics, policy choices, Senate blocs, and actions | Read formulas, costs, prerequisites, and explanations |
-
-Pause while reviewing several players' decisions. Everyone uses the same monthly clock and Senate
-loyalty review. Music, mute, volume, and click feedback remain in the shared circular audio controls.
-Settings retains the existing audio options.
 
 ## Gameplay
 
@@ -71,14 +42,14 @@ Migration and class changes preserve total population.
 | **Food** | Feeds civilians and troops; shortages damage population and Morale |
 | **Metal** | Equips recruits and pays part of construction costs |
 | **Stone** | Builds and upgrades provincial improvements and wonders |
-| **Coin** | Pays wages, trade, diplomacy, spies, and bribes; earned through taxes, tribute, and exchange |
+| **Sestertius** | Pays wages, trade, diplomacy, spies, and bribes; earned through taxes, tribute, and exchange |
 | **Influence** | Funds politics; earned from Nobles, buildings, wonders, political rank, and vassals |
 
 Plebeians and Slaves produce goods, with each worker allocated once by geographic potential and
 Resource Focus. Slaves have higher baseline productivity. Goods enter **global player stockpiles**;
 provincial storage buildings expand capacity. Overflow is discarded after monthly settlement,
-immediate transfers, and ownership changes. Coin and Influence have no storage cap. Nobles,
-Citizens, and Plebeians pay taxes.
+immediate transfers, and ownership changes. Sestertius and Influence have no storage cap.
+Only Citizens and Plebeians pay taxes; Nobles and Slaves are exempt.
 
 ### Governance and policies
 
@@ -86,7 +57,6 @@ Open **Governance** from the left menu to set nationwide policies:
 
 - **Food Rations:** balance consumption against happiness, births, and mortality.
 - **Slave Labor:** balance productivity against Slave happiness and mortality.
-- **Noble Taxes:** trade higher Coin income for lower Noble happiness.
 - **Army Wages:** trade treasury costs against military Morale; incomplete payment weakens support.
 
 Domestic edicts cover all directly owned provinces, including new acquisitions; wages cover all your
@@ -114,14 +84,14 @@ returns, still need Food, and stop ordinary production. Capture preserves progre
 ### Diplomacy and control
 
 **Relation** measures friendship; **Control** measures political power. Independent provinces split
-100 Control between local authorities and players. Gifts, Coin, Influence, recurring programs, trade,
+100 Control between local authorities and players. Gifts, Sestertius, Influence, recurring programs, trade,
 and occupation improve your position; interference undermines rivals. Distance raises political
 costs. Owned provinces leave Control competition, but enemy agitation and funded unrest lower happiness.
 
 ### Vassals and integration
 
 At **51 Independent Control with a unique lead**, you may vassalize a province. Its starting Vassal
-Control equals your previous share minus 50. Vassals grant Influence; tribute adds Coin at the cost
+Control equals your previous share minus 50. Vassals grant Influence; tribute adds Sestertius at the cost
 of goodwill. They do not supply ordinary production or wonder income. Poor relations erode Control;
 diplomacy and garrisons support it. At zero they become independent. At **100 Control**, optionally
 integrate a vassal or independent province into direct ownership; relations affect initial happiness.
@@ -141,8 +111,8 @@ or give **six months' notice** to avoid it. Player agreements end immediately wi
 
 ### Open market
 
-Buy or sell Food, Metal, and Stone immediately for Coin in **Trade**. Larger transactions receive
-worse unit prices, so smaller exchanges give better returns. Purchases require Coin and storage.
+Buy or sell Food, Metal, and Stone immediately for Sestertius in **Trade**. Larger transactions receive
+worse unit prices, so smaller exchanges give better returns. Purchases require Sestertius and storage.
 Market exchanges grant no Relation or Control.
 
 ### Espionage and scandals
@@ -164,7 +134,7 @@ The Senate has 100 persistent senators, initially neutral gray, split into five 
 Aristocrats, Merchants, Provincials, Populares, and Military. Supporters use their player's color.
 Every month, faction preferences and individual priorities compare all players' economy, welfare,
 provinces, political standing and military career. Hover chamber sections to inspect the reasons.
-Faction outreach fades over six months; Coin bribes lease one senator for six months, with an
+Faction outreach fades over six months; Sestertius bribes lease one senator for six months, with an
 escalating price and ten-senator cap. Exposed real scandals damage relevant factions for a year,
 cancel the target's bribery leases, and can cause senators to switch sides or return to neutral.
 
@@ -181,7 +151,7 @@ regardless of the conqueror's political rank or Senate support.
 
 Recruit cohorts in owned provinces using actual Plebeians or Citizens and upfront Metal. Eleven
 troop types cover infantry, archers, cavalry, specialist mounts, and artillery; special units require
-local traditions. Each province has one recruitment slot. Surviving soldiers consume Food and Coin
+local traditions. Each province has one recruitment slot. Surviving soldiers consume Food and Sestertius
 wages each month. Casualties are permanent; disbanding in owned territory returns only survivors to
 their original class. Training and Morale affect combat, while battle-earned Renown advances a
 military career separate from political office. Defeated NPC defenders do not automatically regenerate.

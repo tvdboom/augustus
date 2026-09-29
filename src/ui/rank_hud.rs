@@ -123,10 +123,12 @@ pub(in crate::app) fn draw_practice_players(
     assets: &AssetServer,
 ) {
     let screen = ctx.content_rect();
-    egui::Area::new(egui::Id::new("augustus_practice_players"))
+    let players_panel = egui::Area::new(egui::Id::new("augustus_practice_players"))
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0) * scale)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            // The game menu changes the global egui spacing; keep this anchored card stable.
+            ui.spacing_mut().item_spacing.y = 5.0 * scale;
             egui::Frame::new()
                 .fill(egui::Color32::from_rgba_unmultiplied(31, 20, 18, 232))
                 .stroke(egui::Stroke::new(
@@ -216,6 +218,9 @@ pub(in crate::app) fn draw_practice_players(
                     }
                 });
         });
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new("practice-players-panel-rect"), players_panel.response.rect);
+    });
 }
 
 pub(in crate::app) fn rank_texture(
