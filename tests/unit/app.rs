@@ -29,6 +29,10 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
     assert_eq!(wallet.influence, before_wallet.influence + 1_000.0);
     assert_eq!(campaign.actors[0].coin, wallet.coin);
     assert_eq!(campaign.actors[0].influence, wallet.influence);
+    let owner = crate::game::military::ForceOwner::Player(0);
+    assert_eq!(campaign.military.peak_manpower[&owner], 600.0);
+    assert_eq!(campaign.military.victories[&owner], 6);
+    assert_eq!(campaign.military.rank(owner), crate::game::military::MilitaryRank::Centurion);
     let boosted_resources = wallet.resources;
     assert_eq!(campaign.economy.players[1].practice_storage_bonus, [0.0; 3]);
     for (province, (owner, population)) in campaign.economy.provinces.iter().zip(before_populations)
@@ -283,6 +287,9 @@ fn player_banner_click_opens_each_players_founding_province() {
         view.open = Some(campaign_panel::CampaignTab::Military);
         let mut detail = ProvincePanelOpen(None);
         let mut governance = GovernancePanelOpen(true);
+        let mut map_view = MapView::default();
+        let mut expected_map_view = MapView::default();
+        expected_map_view.focus_province(province);
         let position = egui::pos2(110.0, 100.0);
         {
             let mut frame = |events| {
@@ -296,7 +303,13 @@ fn player_banner_click_opens_each_players_founding_province() {
                 });
                 let clicked = draw_map_menu_hitboxes(&context, 1.0);
                 if clicked {
-                    assert!(open_main_province(&practice, &mut view, &mut detail, &mut governance));
+                    assert!(open_main_province(
+                        &practice,
+                        &mut view,
+                        &mut detail,
+                        &mut governance,
+                        &mut map_view,
+                    ));
                 }
                 let mut output = context.end_pass();
                 output.textures_delta.clear();
@@ -321,6 +334,8 @@ fn player_banner_click_opens_each_players_founding_province() {
         assert_eq!(view.province, Some(province));
         assert_eq!(detail.0, Some(MapDetail::Province(province)));
         assert!(!governance.0);
+        assert!(map_view.pending_focus().0.is_some());
+        assert_eq!(map_view.pending_focus(), expected_map_view.pending_focus());
         ownership.sync_campaign_province(province, None, [0.0; 4], [0.0; 3], 0.0);
         assert_eq!(practice.players[player].main_province, Some(province));
     }

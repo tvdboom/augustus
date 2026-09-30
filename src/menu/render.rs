@@ -149,7 +149,7 @@ pub(in crate::app) fn draw_menu(
                     game_settings_screen(ui, &mut menu_audio, &mut next, &audio, &assets)
                 },
                 AppState::Loading => {},
-                AppState::Map | AppState::EmptyScreen => {},
+                AppState::Map | AppState::EmptyScreen | AppState::EndGame => {},
             });
         });
 

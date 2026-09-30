@@ -30,13 +30,67 @@ fn world(provinces: usize, players: usize) -> EconomyWorld {
         })
         .collect();
     let mut world = EconomyWorld::new(players, states, adjacency);
+    // These small synthetic provinces deliberately use the former per-resident
+    // rates so their absolute ordering/transaction assertions stay focused.
+    let scale = crate::map::POPULATION_SCALE;
+    world.config.food_per_class = [1.0; 4];
+    world.config.production_scale = world.config.production_scale.map(|rate| rate * scale);
+    world.config.civic_coin_per_free_resident =
+        world.config.civic_coin_per_free_resident.map(|rate| rate * scale);
+    world.config.tax_rates = world.config.tax_rates.map(|rate| rate * scale);
+    world.config.influence_per_noble *= scale;
+    for (minimum, _) in &mut world.config.wonder_slave_speeds {
+        *minimum /= scale;
+    }
     world.provinces[0].owner = Some(0);
+    world.refresh_npc_markets(&MonthlyInputs::default());
     world
 }
 
 /// Exact conservation comparisons tolerate only ordinary floating-point rounding.
 fn close(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-8, "{a} != {b}");
+}
+
+#[test]
+fn tenfold_residents_preserve_monthly_economy_and_enlarge_demographic_flows() {
+    let scale = crate::map::POPULATION_SCALE;
+    let config = EconomyConfig::default();
+    let mut old_config = config.clone();
+    old_config.food_per_class = old_config.food_per_class.map(|value| value * scale);
+    old_config.production_scale = old_config.production_scale.map(|value| value * scale);
+    old_config.tax_rates = old_config.tax_rates.map(|value| value * scale);
+
+    let old = EconomicProvince::new(
+        "Reference",
+        50.0,
+        Terrain::Plains,
+        false,
+        [1.4, 0.8, 0.6],
+        [9.0, 18.0, 38.0, 31.0],
+        1,
+    );
+    let mut current = old.clone();
+    current.population = current.population.map(|count| count * scale);
+    current.capacity_area *= scale;
+    for resource in 0..3 {
+        close(current.production(&config).1[resource], old.production(&old_config).1[resource]);
+    }
+    close(current.food_request(&config), old.food_request(&old_config));
+    close(current.tax_income(&config), old.tax_income(&old_config));
+
+    let mut old = old;
+    let mut old_report = ProvinceMonth {
+        food_supply_ratio: 1.0,
+        ..Default::default()
+    };
+    let mut new_report = old_report.clone();
+    old.advance_demographics(&mut old_report, &old_config);
+    current.advance_demographics(&mut new_report, &config);
+    for class in 0..4 {
+        close(new_report.births[class], old_report.births[class] * scale);
+        close(new_report.normal_deaths[class], old_report.normal_deaths[class] * scale);
+    }
 }
 
 #[test]
@@ -76,11 +130,15 @@ fn only_citizens_and_plebeians_fund_monthly_taxes() {
     w.provinces[0].population = [100.0, 26.0, 50.0, 100.0];
     close(w.provinces[0].tax_income(&w.config), 23.0);
     w.provinces[0].buildings[BuildingType::UrbanMarket as usize] = 1;
+    close(w.provinces[0].tax_income(&w.config), 23.0);
+    close(w.provinces[0].building_effects(&w.config).migration, 0.1);
+    w.provinces[0].buildings[BuildingType::CityHall as usize] = 1;
     close(w.provinces[0].tax_income(&w.config), 25.3);
+    let civic_cost = w.provinces[0].civic_spending_cost(&w.config);
     let report = w.advance_month(&MonthlyInputs::default());
     let expected = w.provinces[0].tax_income(&w.config);
     close(report.province_reports[0].tax_income, expected);
-    close(report.player_delta[0][3], expected);
+    close(report.player_delta[0][3], expected - civic_cost);
     w.provinces[0].population[1] = 0.0;
     w.provinces[0].population[2] = 0.0;
     close(w.provinces[0].tax_income(&w.config), 0.0);
@@ -273,11 +331,12 @@ fn unfunded_civic_spending_preserves_frugal_happiness_even_with_mixed_policies()
 #[test]
 fn manumission_converts_in_both_directions_and_changes_only_the_affected_class_happiness() {
     for (policy, transferred, happiness) in [
-        (ManumissionPolicy::Enslave, -0.2, [49.0, 49.0, 48.0, 50.0]),
-        (ManumissionPolicy::Normal, 0.0, [49.0, 49.0, 49.0, 50.0]),
-        (ManumissionPolicy::Free, 0.08, [48.0, 49.0, 49.0, 50.0]),
+        (ManumissionPolicy::Enslave, -0.2, [50.0, 50.0, 49.0, 50.0]),
+        (ManumissionPolicy::Normal, 0.0, [50.0; 4]),
+        (ManumissionPolicy::Free, 0.08, [49.0, 50.0, 50.0, 50.0]),
     ] {
         let mut w = world(1, 1);
+        w.config.overcrowding_scale = 0.0;
         w.config.birth_rates = [0.0; 4];
         w.config.death_rates = [0.0; 4];
         w.config.class_change_rates = [0.0; 2];
@@ -303,7 +362,7 @@ fn manumission_converts_in_both_directions_and_changes_only_the_affected_class_h
         let population = w.provinces[0].population;
         w.advance_month(&MonthlyInputs::default());
         assert_eq!(w.provinces[0].population, population);
-        assert_eq!(w.provinces[0].happiness, [49.0, 49.0, 49.0, 50.0]);
+        assert_eq!(w.provinces[0].happiness, [50.0; 4]);
     }
 }
 
@@ -392,7 +451,7 @@ fn player_route_cancellation_changes_neither_wallets_nor_province_relations() {
     world.accept_trade(id, 1, &MonthlyInputs::default()).unwrap();
     let wallets: Vec<_> = world.players.iter().map(|p| p.balances()).collect();
     let relations: Vec<_> = world.provinces.iter().map(|p| p.relation_by_player.clone()).collect();
-    assert!(world.schedule_trade_cancellation(id, 0).is_err());
+    assert_eq!(world.schedule_trade_cancellation(id, 0), Ok(6));
     assert!(world.cancel_trade(id, 1).unwrap().is_none());
     assert_eq!(world.players.iter().map(|p| p.balances()).collect::<Vec<_>>(), wallets);
     assert_eq!(
@@ -520,21 +579,101 @@ fn happiness_report_and_player_hud_average_use_actual_class_changes() {
     world.provinces[1].population = [6.0; 4];
     world.provinces[2].population = [100.0; 4];
     world.provinces[0].policies.food = FoodPolicy::High;
+    world.provinces[0].has_city = true;
+    world.provinces[0].buildings[BuildingType::Academy as usize] = 1;
     world.provinces[1].policies.food = FoodPolicy::Low;
+    world.config.overcrowding_scale = 0.0;
     world.config.birth_rates = [0.0; 4];
     world.config.death_rates = [0.0; 4];
     world.config.class_change_rates = [0.0; 2];
     world.config.migration_rates = [0.0; 4];
     world.players[0].resources[0] = 1000.0;
     let report = world.advance_month(&MonthlyInputs::default());
-    assert_eq!(report.province_reports[0].happiness_delta, [9.0, 9.0, 9.0, 10.0]);
-    assert_eq!(report.province_reports[1].happiness_delta, [-11.0, -11.0, -11.0, -10.0]);
+    assert_eq!(report.province_reports[0].happiness_delta, [11.0, 11.0, 11.0, 10.0]);
+    assert_eq!(report.province_reports[1].happiness_delta, [-10.0; 4]);
     for class in 0..4 {
         let (happiness, delta) = world.player_happiness(0, class);
-        close(happiness, [44.0, 44.0, 44.0, 45.0][class]);
-        close(delta, [-6.0, -6.0, -6.0, -5.0][class]);
+        close(happiness, [45.25, 45.25, 45.25, 45.0][class]);
+        close(delta, [-4.75, -4.75, -4.75, -5.0][class]);
     }
     assert_eq!(world.player_happiness(2, 0), (50.0, 0.0));
+}
+
+#[test]
+fn overcrowding_lowers_happiness_each_month_and_recovers_after_relief() {
+    let mut world = world(1, 1);
+    world.config.birth_rates = [0.0; 4];
+    world.config.death_rates = [0.0; 4];
+    world.config.class_change_rates = [0.0; 2];
+    world.provinces[0].population = [125.0; 4]; // 500 residents for 400 capacity.
+    let province = &mut world.provinces[0];
+    for month in 0..20 {
+        let mut report = ProvinceMonth {
+            food_supply_ratio: 1.0,
+            ..Default::default()
+        };
+        province.advance_demographics(&mut report, &world.config);
+        close(report.overcrowding_penalty, 3.0);
+        close(province.happiness[0], (50.0_f64 - 3.0 * (month + 1) as f64).max(0.0));
+    }
+    province.population = [10.0; 4];
+    let mut report = ProvinceMonth {
+        food_supply_ratio: 1.0,
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        province.advance_demographics(&mut report, &world.config);
+        close(report.overcrowding_penalty, 0.0);
+    }
+    close(province.happiness[0], 5.0);
+}
+
+#[test]
+fn severe_famine_kills_more_residents_while_mild_shortage_has_small_happiness_loss() {
+    let world = world(1, 1);
+    let mut mild = world.provinces[0].clone();
+    let mut severe = mild.clone();
+    let mut mild_report = ProvinceMonth {
+        food_supply_ratio: 0.95,
+        ..Default::default()
+    };
+    let mut severe_report = ProvinceMonth {
+        food_supply_ratio: 0.2,
+        ..Default::default()
+    };
+    mild.advance_demographics(&mut mild_report, &world.config);
+    severe.advance_demographics(&mut severe_report, &world.config);
+    assert!(mild_report.shortage_penalty > 0.0 && mild_report.shortage_penalty < 1.0);
+    close(severe_report.shortage_penalty, 2.4);
+    assert!(
+        severe_report.famine_deaths.iter().sum::<f64>()
+            > 20.0 * mild_report.famine_deaths.iter().sum::<f64>()
+    );
+    let mut config = world.config.clone();
+    config.birth_rates = [0.0; 4];
+    config.death_rates = [0.0; 4];
+    config.max_famine_death_rate = 0.0;
+    config.class_change_rates = [0.0; 2];
+    for _ in 0..24 {
+        severe.advance_demographics(&mut severe_report, &config);
+    }
+    close(severe.happiness[0], 0.0);
+}
+
+#[test]
+fn overcrowding_drives_substantially_more_outward_migration() {
+    let mut crowded = world(2, 1);
+    crowded.provinces[0].population = [0.0, 0.0, 456.0, 0.0];
+    crowded.provinces[0].happiness = [38.0; 4];
+    crowded.provinces[1].population = [0.0; 4];
+    let mut uncrowded = crowded.clone();
+    uncrowded.provinces[0].capacity_area = 1_000.0;
+    let mut crowded_reports = vec![ProvinceMonth::default(); 2];
+    let mut uncrowded_reports = vec![ProvinceMonth::default(); 2];
+    crowded.migrate(&MonthlyInputs::default(), &mut crowded_reports);
+    uncrowded.migrate(&MonthlyInputs::default(), &mut uncrowded_reports);
+    assert!(crowded_reports[0].migration[2] < 5.0 * uncrowded_reports[0].migration[2]);
+    close(crowded_reports[0].migration[2], -crowded_reports[1].migration[2]);
 }
 
 #[test]
@@ -640,7 +779,10 @@ fn proportional_food_supply_includes_armies_and_all_owned_provinces() {
     close(report.food_supply_ratio[0], 0.5); // 50+50 civilian and 20 military.
     for province in report.province_reports {
         close(province.food_supply_ratio, 0.5);
-        close(province.famine_deaths.iter().sum(), 50.0 * 0.5 * world.config.max_famine_death_rate);
+        close(
+            province.famine_deaths.iter().sum(),
+            50.0 * 0.5_f64.powf(1.5) * world.config.max_famine_death_rate,
+        );
     }
     close(world.players[0].resources[0], 0.0);
 }
@@ -682,6 +824,7 @@ fn happiness_buildings_cannot_override_soft_population_equilibrium() {
 #[test]
 fn migration_restrictions_reduce_only_free_class_happiness_without_accumulating() {
     let mut w = world(1, 1);
+    w.config.overcrowding_scale = 0.0;
     w.config.birth_rates = [0.0; 4];
     w.config.death_rates = [0.0; 4];
     w.config.class_change_rates = [0.0; 2];
@@ -697,14 +840,14 @@ fn migration_restrictions_reduce_only_free_class_happiness_without_accumulating(
             w.advance_month(&MonthlyInputs::default());
             assert_eq!(
                 w.provinces[0].happiness,
-                [49.0 + penalty, 49.0 + penalty, 49.0 + penalty, 50.0]
+                [50.0 + penalty, 50.0 + penalty, 50.0 + penalty, 50.0]
             );
         }
     }
     for policy in [MigrationPolicy::Normal, MigrationPolicy::Encourage] {
         w.provinces[0].policies.migration = policy;
         w.advance_month(&MonthlyInputs::default());
-        assert_eq!(w.provinces[0].happiness, [49.0, 49.0, 49.0, 50.0]);
+        assert_eq!(w.provinces[0].happiness, [50.0; 4]);
     }
 }
 
@@ -726,6 +869,37 @@ fn closed_migration_still_conserves_population_and_slaves_never_migrate() {
     for class in 0..4 {
         close(report.province_reports.iter().map(|p| p.migration[class]).sum(), 0.0);
     }
+}
+
+#[test]
+fn happy_free_residents_have_small_background_migration() {
+    let mut world = world(2, 1);
+    world.provinces[0].happiness = [60.0; 4];
+    world.provinces[1].happiness = [60.0; 4];
+    world.provinces[1].population = [0.0; 4];
+    let mut reports = vec![ProvinceMonth::default(); 2];
+    world.migrate(&MonthlyInputs::default(), &mut reports);
+    for class in 0..3 {
+        assert!(reports[0].migration[class] < 0.0);
+        close(reports[0].migration[class], -reports[1].migration[class]);
+    }
+    assert_eq!(reports[0].migration[3], 0.0);
+    assert_eq!(reports[1].migration[3], 0.0);
+}
+
+#[test]
+fn market_levels_increase_only_local_migration_attraction() {
+    let mut world = world(3, 1);
+    world.adjacency[0].push(2);
+    world.provinces[0].population = [0.0, 0.0, 100.0, 0.0];
+    for target in [1, 2] {
+        world.provinces[target].has_city = true;
+        world.provinces[target].population = [0.0; 4];
+    }
+    world.provinces[2].buildings[BuildingType::UrbanMarket as usize] = 2;
+    let mut reports = vec![ProvinceMonth::default(); 3];
+    world.migrate(&MonthlyInputs::default(), &mut reports);
+    close(reports[2].migration[2] / reports[1].migration[2], 1.2);
 }
 
 #[test]
@@ -802,7 +976,7 @@ fn countryside_and_city_catalogs_have_four_and_eight_distinct_buildings() {
             BuildingType::Arena,
             BuildingType::CityWalls,
             BuildingType::Academy,
-            BuildingType::Foundry
+            BuildingType::CityHall
         ]
     );
     assert_eq!(world.config.buildings.len(), BuildingType::COUNT);
@@ -837,15 +1011,68 @@ fn completed_warehouse_stores_only_metal_and_stone_and_aqueduct_adds_capacity() 
         world.advance_month(&MonthlyInputs::default());
     }
     assert_eq!(world.provinces[0].level(BuildingType::Aqueduct), 1);
-    close(world.provinces[0].capacity(&world.config), capacity + 20.0);
+    close(
+        world.provinces[0].capacity(&world.config),
+        capacity + 20.0 * crate::map::POPULATION_SCALE,
+    );
     world.provinces[0].has_city = true;
-    let metal = world.provinces[0].production(&world.config).1[1];
-    world.provinces[0].buildings[BuildingType::Foundry as usize] = 2;
-    close(world.provinces[0].production(&world.config).1[1], metal * 1.3);
+    world.provinces[0].buildings[BuildingType::CityHall as usize] = 2;
+    close(world.provinces[0].building_effects(&world.config).tax, 0.2);
     world.provinces[0].buildings[BuildingType::Academy as usize] = 2;
     let effects = world.provinces[0].building_effects(&world.config);
     close(effects.influence, 0.5);
-    assert_eq!(effects.happiness, [0.0, 6.0, 0.0, 0.0]);
+    assert_eq!(effects.happiness, [2.0, 2.0, 2.0, 0.0]);
+}
+
+#[test]
+fn academy_happiness_is_a_standing_monthly_bonus_per_level_for_free_classes() {
+    let mut world = world(1, 1);
+    world.provinces[0].has_city = true;
+    world.provinces[0].population = [1.0; 4];
+    world.config.birth_rates = [0.0; 4];
+    world.config.death_rates = [0.0; 4];
+    world.config.class_change_rates = [0.0; 2];
+    world.config.migration_rates = [0.0; 4];
+    world.players[0].resources[0] = 1000.0;
+
+    world.advance_month(&MonthlyInputs::default());
+    let baseline = world.provinces[0].happiness;
+    for level in [1, 1, 2, 2, 0] {
+        world.provinces[0].buildings[BuildingType::Academy as usize] = level;
+        world.advance_month(&MonthlyInputs::default());
+        assert_eq!(
+            world.provinces[0].happiness,
+            [
+                baseline[0] + level as f64,
+                baseline[1] + level as f64,
+                baseline[2] + level as f64,
+                baseline[3],
+            ]
+        );
+    }
+}
+
+#[test]
+fn baths_happiness_recurs_monthly_without_affecting_slaves() {
+    let mut world = world(1, 1);
+    world.provinces[0].has_city = true;
+    world.provinces[0].population = [1.0; 4];
+    world.config.birth_rates = [0.0; 4];
+    world.config.death_rates = [0.0; 4];
+    world.config.class_change_rates = [0.0; 2];
+    world.config.migration_rates = [0.0; 4];
+    world.players[0].resources[0] = 1000.0;
+    world.advance_month(&MonthlyInputs::default());
+    let baseline = world.provinces[0].happiness;
+
+    world.provinces[0].buildings[BuildingType::Baths as usize] = 1;
+    for _ in 0..2 {
+        world.advance_month(&MonthlyInputs::default());
+        assert_eq!(
+            world.provinces[0].happiness,
+            [baseline[0] + 2.0, baseline[1] + 2.0, baseline[2] + 2.0, baseline[3]]
+        );
+    }
 }
 
 #[test]
@@ -939,6 +1166,9 @@ fn routes_use_sea_edges_and_reject_hostile_transit() {
         .trade_route(TradeParty::Player(0), TradeParty::Player(1), &MonthlyInputs::default())
         .unwrap();
     assert_eq!(path, vec![0, 1, 2, 3]);
+    close(world.route_efficiency(&path), 0.9);
+    world.provinces[1].buildings[BuildingType::Road as usize] = 2;
+    world.provinces[1].buildings[BuildingType::UrbanMarket as usize] = 1;
     close(world.route_efficiency(&path), 0.9);
     world.provinces[2].relation_by_player[0] = 0.0;
     assert!(world
@@ -1500,7 +1730,7 @@ fn agricultural_province_supports_civilians_and_a_small_army_without_free_resour
         Terrain::Farmland,
         true,
         [1.4, 0.8, 0.6],
-        [8., 22., 33., 37.],
+        [80., 220., 330., 370.],
         1,
     );
     let output = province.production(&config).1;

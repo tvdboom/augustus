@@ -47,6 +47,36 @@ impl Campaign {
             * self.governance_for(player).army_wage_factor()
     }
 
+    pub(crate) fn noble_wages(&self, player: usize) -> f64 {
+        self.economy
+            .provinces
+            .iter()
+            .filter(|province| province.owner == Some(player))
+            .map(|province| province.population[0])
+            .sum::<f64>()
+            * self.economy.config.noble_wage_per_noble
+            * self.governance_for(player).noble_wage_factor()
+    }
+
+    pub(crate) fn pay_noble_wages(&mut self, player: usize) {
+        let requested = self.noble_wages(player);
+        let wallet = &mut self.economy.players[player];
+        let paid = wallet.coin.max(0.0).min(requested);
+        wallet.coin -= paid;
+        let happiness = self.governance_for(player).noble_wage_happiness();
+        for (id, province) in self.economy.provinces.iter_mut().enumerate() {
+            if province.owner != Some(player) {
+                continue;
+            }
+            let previous = province.happiness[0];
+            province.noble_wage_happiness = happiness;
+            province.happiness[0] = province.calculate_happiness(&self.economy.config)[0];
+            if let Some(report) = self.economy.last_report.province_reports.get_mut(id) {
+                report.happiness_delta[0] += province.happiness[0] - previous;
+            }
+        }
+    }
+
     pub(crate) fn pay_army_wages(&mut self, player: usize, supply: f64) {
         let requested = self.army_wages(player);
         let wallet = &mut self.economy.players[player];

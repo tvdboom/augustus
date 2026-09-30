@@ -13,6 +13,7 @@ fn actors(count: usize) -> Vec<PoliticalPlayer> {
         count
     ]
 }
+
 fn pledge(state: &mut SenateState, player: usize, count: usize) {
     for s in state.senators.iter_mut().take(count) {
         s.allegiance = Some(player);

@@ -47,8 +47,8 @@ pub struct MovementOrder {
     pub required_progress: f64,
     /// Snapshot, editable only before combat starts.
     pub plan: BattlePlan,
-    /// Fixed withdrawal to home after access revocation, with peaceful transit.
-    pub returning_home: bool,
+    /// Fixed withdrawal to an owned province after access revocation, with peaceful transit.
+    pub withdrawing: bool,
 }
 
 impl MovementOrder {

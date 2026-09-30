@@ -10,7 +10,7 @@ use rand::random_range;
 use serde::Deserialize;
 
 use super::crossings::SEA_CROSSINGS;
-use super::population::starting_total_for;
+use super::population::{starting_total_for, POPULATION_SCALE};
 use super::production::{for_province, PRODUCTION_ICONS};
 use super::terrain::paint_rivers;
 use super::terrain_type::{for_province as terrain_for_province, TerrainType};
@@ -98,7 +98,7 @@ pub(crate) fn city_name_for_province(name: &str) -> Option<&'static str> {
     }
 }
 
-const INFLUENCE_PER_NOBLE: f64 = 1.0;
+const INFLUENCE_PER_NOBLE: f64 = 1.0 / POPULATION_SCALE;
 // Extra residents at a resource-poor start favor productive labor. The small
 // citizen and noble shares also give modest tax and influence compensation.
 const START_BONUS_SHARES: [f64; 4] = [0.05, 0.10, 0.35, 0.50];
@@ -227,7 +227,7 @@ impl ProvincePopulation {
     }
 
     fn food_upkeep(self) -> f64 {
-        self.total()
+        self.total() / POPULATION_SCALE
     }
 
     fn add_start_bonus(&mut self, amount: f64) {
@@ -240,7 +240,7 @@ impl ProvincePopulation {
 
 fn monthly_output(base: [i32; 3], population: ProvincePopulation) -> [f64; 3] {
     let workers = population.weighted_workers();
-    base.map(|yield_per_worker| f64::from(yield_per_worker) * workers)
+    base.map(|yield_per_worker| f64::from(yield_per_worker) * workers / POPULATION_SCALE)
 }
 
 /// One balance point per unit of monthly net food, metal, stone, sestertii, or
@@ -248,8 +248,8 @@ fn monthly_output(base: [i32; 3], population: ProvincePopulation) -> [f64; 3] {
 /// the province's real resource yields and the economy rules remain intact.
 fn starting_economy_score(base: [i32; 3], population: ProvincePopulation) -> f64 {
     monthly_output(base, population).into_iter().sum::<f64>() - population.food_upkeep()
-        + population.plebeians
-        + population.citizens * 1.5
+        + population.plebeians / POPULATION_SCALE
+        + population.citizens * 1.5 / POPULATION_SCALE
         + population.nobles * INFLUENCE_PER_NOBLE
 }
 
@@ -467,7 +467,7 @@ impl ProvinceOwnership {
             monthly_output(base, population)
         } else {
             let workers = population.workers_under(governance);
-            base.map(|yield_per_worker| f64::from(yield_per_worker) * workers)
+            base.map(|yield_per_worker| f64::from(yield_per_worker) * workers / POPULATION_SCALE)
         }
     }
 
@@ -545,11 +545,17 @@ impl ProvinceOwnership {
 
     pub(crate) fn coin_taxes_for(&self, player: usize) -> f64 {
         let population = self.population_for(player);
-        population[2] + population[1] * 1.5
+        (population[2] + population[1] * 1.5) / POPULATION_SCALE
     }
 
     pub(crate) fn coin_delta_for(&self, player: usize) -> f64 {
-        self.coin_taxes_for(player) - self.military_wages_for(player)
+        self.coin_taxes_for(player) - self.noble_wages_for(player) - self.military_wages_for(player)
+    }
+
+    pub(crate) fn noble_wages_for(&self, player: usize) -> f64 {
+        self.population_for(player)[0]
+            * crate::game::economy::NOBLE_WAGE_PER_NOBLE
+            * self.governance_for(player).noble_wage_factor()
     }
 
     pub(crate) fn military_wages_for(&self, player: usize) -> f64 {
@@ -585,7 +591,7 @@ impl ProvinceOwnership {
                 0..=3 => 0.0_f64,
                 4..=8 => 2.0,
                 _ => 5.0,
-            };
+            } * POPULATION_SCALE;
             -mortality.min(owned.map(|(index, _)| self.populations[index].total()).sum())
         }
     }
@@ -1065,6 +1071,11 @@ impl MapView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_focus(&self) -> (Option<[f32; 2]>, f32) {
+        (self.focus_target, self.target_zoom)
+    }
+
     /// Focus a canonical monument without inventing or duplicating its map coordinates.
     pub(crate) fn focus_wonder(&mut self, id: usize) {
         if let Some(wonder) = WONDERS.get(id) {
@@ -1432,6 +1443,7 @@ pub(crate) fn draw_map(
     time: Res<Time>,
     state: Res<State<crate::app::AppState>>,
     campaign_ui: Res<crate::app::CampaignUi>,
+    terminal: Res<crate::app::TerminalPresentation>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -1478,6 +1490,7 @@ pub(crate) fn draw_map(
                 &ownership,
                 campaign.active.then_some(&*campaign),
                 practice.active_player,
+                terminal.spectating,
                 icons,
                 &response,
                 &keyboard,
@@ -1500,6 +1513,7 @@ fn paint_map(
     ownership: &ProvinceOwnership,
     campaign: Option<&crate::app::campaign::Campaign>,
     player: usize,
+    spectating: bool,
     production_icons: &[egui::TextureHandle; 3],
     response: &egui::Response,
     keyboard: &ButtonInput<KeyCode>,
@@ -1510,10 +1524,14 @@ fn paint_map(
     let (center, width, height, fit) = map_geometry(rect, atlas);
 
     let (pointer_over_menu, drag_started_on_menu) = painter.ctx().input(|input| {
-        (
-            input.pointer.hover_pos().is_some_and(|point| map_hud_contains(rect, point)),
-            input.pointer.press_origin().is_some_and(|point| map_hud_contains(rect, point)),
-        )
+        if spectating {
+            (false, false)
+        } else {
+            (
+                input.pointer.hover_pos().is_some_and(|point| map_hud_contains(rect, point)),
+                input.pointer.press_origin().is_some_and(|point| map_hud_contains(rect, point)),
+            )
+        }
     });
 
     if interactions_enabled && !pointer_over_menu {
@@ -2023,7 +2041,11 @@ fn paint_map(
     // Immediate-mode paint order is the map's Z order: troops and their owner
     // badges sit above province names/resources without reserving label space.
     if let Some(campaign) = campaign {
-        let world = campaign.military_view(player, false);
+        let world = if spectating {
+            campaign.military.clone()
+        } else {
+            campaign.military_view(player, false)
+        };
         military_visuals::paint(
             painter,
             &world,
@@ -2524,20 +2546,21 @@ fn wonder_art() -> &'static [WonderArt] {
 
 impl WonderMarker {
     fn bounds(&self, zoom: f32) -> egui::Rect {
-        if let Some(image) = self.image {
-            if wonder_illustrated(zoom) {
-                return image.union(egui::Rect::from_center_size(
-                    image.center(),
-                    egui::Vec2::splat(image.height()),
-                ));
-            }
+        let Some(image) = self.image else {
+            return self.icon;
+        };
+        let blend = city_blend(zoom);
+        if blend <= 0.0 {
+            return self.icon;
         }
-        self.icon
+        let artwork = image
+            .union(egui::Rect::from_center_size(image.center(), egui::Vec2::splat(image.height())));
+        if blend >= 1.0 {
+            artwork
+        } else {
+            self.icon.union(artwork)
+        }
     }
-}
-
-fn wonder_illustrated(zoom: f32) -> bool {
-    zoom >= (CITY_BLEND_START + CITY_BLEND_END) * 0.5
 }
 
 fn layout_wonders(projection: &Projection, map_rect: egui::Rect, zoom: f32) -> Vec<WonderMarker> {
@@ -2584,28 +2607,27 @@ fn paint_wonders(
         let Some(state) = wonder_state(economy, marker.index) else {
             continue;
         };
-        if !wonder_illustrated(zoom) || marker.image.is_none() {
-            paint_marker_icon(painter, marker.icon, MarkerIcon::Wonder, egui::Color32::WHITE);
-            continue;
+        let blend = if marker.image.is_some() && textures.get(marker.index).is_some() {
+            city_blend(zoom)
+        } else {
+            0.0
+        };
+        if blend < 1.0 {
+            let tint = egui::Color32::from_white_alpha(((1.0 - blend) * 255.0).round() as u8);
+            paint_marker_icon(painter, marker.icon, MarkerIcon::Wonder, tint);
         }
-        if let (Some(image), Some(texture)) = (marker.image, textures.get(marker.index)) {
+        if blend > 0.0 {
+            let (Some(image), Some(texture)) = (marker.image, textures.get(marker.index)) else {
+                continue;
+            };
+            let tint = egui::Color32::from_white_alpha((blend * 255.0).round() as u8);
             if let WonderState::Building = state {
                 let texture = wonder_construction_texture(painter.ctx(), marker.index);
                 let square =
                     egui::Rect::from_center_size(image.center(), egui::Vec2::splat(image.height()));
-                painter.image(
-                    texture.id(),
-                    square,
-                    wonder_construction_uv(clock),
-                    egui::Color32::WHITE,
-                );
+                painter.image(texture.id(), square, wonder_construction_uv(clock), tint);
             } else {
-                painter.image(
-                    texture.id(),
-                    image,
-                    wonder_art()[marker.index].uv,
-                    egui::Color32::WHITE,
-                );
+                painter.image(texture.id(), image, wonder_art()[marker.index].uv, tint);
             }
         }
     }

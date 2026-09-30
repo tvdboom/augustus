@@ -36,26 +36,6 @@ pub(super) fn configure_cursor(ctx: &egui::Context) {
         "augustus-reset-cursor",
         std::sync::Arc::new(|ui| ui.ctx().set_cursor_icon(egui::CursorIcon::Default)),
     );
-    ctx.on_end_pass("augustus-click-cursor", std::sync::Arc::new(|ui| click_cursor(ui.ctx())));
-}
-
-/// Cover standard widgets and custom click targets while preserving editing and drag cursors.
-fn click_cursor(ctx: &egui::Context) {
-    if ctx.output(|output| output.cursor_icon) != egui::CursorIcon::Default {
-        return;
-    }
-    let hovered =
-        ctx.interaction_snapshot(|snapshot| snapshot.hovered.iter().copied().collect::<Vec<_>>());
-    if hovered.into_iter().any(|id| {
-        ctx.read_response(id).is_some_and(|response| {
-            response.enabled()
-                && response.hovered()
-                && response.sense.senses_click()
-                && !response.sense.senses_drag()
-        })
-    }) {
-        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
 }
 
 #[cfg(test)]
@@ -94,10 +74,15 @@ pub(in crate::app) enum Icon {
     Plebeians,
     Slaves,
     Spy,
+    SpyFlee,
     SpyBuildControl,
     SpyImproveRelations,
     SpyUncoverScandals,
     SpyUndermineOpponents,
+    SpySupportRevolt,
+    SpyDiscreditRivals,
+    BribeNobles,
+    InsultPlayer,
     Trade,
     Control,
     Relation,
@@ -106,6 +91,7 @@ pub(in crate::app) enum Icon {
     Vassalize,
     Integrate,
     Policies,
+    Events,
     Construction,
     Recruitment,
     Attack,
@@ -113,11 +99,11 @@ pub(in crate::app) enum Icon {
     Defense,
     Speed,
     Maneuver,
-    Orders,
     Province,
     Morale,
     Terrain,
     MilitaryPower,
+    Cohorts,
     MilitaryAccess,
     Eagle,
     Duration,
@@ -149,7 +135,7 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         };
     }
     let bytes = match kind {
-        Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate => {
+        Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee => {
             unreachable!("vector diplomacy symbols are painted directly")
         },
         Icon::Food => prepared!("food"),
@@ -168,11 +154,16 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         Icon::SpyImproveRelations => prepared!("spy-improve-relations"),
         Icon::SpyUncoverScandals => prepared!("spy-uncover-scandals"),
         Icon::SpyUndermineOpponents => prepared!("spy-undermine-opponents"),
+        Icon::SpySupportRevolt => prepared!("spy-support-revolt"),
+        Icon::SpyDiscreditRivals => prepared!("spy-discredit-rivals"),
+        Icon::BribeNobles => prepared!("bribe-nobles"),
+        Icon::InsultPlayer => prepared!("insult-player"),
         Icon::Trade => prepared!("trade"),
         Icon::Control => prepared!("control"),
         Icon::Relation => prepared!("relation"),
         Icon::Diplomacy => prepared!("diplomacy"),
         Icon::Policies => prepared!("policies"),
+        Icon::Events => include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/events.png")),
         Icon::Construction => prepared!("construction"),
         Icon::Recruitment => prepared!("recruitment"),
         Icon::MilitaryAccess => prepared!("military-access"),
@@ -191,12 +182,24 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         Icon::Defense => prepared!("defense"),
         Icon::Speed => prepared!("speed"),
         Icon::Maneuver => prepared!("maneuver"),
-        Icon::Orders => prepared!("orders"),
         Icon::Duration => prepared!("recruitment-time"),
         Icon::Province => prepared!("province"),
         Icon::Morale => prepared!("morale"),
         Icon::Terrain => prepared!("terrain"),
         Icon::MilitaryPower => prepared!("military-power"),
+        Icon::MilitaryRank(crate::game::military::MilitaryRank::Centurion) => {
+            prepared!("rank-centurion")
+        },
+        Icon::MilitaryRank(crate::game::military::MilitaryRank::MilitaryTribune) => {
+            prepared!("rank-military-tribune")
+        },
+        Icon::MilitaryRank(crate::game::military::MilitaryRank::Legate) => {
+            prepared!("rank-legate")
+        },
+        Icon::MilitaryRank(crate::game::military::MilitaryRank::Imperator) => {
+            prepared!("rank-imperator")
+        },
+        Icon::Cohorts => prepared!("cohorts"),
         Icon::Eagle => prepared!("spqr-eagle-gold"),
         Icon::Building(building) => match building {
             BuildingType::Granary => building_art!("granary-rural"),
@@ -204,7 +207,7 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
             BuildingType::Aqueduct => building_art!("aqueduct"),
             BuildingType::Baths => building_art!("baths"),
             BuildingType::Road => building_art!("road"),
-            BuildingType::Foundry => building_art!("foundry"),
+            BuildingType::CityHall => building_art!("city-hall"),
             BuildingType::Academy => building_art!("academy"),
             BuildingType::CityWalls => building_art!("walls"),
             BuildingType::Forum => building_art!("forum"),
@@ -213,7 +216,7 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
             BuildingType::UrbanMarket => building_art!("marketplace"),
         },
         Icon::Wonder(id) => crate::map::wonder_image(id).unwrap_or(prepared!("great-temple")),
-        Icon::Unit(_) | Icon::MilitaryRank(_) => {
+        Icon::Unit(_) => {
             unreachable!()
         },
     };
@@ -440,6 +443,26 @@ pub(in crate::app) fn paint_purchase_background(
     fill
 }
 
+/// Show why a purchase is unavailable in the same red hover-card badge.
+pub(in crate::app) fn unavailable_reason(ui: &mut egui::Ui, reason: &str, scale: f32) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(248, 223, 217))
+        .stroke(egui::Stroke::new(scale, egui::Color32::from_rgb(174, 50, 38)))
+        .corner_radius(5.0 * scale)
+        .inner_margin(egui::Margin::symmetric(9, 7))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(reason)
+                        .strong()
+                        .size(14.0 * scale)
+                        .color(egui::Color32::from_rgb(145, 35, 26)),
+                )
+                .wrap(),
+            );
+        });
+}
+
 /// Cancellation distinguishes active work from refundable waiting orders.
 #[derive(Clone, Copy)]
 pub(in crate::app) enum WorkQueueAction {
@@ -457,6 +480,7 @@ pub(in crate::app) fn work_queue(
     active: Option<(Icon, f32, String)>,
     queued: &[(usize, Icon, String)],
     can_cancel: bool,
+    wrap_waiting: bool,
     scale: f32,
 ) -> Option<WorkQueueAction> {
     use province_panel::{INK, RULE};
@@ -484,7 +508,7 @@ pub(in crate::app) fn work_queue(
                 label_font.clone(),
                 label_ink,
             );
-            // Scroll areas round their origin to pixels; keep both icon rows on that grid.
+            // Keep both icon rows aligned to the same pixel grid.
             let pixels_per_point = ui.ctx().pixels_per_point();
             let next_x = ui.next_widget_position().x;
             ui.add_space((next_x * pixels_per_point).ceil() / pixels_per_point - next_x);
@@ -568,39 +592,40 @@ pub(in crate::app) fn work_queue(
             ui.add_space(6.0 * scale);
             ui.horizontal(|ui| {
                 label(ui, "Queue");
-                egui::ScrollArea::horizontal()
-                    .id_salt("waiting")
-                    .max_width(ui.available_width())
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for (index, art, tooltip) in queued {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::Vec2::splat(icon_size),
-                                    if can_cancel {
-                                        egui::Sense::click()
-                                    } else {
-                                        egui::Sense::hover()
-                                    },
-                                );
-                                paint_icon(ui, *art, rect);
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
-                                        can_cancel,
-                                        tooltip,
-                                    )
-                                });
-                                if can_cancel && response.secondary_clicked() {
-                                    action = Some(WorkQueueAction::CancelQueued(*index));
-                                }
-                                response.on_hover_text(if can_cancel {
-                                    format!("{tooltip}\nRight-click to remove and refund its cost.")
-                                } else {
-                                    tooltip.clone()
-                                });
-                            }
+                let draw_waiting = |ui: &mut egui::Ui, action: &mut Option<WorkQueueAction>| {
+                    for (index, art, tooltip) in queued {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::Vec2::splat(icon_size),
+                            if can_cancel {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            },
+                        );
+                        paint_icon(ui, *art, rect);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_cancel, tooltip)
                         });
-                    });
+                        if can_cancel && response.secondary_clicked() {
+                            *action = Some(WorkQueueAction::CancelQueued(*index));
+                        }
+                        response.on_hover_text(if can_cancel {
+                            format!("{tooltip}\nRight-click to remove and refund its cost.")
+                        } else {
+                            tooltip.clone()
+                        });
+                    }
+                };
+                if wrap_waiting {
+                    ui.horizontal_wrapped(|ui| draw_waiting(ui, &mut action));
+                } else {
+                    egui::ScrollArea::horizontal()
+                        .id_salt("waiting")
+                        .max_width(ui.available_width())
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| draw_waiting(ui, &mut action));
+                        });
+                }
             });
         }
     });
@@ -609,12 +634,8 @@ pub(in crate::app) fn work_queue(
 
 /// Paint within an already allocated badge or ledger cell without advancing layout.
 pub(in crate::app) fn paint_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
-    if matches!(kind, Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate) {
+    if matches!(kind, Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee) {
         paint_diplomacy_symbol(ui, kind, rect);
-        return;
-    }
-    if matches!(kind, Icon::MilitaryRank(_)) {
-        paint_military_symbol(ui, kind, rect);
         return;
     }
     paint_raster_icon(ui, kind, rect, egui::Color32::WHITE);
@@ -629,7 +650,10 @@ pub(super) fn paint_raster_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect, tin
 pub(super) fn icon_uv(kind: Icon) -> egui::Rect {
     if matches!(kind, Icon::Unit(unit) if !matches!(unit, UnitType::Catapult | UnitType::WarChariots))
     {
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(0.25, 0.25))
+        // Stay one atlas texel inside the cell so linear filtering cannot
+        // sample the next animation frame along the bottom or right edge.
+        let edge = 0.25 - 1.0 / 768.0;
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(edge, edge))
     } else {
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
     }
@@ -673,6 +697,18 @@ fn paint_diplomacy_symbol(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
             }
             painter.line_segment([at(0.1, 0.86), at(0.9, 0.86)], stroke);
         },
+        Icon::SpyFlee => {
+            // A dark exit door and heavy outward arrow remain legible at button size.
+            let bold = egui::Stroke::new((rect.width() * 0.11).max(1.5), ink);
+            painter.line_segment([at(0.12, 0.13), at(0.12, 0.87)], bold);
+            painter.line_segment([at(0.12, 0.13), at(0.55, 0.13)], bold);
+            painter.line_segment([at(0.12, 0.87), at(0.55, 0.87)], bold);
+            painter.line_segment([at(0.55, 0.13), at(0.55, 0.31)], bold);
+            painter.line_segment([at(0.55, 0.69), at(0.55, 0.87)], bold);
+            painter.line_segment([at(0.28, 0.5), at(0.88, 0.5)], bold);
+            painter.line_segment([at(0.88, 0.5), at(0.69, 0.32)], bold);
+            painter.line_segment([at(0.88, 0.5), at(0.69, 0.68)], bold);
+        },
         _ => unreachable!(),
     }
 }
@@ -702,14 +738,18 @@ pub(in crate::app) enum ProvinceLandscape {
     Army,
     Diplomacy,
     Trade,
+    Policies,
+    RomeSenate,
+    RomeEvents,
+    RomeProvinces,
+    RomeSpies,
 }
 
-/// Draw cached landscape artwork with the same cropped framing across province tabs.
-pub(in crate::app) fn portrait(
-    ui: &mut egui::Ui,
+/// Prepare a portrait independently of painting it, so map panels can warm their art.
+pub(in crate::app) fn prepare_portrait(
+    ctx: &egui::Context,
     landscape: ProvinceLandscape,
-    height: f32,
-) -> egui::Rect {
+) -> egui::TextureHandle {
     use crate::game::economy::Terrain;
     let (name, bytes): (&str, &[u8]) = match landscape {
         ProvinceLandscape::City => {
@@ -729,6 +769,23 @@ pub(in crate::app) fn portrait(
         },
         ProvinceLandscape::Trade => {
             ("trade", include_bytes!("../../assets/images/cities/trade-panel-banner.png"))
+        },
+        ProvinceLandscape::Policies => {
+            ("policies", include_bytes!(concat!(env!("OUT_DIR"), "/panel-banners/policies.png")))
+        },
+        ProvinceLandscape::RomeSenate => (
+            "rome-senate",
+            include_bytes!("../../assets/images/cities/rome-senate-panel-banner.png"),
+        ),
+        ProvinceLandscape::RomeEvents => {
+            ("rome-events", include_bytes!("../../assets/images/events/events-banner.png"))
+        },
+        ProvinceLandscape::RomeProvinces => (
+            "rome-provinces",
+            include_bytes!("../../assets/images/cities/rome-provinces-panel-banner.png"),
+        ),
+        ProvinceLandscape::RomeSpies => {
+            ("rome-spies", include_bytes!("../../assets/images/cities/rome-spies-panel-banner.png"))
         },
         ProvinceLandscape::Terrain(terrain) => match terrain {
             Terrain::Desert => {
@@ -755,24 +812,56 @@ pub(in crate::app) fn portrait(
         },
     };
     let key = egui::Id::new(("campaign-landscape", name));
-    let image = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
-        let handle = province_panel::load_image(ui.ctx(), (name, bytes), "campaign-portrait");
-        ui.ctx().data_mut(|d| d.insert_temp(key, handle.clone()));
+    ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)).unwrap_or_else(|| {
+        let handle = if matches!(landscape, ProvinceLandscape::RomeEvents) {
+            let image = image::load_from_memory(bytes)
+                .expect("valid events banner")
+                .resize(800, 800, image::imageops::FilterType::Lanczos3)
+                .to_rgba8();
+            ctx.load_texture(
+                format!("campaign-portrait-{name}"),
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width() as usize, image.height() as usize],
+                    image.as_raw(),
+                ),
+                egui::TextureOptions::LINEAR,
+            )
+        } else {
+            province_panel::load_image(ctx, (name, bytes), "campaign-portrait")
+        };
+        ctx.data_mut(|d| d.insert_temp(key, handle.clone()));
         handle
-    });
+    })
+}
+
+/// Draw cached landscape artwork, keeping the Rome figures inside its shallow banner crop.
+pub(in crate::app) fn portrait(
+    ui: &mut egui::Ui,
+    landscape: ProvinceLandscape,
+    height: f32,
+) -> egui::Rect {
+    let image = prepare_portrait(ui.ctx(), landscape);
     let rect =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover()).0;
     let aspect = image.size()[0] as f32 / image.size()[1] as f32;
     let target = rect.width() / rect.height();
-    let (x, y) = if aspect > target {
-        ((1.0 - target / aspect) * 0.5, 0.0)
+    let vertical_anchor = match landscape {
+        ProvinceLandscape::RomeProvinces => 0.35,
+        ProvinceLandscape::RomeSpies => 0.32,
+        ProvinceLandscape::RomeSenate => 0.69,
+        _ => 0.5,
+    };
+    let (x, y_min, y_max) = if aspect > target {
+        ((1.0 - target / aspect) * 0.5, 0.0, 1.0)
     } else {
-        (0.0, (1.0 - aspect / target) * 0.5)
+        let cropped = 1.0 - aspect / target;
+        let y_min = cropped * vertical_anchor;
+        (0.0, y_min, y_min + aspect / target)
     };
     ui.painter().image(
         image.id(),
         rect,
-        egui::Rect::from_min_max(egui::pos2(x, y), egui::pos2(1.0 - x, 1.0 - y)),
+        egui::Rect::from_min_max(egui::pos2(x, y_min), egui::pos2(1.0 - x, y_max)),
         egui::Color32::WHITE,
     );
     ui.painter().rect_stroke(
@@ -875,65 +964,4 @@ pub(in crate::app) fn map_style(scale: f32) -> egui::Style {
     style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(226, 210, 180);
     style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(195, 145, 87);
     style
-}
-
-/// Crisp transparent heraldic symbols for ranks.
-fn paint_military_symbol(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
-    let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
-    let size = rect.width().min(rect.height());
-    let origin = rect.center() - egui::vec2(size, size) * 0.5;
-    let point = |x: f32, y: f32| origin + egui::vec2(x, y) * size;
-    let gold = egui::Color32::from_rgb(164, 116, 43);
-    let ink = egui::Color32::from_rgb(75, 57, 40);
-    let red = egui::Color32::from_rgb(146, 45, 35);
-    let stroke = egui::Stroke::new((size * 0.045).max(1.), ink);
-    let line = |a: (f32, f32), b: (f32, f32)| {
-        painter.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
-    };
-    let polygon = |coords: &[(f32, f32)], fill| {
-        painter.add(egui::Shape::convex_polygon(
-            coords.iter().map(|&(x, y)| point(x, y)).collect(),
-            fill,
-            stroke,
-        ));
-    };
-    if let Icon::MilitaryRank(rank) = kind {
-        let level = rank as usize;
-        // Shield and spear, with promotion bars, laurel and imperial wings.
-        polygon(&[(0.26, 0.22), (0.74, 0.22), (0.7, 0.7), (0.5, 0.88), (0.3, 0.7)], red);
-        line((0.5, 0.77), (0.5, 0.12));
-        polygon(&[(0.43, 0.14), (0.5, 0.03), (0.57, 0.14)], gold);
-        for bar in 0..=level {
-            let y = 0.34 + bar as f32 * 0.11;
-            painter.line_segment(
-                [point(0.36, y), point(0.64, y)],
-                egui::Stroke::new(size * 0.055, gold),
-            );
-        }
-        if level >= 2 {
-            for side in [-1., 1.] {
-                for leaf in 0..5 {
-                    let y = 0.36 + leaf as f32 * 0.09;
-                    painter.circle_filled(
-                        point(0.5 + side * (0.34 - (leaf as f32 - 2.).abs() * 0.015), y),
-                        size * 0.045,
-                        gold,
-                    );
-                }
-            }
-        }
-        if level == 3 {
-            for side in [-1., 1.] {
-                polygon(
-                    &[
-                        (0.5 + side * 0.12, 0.25),
-                        (0.5 + side * 0.46, 0.08),
-                        (0.5 + side * 0.39, 0.28),
-                        (0.5 + side * 0.18, 0.39),
-                    ],
-                    gold,
-                );
-            }
-        }
-    }
 }

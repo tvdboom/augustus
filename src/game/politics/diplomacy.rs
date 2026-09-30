@@ -14,8 +14,10 @@ pub struct DiplomacyConfig {
     pub monthly_coin: f64,
     /// Recurring Influence cost for one point of monthly support.
     pub monthly_influence: f64,
-    /// Maximum occupation or garrison control gain per month.
+    /// Maximum hostile occupation control gain per month.
     pub garrison_cap: f64,
+    /// Maximum peaceful foreign stationing control gain per month.
+    pub invited_garrison_cap: f64,
     /// Effective military strength at half of the control cap.
     pub garrison_half_saturation: f64,
     /// Passive Influence generated per point of Vassal Control.
@@ -46,7 +48,8 @@ impl Default for DiplomacyConfig {
             influence_per_point: 2.0,
             monthly_coin: 10.0,
             monthly_influence: 2.0,
-            garrison_cap: 4.0,
+            garrison_cap: 5.0,
+            invited_garrison_cap: 1.0,
             garrison_half_saturation: 20.0,
             vassal_influence_per_control: 0.05,
             trade_control_ceiling: 40.0,
@@ -82,7 +85,7 @@ pub enum PoliticalState {
         /// Coin tribute policy.
         tribute: Tribute,
     },
-    /// Domestic provinces cannot be acquired through foreign control spending.
+    /// Direct ownership remains legal while rival players contest political control.
     Owned {
         /// Direct owner.
         owner: PlayerId,
@@ -172,6 +175,8 @@ pub struct ProvincePolitics {
     pub state: PoliticalState,
     /// Sentiment toward each player; retained across state transitions.
     pub relations: Vec<f64>,
+    /// Control distribution in a directly owned province; the owner starts at 100.
+    pub owned_shares: Vec<f64>,
     /// Independently configured recurring diplomatic programs per player.
     pub support: Vec<MonthlySupport>,
     /// Most recent vassal-control explanation.
@@ -197,6 +202,7 @@ impl ProvincePolitics {
                 shares: vec![0.0; players],
             },
             relations: vec![50.0; players],
+            owned_shares: vec![0.0; players],
             support: vec![MonthlySupport::default(); players],
             last_control_change: ControlBreakdown::default(),
             pending_gains: vec![0.0; players],
@@ -212,6 +218,9 @@ impl ProvincePolitics {
         province.state = PoliticalState::Owned {
             owner,
         };
+        if let Some(share) = province.owned_shares.get_mut(owner) {
+            *share = 100.0;
+        }
         province
     }
 
@@ -246,6 +255,19 @@ impl ProvincePolitics {
     /// Political power held by a player in an NPC independent or vassal province.
     pub fn control(&self, player: PlayerId) -> f64 {
         match self.state {
+            PoliticalState::Owned {
+                owner,
+            } => {
+                if self.owned_shares.iter().all(|share| *share == 0.0) {
+                    if owner == player {
+                        100.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    self.owned_shares.get(player).copied().unwrap_or(0.0)
+                }
+            },
             PoliticalState::Vassal {
                 overlord,
                 control,
@@ -291,7 +313,8 @@ impl ProvincePolitics {
         distance: Option<usize>,
         config: &DiplomacyConfig,
     ) -> Result<(), PoliticalError> {
-        if matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome)
+        if matches!(self.state, PoliticalState::Owned { owner } if owner == player)
+            || self.state == PoliticalState::Rome
             || player >= self.relations.len()
         {
             return Err(PoliticalError::Ineligible);
@@ -317,20 +340,32 @@ impl ProvincePolitics {
         config: &DiplomacyConfig,
     ) -> Result<(), PoliticalError> {
         valid_amount(amount)?;
-        let PoliticalState::Independent {
-            shares,
-            local,
-        } = &self.state
-        else {
-            return Err(PoliticalError::Ineligible);
+        let (current, local, largest_rival) = match &self.state {
+            PoliticalState::Independent {
+                shares,
+                local,
+            } => (
+                *shares.get(player).ok_or(PoliticalError::MissingTarget)?,
+                *local,
+                shares
+                    .iter()
+                    .enumerate()
+                    .filter(|(id, _)| *id != player)
+                    .map(|(_, share)| *share)
+                    .fold(0.0, f64::max),
+            ),
+            PoliticalState::Owned {
+                owner,
+            } if *owner != player => (
+                self.control(player),
+                0.0,
+                (0..self.relations.len())
+                    .filter(|id| *id != player)
+                    .map(|id| self.control(id))
+                    .fold(0.0, f64::max),
+            ),
+            _ => return Err(PoliticalError::Ineligible),
         };
-        let current = *shares.get(player).ok_or(PoliticalError::MissingTarget)?;
-        let largest_rival = shares
-            .iter()
-            .enumerate()
-            .filter(|(id, _)| *id != player)
-            .map(|(_, share)| *share)
-            .fold(0.0, f64::max);
         let rival_fraction = if amount > 0.0 {
             ((amount - local).max(0.0) / amount).min(1.0)
         } else {
@@ -362,10 +397,46 @@ impl ProvincePolitics {
         amount: f64,
     ) -> Result<(), PoliticalError> {
         valid_amount(amount)?;
-        if !matches!(self.state, PoliticalState::Independent { .. }) {
+        if !matches!(self.state, PoliticalState::Independent { .. } | PoliticalState::Owned { .. })
+        {
+            return Err(PoliticalError::Ineligible);
+        }
+        if matches!(self.state, PoliticalState::Owned { owner } if owner == player) {
             return Err(PoliticalError::Ineligible);
         }
         *self.pending_gains.get_mut(player).ok_or(PoliticalError::MissingTarget)? += amount;
+        Ok(())
+    }
+
+    /// Apply a one-time political gain now using the same bounded share transfer as monthly pressure.
+    pub fn gain_control_now(
+        &mut self,
+        player: PlayerId,
+        amount: f64,
+    ) -> Result<(), PoliticalError> {
+        valid_amount(amount)?;
+        if player >= self.relations.len() {
+            return Err(PoliticalError::MissingTarget);
+        }
+        let mut gains = vec![0.0; self.relations.len()];
+        let reductions = vec![0.0; self.relations.len()];
+        gains[player] = amount;
+        match &mut self.state {
+            PoliticalState::Independent {
+                local,
+                shares,
+            } => {
+                resolve_control(local, shares, &gains, &reductions);
+            },
+            PoliticalState::Owned {
+                owner,
+            } if *owner != player => {
+                let mut local = 0.0;
+                resolve_control(&mut local, &mut self.owned_shares, &gains, &reductions);
+                self.owned_shares[*owner] += local;
+            },
+            _ => return Err(PoliticalError::Ineligible),
+        }
         Ok(())
     }
 
@@ -383,10 +454,13 @@ impl ProvincePolitics {
         control_gain: f64,
         config: &DiplomacyConfig,
     ) {
-        if matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome) {
+        if self.state == PoliticalState::Rome {
             return;
         }
         self.change_relation(player, relation_gain.max(0.0));
+        if matches!(self.state, PoliticalState::Owned { .. }) {
+            return;
+        }
         if player >= self.trade_this_month.len() || !control_gain.is_finite() {
             return;
         }
@@ -513,12 +587,15 @@ impl ProvincePolitics {
 
     /// Elective vassalization consumes the first fifty control and discards rival shares.
     pub fn vassalize(&mut self, player: PlayerId) -> Result<(), PoliticalError> {
-        let PoliticalState::Independent {
-            shares,
-            ..
-        } = &self.state
-        else {
-            return Err(PoliticalError::Ineligible);
+        let shares = match &self.state {
+            PoliticalState::Independent {
+                shares,
+                ..
+            } => shares,
+            PoliticalState::Owned {
+                owner,
+            } if *owner != player => &self.owned_shares,
+            _ => return Err(PoliticalError::Ineligible),
         };
         let control = *shares.get(player).ok_or(PoliticalError::MissingTarget)?;
         if control <= 50.0
@@ -542,6 +619,11 @@ impl ProvincePolitics {
                 shares,
                 ..
             } => shares.get(player).is_some_and(|v| *v >= 100.0 - 1e-7),
+            PoliticalState::Owned {
+                owner,
+            } if *owner != player => {
+                self.owned_shares.get(player).is_some_and(|v| *v >= 100.0 - 1e-7)
+            },
             PoliticalState::Vassal {
                 overlord,
                 control,
@@ -556,6 +638,8 @@ impl ProvincePolitics {
         self.state = PoliticalState::Owned {
             owner: player,
         };
+        self.owned_shares.fill(0.0);
+        self.owned_shares[player] = 100.0;
         self.support.fill(MonthlySupport::default());
         self.clear_pending();
         Ok(shift)
@@ -572,6 +656,8 @@ impl ProvincePolitics {
         self.state = PoliticalState::Owned {
             owner: victor,
         };
+        self.owned_shares.fill(0.0);
+        self.owned_shares[victor] = 100.0;
         self.support.fill(MonthlySupport::default());
         self.clear_pending();
         Ok(())
@@ -631,8 +717,11 @@ impl ProvincePolitics {
         config: &DiplomacyConfig,
     ) -> f64 {
         let mut control_support = 0.0;
-        if !matches!(self.state, PoliticalState::Owned { .. } | PoliticalState::Rome) {
+        if self.state != PoliticalState::Rome {
             for player in 0..players.len().min(self.support.len()) {
+                if matches!(self.state, PoliticalState::Owned { owner } if owner == player) {
+                    continue;
+                }
                 let Ok(distance) = distance_multiplier(distances.get(player).copied().flatten())
                 else {
                     continue;
@@ -683,11 +772,21 @@ impl ProvincePolitics {
             PoliticalState::Independent {
                 ..
             } => {
-                if let Some(occupier) = occupation {
-                    let power = stationed_power.get(occupier).copied().unwrap_or(0.0);
-                    if power > 0.0 {
-                        let _ = self.queue_control_gain(occupier, garrison_bonus(power, config));
-                        self.change_relation(occupier, -config.occupation_relation_loss);
+                for player in 0..self.relations.len() {
+                    let power = stationed_power.get(player).copied().unwrap_or(0.0);
+                    if power <= 0.0 {
+                        continue;
+                    }
+                    let hostile = occupation == Some(player);
+                    let cap = if hostile {
+                        config.garrison_cap
+                    } else {
+                        config.invited_garrison_cap
+                    };
+                    let gain = garrison_bonus_with_cap(power, cap, config.garrison_half_saturation);
+                    let _ = self.queue_control_gain(player, gain);
+                    if hostile {
+                        self.change_relation(player, -config.occupation_relation_loss);
                     }
                 }
                 if let PoliticalState::Independent {
@@ -725,9 +824,42 @@ impl ProvincePolitics {
                 self.release_if_unstable();
             },
             PoliticalState::Owned {
-                ..
-            }
-            | PoliticalState::Rome => {},
+                owner,
+            } => {
+                if self.owned_shares.iter().all(|share| *share == 0.0) {
+                    self.owned_shares[owner] = 100.0;
+                }
+                for player in 0..self.relations.len() {
+                    if player == owner {
+                        continue;
+                    }
+                    let power = stationed_power.get(player).copied().unwrap_or(0.0);
+                    if power <= 0.0 {
+                        continue;
+                    }
+                    let hostile = occupation == Some(player);
+                    let cap = if hostile {
+                        config.garrison_cap
+                    } else {
+                        config.invited_garrison_cap
+                    };
+                    let gain = garrison_bonus_with_cap(power, cap, config.garrison_half_saturation);
+                    let _ = self.queue_control_gain(player, gain);
+                    if hostile {
+                        self.change_relation(player, -config.occupation_relation_loss);
+                    }
+                }
+                let mut local = 0.0;
+                resolve_control(
+                    &mut local,
+                    &mut self.owned_shares,
+                    &self.pending_gains,
+                    &self.pending_reductions,
+                );
+                // Direct ownership has no local-government share.
+                self.owned_shares[owner] += local;
+            },
+            PoliticalState::Rome => {},
         }
         self.clear_pending();
         self.used_interference.clear();
@@ -797,7 +929,7 @@ fn valid_amount(amount: f64) -> Result<(), PoliticalError> {
     }
 }
 
-/// Political distance tiers; a home province uses the same cost as an adjacent one.
+/// Political distance tiers; zero steps cost the same as one adjacent step.
 pub fn distance_multiplier(steps: Option<usize>) -> Result<f64, PoliticalError> {
     match steps {
         Some(0..=1) => Ok(1.0),
@@ -806,8 +938,9 @@ pub fn distance_multiplier(steps: Option<usize>) -> Result<f64, PoliticalError> 
         Some(6..=7) => Ok(1.75),
         Some(8..=9) => Ok(2.0),
         Some(10..=11) => Ok(2.25),
-        Some(_) => Ok(2.5),
-        None => Err(PoliticalError::NoConnection),
+        Some(12..=13) => Ok(2.5),
+        Some(14..=15) => Ok(2.75),
+        Some(_) | None => Ok(3.0),
     }
 }
 
@@ -839,21 +972,21 @@ pub fn relation_resistance(relation: f64) -> f64 {
 
 /// Strength, not unit count, supplies smoothly capped coercive political power.
 pub fn garrison_bonus(power: f64, config: &DiplomacyConfig) -> f64 {
+    garrison_bonus_with_cap(power, config.garrison_cap, config.garrison_half_saturation)
+}
+
+/// Shared saturation curve for peaceful and hostile stationed troops.
+pub fn garrison_bonus_with_cap(power: f64, cap: f64, half_saturation: f64) -> f64 {
     let power = power.max(0.0);
     if power == 0.0 {
         0.0
     } else {
-        config.garrison_cap * power / (power + config.garrison_half_saturation.max(0.001))
+        cap * power / (power + half_saturation.max(0.001))
     }
 }
 
-/// Shortest usable route from any owned/vassal source, including explicit sea edges.
-pub fn political_distance(
-    graph: &[Vec<usize>],
-    sources: &[usize],
-    target: usize,
-    traversable: impl Fn(usize) -> bool,
-) -> Option<usize> {
+/// Shortest province-graph distance from any owned/vassal source, including sea edges.
+pub fn political_distance(graph: &[Vec<usize>], sources: &[usize], target: usize) -> Option<usize> {
     if target >= graph.len() {
         return None;
     }
@@ -870,10 +1003,7 @@ pub fn political_distance(
             return Some(distance[node]);
         }
         for &next in &graph[node] {
-            if next < graph.len()
-                && distance[next] == usize::MAX
-                && (next == target || traversable(next))
-            {
+            if next < graph.len() && distance[next] == usize::MAX {
                 distance[next] = distance[node] + 1;
                 queue.push_back(next);
             }

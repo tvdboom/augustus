@@ -43,7 +43,7 @@ fn render(
 }
 
 #[test]
-fn cursor_returns_to_default_after_leaving_foreground_actions() {
+fn cursor_only_points_on_explicit_foreground_actions() {
     for cursor in [None, Some(egui::CursorIcon::PointingHand)] {
         let ctx = egui::Context::default();
         configure_cursor(&ctx);

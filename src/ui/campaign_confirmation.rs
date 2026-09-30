@@ -315,8 +315,9 @@ pub(in crate::app) fn draw(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    terminal: Res<TerminalPresentation>,
 ) {
-    if *state.get() != AppState::Map || !campaign.active {
+    if terminal.spectating || *state.get() != AppState::Map || !campaign.active {
         view.dismiss_confirmation();
         return;
     }
@@ -327,6 +328,14 @@ pub(in crate::app) fn draw(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    if view.confirmation.as_ref().is_some_and(|pending| pending.still_applicable(&campaign))
+        && view.take_confirmation_sound()
+        && sound.mode != AudioMode::Mute
+        && sound.volume > 0.001
+    {
+        let decibels = 20.0 * sound.volume.clamp(0.001, 1.0).log10();
+        audio.play(assets.load("audio/message.ogg")).with_volume(decibels);
+    }
     if show(ctx, &mut view, &mut campaign) {
         play_click(&sound, &audio, &assets);
     }
@@ -460,6 +469,7 @@ pub(super) fn show(
                     });
                 });
         });
+    ctx.move_to_top(modal.response.layer_id);
     let dismiss = no
         || modal.should_close()
         || modal.backdrop_response.secondary_clicked()

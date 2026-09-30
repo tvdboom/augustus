@@ -332,6 +332,34 @@ pub struct SenateState {
     used_actions: Vec<(PlayerId, Bloc, bool)>,
 }
 impl SenateState {
+    /// A public invasion without casus belli damages faction support immediately.
+    pub fn record_unjustified_attack(&mut self, player: PlayerId, config: &SenateConfig) {
+        use super::espionage::{ScandalKind, Severity};
+        self.accusations.push(Accusation {
+            target: player,
+            penalties: ScandalKind::FriendlyAttack
+                .bloc_penalties(Severity::Major)
+                .map(|value| value * 100.0),
+            until: self.month.saturating_add(config.scandal_months),
+        });
+    }
+
+    /// Breaking a trade route immediately damages Merchant support for six months.
+    pub fn record_trade_breach(&mut self, player: PlayerId) {
+        self.accusations.push(Accusation {
+            target: player,
+            penalties: [0.0, 8.0, 0.0, 0.0, 0.0],
+            until: self.month.saturating_add(6),
+        });
+        if let Some(senator) = self
+            .senators
+            .iter_mut()
+            .find(|senator| senator.bloc == Bloc::Merchants && senator.allegiance == Some(player))
+        {
+            senator.allegiance = None;
+        }
+    }
+
     /// Initialize a default chamber with neutral loyalties and seeded preferences.
     pub fn new(seed: u64) -> Self {
         Self::with_config(seed, &SenateConfig::default())
@@ -734,7 +762,10 @@ fn structural_reasons(
     let p = profile;
     let rows: Vec<(&'static str, f64)> = match bloc {
         Bloc::Aristocrats => vec![
-            ("Noble population (diminishing)", 8.0 * diminishing(p.nobles.sqrt(), 8.0)),
+            (
+                "Noble population (diminishing)",
+                8.0 * diminishing((p.nobles / crate::map::POPULATION_SCALE).sqrt(), 8.0),
+            ),
             ("Noble happiness", (p.noble_happiness - 50.0) * 0.16),
             ("Political office", actor.rank.ladder_index() as f64 * 1.5),
             ("Influence prestige", 4.0 * diminishing(actor.influence, 200.0)),

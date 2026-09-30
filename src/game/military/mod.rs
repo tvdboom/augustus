@@ -2,7 +2,7 @@
 //!
 //! The domain has no Bevy dependency and no persistent army objects. Civilian
 //! population and resource stocks are supplied by the economy at the boundary.
-//! All casualties are permanent; neither supply nor training restores manpower.
+//! Cohorts recover manpower and morale monthly outside battle.
 
 mod combat;
 mod config;
@@ -163,9 +163,9 @@ pub struct Unit {
     pub current_manpower: f64,
     /// Original recruited people in economy population units.
     pub max_manpower: f64,
-    /// Experience in 0..100, shared by this owner's cohorts of the same type in the army.
+    /// This cohort's experience in 0..100.
     pub training: f64,
-    /// Army-wide morale in 0..100, mirrored on cohorts for combat calculations.
+    /// This cohort's morale in 0..100.
     pub morale: f64,
 }
 
@@ -196,36 +196,58 @@ impl Unit {
     }
     /// Strength used by garrisons and occupation, independent of combat targeting.
     pub fn effective_strength(&self, config: &MilitaryConfig) -> f64 {
-        self.current_manpower.max(0.0)
+        let strength = self.current_manpower.max(0.0)
             * config.unit(self.unit_type).political_strength
             * (1.0 + config.training_attack * self.training.clamp(0.0, 100.0) / 100.0)
             * (config.strength_morale_base
-                + config.strength_morale_scale * self.morale.clamp(0.0, 100.0) / 100.0)
+                + config.strength_morale_scale * self.morale.clamp(0.0, 100.0) / 100.0);
+        if strength > 0.0 {
+            strength
+        } else {
+            0.0
+        }
     }
 }
 
-/// Keep cohort identities/manpower while sharing army morale and type-specific training.
-/// Merging uses surviving manpower, so equal-sized types trained at 10 and 20 become 15.
-pub fn consolidate_army_condition(units: &mut [Unit]) {
-    let mut morale = BTreeMap::<ForceOwner, (f64, f64)>::new();
-    let mut training = BTreeMap::<(ForceOwner, UnitType), (f64, f64)>::new();
-    for unit in units.iter().filter(|unit| unit.current_manpower > 0.) {
-        let weight = unit.current_manpower;
-        let army = morale.entry(unit.owner).or_default();
-        army.0 += unit.morale.clamp(0., 100.) * weight;
-        army.1 += weight;
-        let kind = training.entry((unit.owner, unit.unit_type)).or_default();
-        kind.0 += unit.training.clamp(0., 100.) * weight;
-        kind.1 += weight;
+/// Combine understrength cohorts of the same type, preserving whole people and
+/// manpower-weighted morale and training. Kept IDs belong to the oldest cohorts.
+pub fn merge_understrength_cohorts(units: &mut Vec<Unit>) -> usize {
+    let before = units.len();
+    let mut grouped = BTreeMap::<(ForceOwner, UnitType), Vec<Unit>>::new();
+    for unit in std::mem::take(units) {
+        grouped.entry((unit.owner, unit.unit_type)).or_default().push(unit);
     }
-    for unit in units {
-        if let Some(&(sum, weight)) = morale.get(&unit.owner) {
-            unit.morale = sum / weight;
+    for (_, mut group) in grouped {
+        group.sort_by_key(|unit| unit.id);
+        let mut donor = group.len();
+        for receiver in 0..group.len() {
+            while group[receiver].people() < 1_000 && donor > receiver + 1 {
+                donor -= 1;
+                let available = group[donor].people();
+                let moved = available.min(1_000 - group[receiver].people());
+                if moved == 0 {
+                    continue;
+                }
+                let (left, right) = group.split_at_mut(donor);
+                let receiving = &mut left[receiver];
+                let giving = &mut right[0];
+                let existing = receiving.people() as f64;
+                let combined = existing + moved as f64;
+                receiving.morale =
+                    (receiving.morale * existing + giving.morale * moved as f64) / combined;
+                receiving.training =
+                    (receiving.training * existing + giving.training * moved as f64) / combined;
+                receiving.current_manpower = combined / PEOPLE_PER_POPULATION;
+                giving.current_manpower = (available - moved) as f64 / PEOPLE_PER_POPULATION;
+                if giving.people() > 0 {
+                    donor += 1;
+                }
+            }
         }
-        if let Some(&(sum, weight)) = training.get(&(unit.owner, unit.unit_type)) {
-            unit.training = sum / weight;
-        }
+        units.extend(group.into_iter().filter(|unit| unit.people() > 0));
     }
+    units.sort_by_key(|unit| unit.id);
+    before - units.len()
 }
 
 /// Political rank never appears in this independent military ladder.
@@ -235,7 +257,7 @@ pub enum MilitaryRank {
     /// Initial military rank.
     #[default]
     Centurion,
-    /// First renown promotion.
+    /// First earned promotion.
     MilitaryTribune,
     /// Experienced commander.
     Legate,
@@ -246,7 +268,23 @@ pub enum MilitaryRank {
 impl MilitaryRank {
     /// Display label.
     pub fn name(self) -> &'static str {
-        ["Centurion", "Military Tribune", "Legate", "Imperator"][self as usize]
+        ["Centurion", "Tribune", "Legate", "Imperator"][self as usize]
+    }
+    /// Conditions for a paid promotion from the preceding rank.
+    pub fn promotion_requirements(self) -> Option<MilitaryPromotionRequirements> {
+        let (peak_manpower, victories, influence) = match self {
+            Self::Centurion => return None,
+            Self::MilitaryTribune => (200.0, 2, 100.0),
+            Self::Legate => (400.0, 4, 200.0),
+            Self::Imperator => (600.0, 6, 300.0),
+        };
+        Some(MilitaryPromotionRequirements {
+            previous: [Self::Centurion, Self::Centurion, Self::MilitaryTribune, Self::Legate]
+                [self as usize],
+            peak_manpower,
+            victories,
+            influence,
+        })
     }
     /// Automatic promotion based on configured renown thresholds.
     pub fn from_renown(renown: f64, config: &MilitaryConfig) -> Self {
@@ -257,6 +295,19 @@ impl MilitaryRank {
             .find(|rank| renown >= config.rank_thresholds[*rank as usize])
             .unwrap_or_default()
     }
+}
+
+/// Historic army size and victories stay earned after losses; Influence is spent on promotion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MilitaryPromotionRequirements {
+    /// Rank that must already be held.
+    pub previous: MilitaryRank,
+    /// Highest combined army manpower ever fielded.
+    pub peak_manpower: f64,
+    /// Cumulative battle victories.
+    pub victories: u32,
+    /// Influence paid on promotion.
+    pub influence: f64,
 }
 
 /// A single province's forces and saved owner-specific plans.
@@ -279,13 +330,12 @@ pub struct ProvinceMilitaryState {
 }
 
 impl ProvinceMilitaryState {
-    /// Maximum recruitment orders per province, including the active project.
-    pub const MAX_RECRUITMENT_ORDERS: usize = 50;
+    /// Maximum waiting recruitment orders per province, beside one active project.
+    pub const MAX_RECRUITMENT_QUEUE: usize = 13;
 
-    /// Whether the active project and waiting orders fill all recruitment slots.
+    /// Whether all waiting recruitment slots are filled.
     pub fn recruitment_queue_full(&self) -> bool {
-        self.recruitment_queue.len() + usize::from(self.recruitment.is_some())
-            >= Self::MAX_RECRUITMENT_ORDERS
+        self.recruitment_queue.len() >= Self::MAX_RECRUITMENT_QUEUE
     }
 }
 

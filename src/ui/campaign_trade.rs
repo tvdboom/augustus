@@ -343,18 +343,16 @@ fn routes(
             let outgoing = if trade.party_a == TradeParty::Player(player) { trade.a_gives } else { trade.b_gives };
             let incoming = if trade.party_a == TradeParty::Player(player) { trade.b_gives } else { trade.a_gives };
             let partner = if trade.party_a == TradeParty::Player(player) { trade.party_b } else { trade.party_a };
-            let npc = matches!(partner, TradeParty::Npc(_));
             frame(ui, scale, |ui| {
                 ui.horizontal(|ui| {
                     icon(ui, Icon::Trade, 25.0 * scale);
                     let label_width = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
                     ui.add_sized([label_width, 30.0 * scale], egui::Label::new(egui::RichText::new(party_name(&campaign.economy, partner)).strong()).truncate());
-                    let tip = if npc { format!("Cancel immediately. Relation with this province falls by {:.0}; delivered goods are retained.", campaign.economy.config.trade.cancellation_relation_penalty) } else { "Cancel immediately. No relation, Control, or other game penalties; delivered goods are retained.".into() };
+                    let tip = format!("Stop now. Relation with this partner −{:.0}, Influence −up to {:.0}, and Merchant Senate support falls for six months.", campaign.economy.config.trade.cancellation_relation_penalty, campaign.economy.config.trade.cancellation_influence_penalty);
                     if action(ui, Icon::Cancel, "Cancel immediately", &tip, true, scale) { result = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|e| e)); }
                     let tip = if let Some(due) = trade.cancellation_month { format!("Notice already given. This route ends after {} more months without a relation penalty.", due.saturating_sub(campaign.economy.month)) }
-                        else if npc { "Give six months' notice. Trading continues during notice, then ends without a relation penalty.".into() }
-                        else { "Player agreements can end immediately without any game penalty; notice is unnecessary.".into() };
-                    if action(ui, Icon::Notice, "Give six months notice", &tip, npc && trade.cancellation_month.is_none(), scale) { result = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|e| e)); }
+                        else { "Give six months' notice. Trading continues during notice, then ends without penalties.".into() };
+                    if action(ui, Icon::Notice, "Give six months notice", &tip, trade.cancellation_month.is_none(), scale) { result = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|e| e)); }
                 });
                 let status = if let Some(due) = trade.cancellation_month { format!("#{} · {:?} · ends in {} months", trade.id, trade.status, due.saturating_sub(campaign.economy.month)) }
                     else { format!("#{} · {:?} · monthly", trade.id, trade.status) };

@@ -59,7 +59,7 @@ pub enum MilitaryEvent {
         /// Battle identifier for history.
         battle: u64,
     },
-    /// Renown automatically promoted a military career.
+    /// A paid and earned promotion advanced a military career.
     RankIncreased {
         /// Owner promoted.
         owner: ForceOwner,
@@ -88,6 +88,12 @@ pub struct MilitaryWorld {
     pub battles: Vec<Battle>,
     /// Cumulative global military renown per owner.
     pub renown: BTreeMap<ForceOwner, f64>,
+    /// Explicit paid career ranks, independent of battle renown.
+    pub ranks: BTreeMap<ForceOwner, MilitaryRank>,
+    /// Highest combined surviving manpower the owner has fielded at one time.
+    pub peak_manpower: BTreeMap<ForceOwner, f64>,
+    /// Completed battles won by this owner's participating forces.
+    pub victories: BTreeMap<ForceOwner, u32>,
     /// Latest completed battle records for inspection.
     pub history: Vec<BattleOutcome>,
     next_unit: u64,
@@ -104,6 +110,9 @@ impl MilitaryWorld {
             movements: vec![],
             battles: vec![],
             renown: BTreeMap::new(),
+            ranks: BTreeMap::new(),
+            peak_manpower: BTreeMap::new(),
+            victories: BTreeMap::new(),
             history: vec![],
             next_unit: 1,
             next_order: 1,
@@ -137,9 +146,30 @@ impl MilitaryWorld {
         }
         Ok(())
     }
-    /// Current automatically earned military rank.
+    /// Current explicitly earned military rank.
     pub fn rank(&self, owner: ForceOwner) -> MilitaryRank {
-        MilitaryRank::from_renown(self.renown.get(&owner).copied().unwrap_or(0.), &self.config)
+        self.ranks.get(&owner).copied().unwrap_or_default()
+    }
+    /// Current combined manpower across stationed, traveling, and fighting forces.
+    pub fn total_manpower(&self, owner: ForceOwner) -> f64 {
+        self.provinces
+            .iter()
+            .flat_map(|state| state.forces.values().flatten())
+            .chain(self.movements.iter().flat_map(|movement| &movement.units))
+            .chain(
+                self.battles.iter().flat_map(|battle| {
+                    battle.attackers.units.iter().chain(&battle.defenders.units)
+                }),
+            )
+            .filter(|unit| unit.owner == owner)
+            .map(|unit| unit.current_manpower.max(0.0))
+            .sum()
+    }
+    /// Remember a historical peak even if units are later lost or disbanded.
+    pub fn observe_peak_manpower(&mut self, owner: ForceOwner) {
+        let current = self.total_manpower(owner);
+        let peak = self.peak_manpower.entry(owner).or_default();
+        *peak = peak.max(current);
     }
     /// Whether any units in a province are engaged, locking recruitment/disband/plan actions.
     pub fn province_in_battle(&self, province: ProvinceId) -> bool {
@@ -395,7 +425,7 @@ impl MilitaryWorld {
                     .map(move |unit| (Some(b.province), unit))
             }))
     }
-    /// Apply proportional food shortage and peaceful morale/training without healing men.
+    /// Apply proportional food shortage and rank-based monthly recovery.
     pub fn apply_supply(&mut self, owner: ForceOwner, supply_ratio: f64) {
         self.apply_supply_with_wages(owner, supply_ratio, 0.0);
     }
@@ -418,6 +448,7 @@ impl MilitaryWorld {
         wage_morale: f64,
     ) {
         let config = &self.config;
+        let recovery = config.rank_recovery[self.rank(owner) as usize];
         let update = |unit: &mut Unit, in_battle: bool, province: Option<ProvinceId>| {
             if unit.owner != owner {
                 return;
@@ -425,17 +456,22 @@ impl MilitaryWorld {
             let supply = supply_ratio(province).clamp(0., 1.);
             unit.morale =
                 (unit.morale - config.shortage_morale_penalty * (1. - supply)).clamp(0., 100.);
+            if unit.morale <= 0.0 {
+                return;
+            }
             if supply >= config.training_supply_threshold {
                 unit.training = (unit.training + config.passive_training).min(100.);
             }
             if supply >= config.training_supply_threshold && !in_battle {
-                let target =
-                    (config.base_morale + unit.training * 0.1 + wage_morale).clamp(0., 100.);
+                let target = (config.base_morale + wage_morale).clamp(0., 100.);
                 if unit.morale < target {
-                    unit.morale = (unit.morale + config.morale_recovery).min(target);
+                    unit.morale = (unit.morale + recovery).min(target);
                 } else {
                     unit.morale = (unit.morale - 1.).max(target);
                 }
+                let restored = (unit.max_people() as f64 * recovery / 100.).round() as u64;
+                unit.current_manpower = (unit.people() + restored).min(unit.max_people()) as f64
+                    / PEOPLE_PER_POPULATION;
             }
         };
         for (id, state) in self.provinces.iter_mut().enumerate() {
@@ -451,18 +487,91 @@ impl MilitaryWorld {
                 update(unit, true, Some(battle.province));
             }
         }
-        for state in &mut self.provinces {
-            for units in state.forces.values_mut() {
-                consolidate_army_condition(units);
+        self.observe_peak_manpower(owner);
+    }
+
+    /// Unpaid armies lose the full penalty without ordinary wage recovery offsetting it.
+    pub fn reduce_morale(
+        &mut self,
+        owner: ForceOwner,
+        points: f64,
+        before_wages: Option<&BTreeMap<UnitId, f64>>,
+    ) {
+        let lower = |unit: &mut Unit| {
+            if unit.owner == owner {
+                let before = before_wages
+                    .and_then(|values| values.get(&unit.id))
+                    .copied()
+                    .unwrap_or(unit.morale);
+                unit.morale = (unit.morale.min(before) - points).max(0.0);
             }
+        };
+        for unit in self.provinces.iter_mut().flat_map(|state| state.forces.values_mut().flatten())
+        {
+            lower(unit);
         }
-        for movement in &mut self.movements {
-            consolidate_army_condition(&mut movement.units);
+        for unit in self.movements.iter_mut().flat_map(|order| order.units.iter_mut()) {
+            lower(unit);
         }
         for battle in &mut self.battles {
-            consolidate_army_condition(&mut battle.attackers.units);
-            consolidate_army_condition(&mut battle.defenders.units);
+            for unit in battle.attackers.units.iter_mut().chain(&mut battle.defenders.units) {
+                lower(unit);
+            }
         }
+    }
+
+    /// Zero-morale cohorts leave every force, including marching and fighting armies.
+    pub fn disband_zero_morale(&mut self) -> Vec<(Option<ProvinceId>, Unit)> {
+        let mut disbanded = Vec::new();
+        for (province, state) in self.provinces.iter_mut().enumerate() {
+            for units in state.forces.values_mut() {
+                units.retain(|unit| {
+                    if unit.morale > 0.0 {
+                        true
+                    } else {
+                        disbanded.push((Some(province), unit.clone()));
+                        false
+                    }
+                });
+            }
+        }
+        for order in &mut self.movements {
+            order.units.retain(|unit| {
+                if unit.morale > 0.0 {
+                    true
+                } else {
+                    disbanded.push((None, unit.clone()));
+                    false
+                }
+            });
+        }
+        self.movements.retain(|order| !order.units.is_empty());
+        for battle in &mut self.battles {
+            for side in [&mut battle.attackers, &mut battle.defenders] {
+                side.units.retain(|unit| {
+                    if unit.morale > 0.0 {
+                        true
+                    } else {
+                        disbanded.push((Some(battle.province), unit.clone()));
+                        false
+                    }
+                });
+            }
+        }
+        disbanded
+    }
+    /// Merge only the selected owner's stationary, understrength cohorts.
+    pub fn merge_army(
+        &mut self,
+        province: ProvinceId,
+        owner: ForceOwner,
+    ) -> Result<usize, MilitaryError> {
+        if self.province_in_battle(province) {
+            return Err(MilitaryError::InBattle);
+        }
+        let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
+        let units = state.forces.get_mut(&owner).ok_or(MilitaryError::InvalidUnits)?;
+        Ok(merge_understrength_cohorts(units))
     }
     /// Validate and remove a unique selection atomically into a new transient route.
     pub fn order_movement(
@@ -542,7 +651,7 @@ impl MilitaryWorld {
             progress: 0.,
             required_progress: required,
             plan,
-            returning_home: false,
+            withdrawing: false,
         });
         Ok(id)
     }
@@ -561,7 +670,7 @@ impl MilitaryWorld {
                 continue;
             };
             // A forced peaceful withdrawal waits for a battle rather than joining it.
-            if movement.returning_home && self.province_in_battle(destination) {
+            if movement.withdrawing && self.province_in_battle(destination) {
                 continuing.push(movement);
                 continue;
             }
@@ -575,7 +684,7 @@ impl MilitaryWorld {
             }
             if destination >= graph.len()
                 || !graph[movement.origin].neighbors.contains(&destination)
-                || (!movement.returning_home
+                || (!movement.withdrawing
                     && (access(movement.owner, destination) == MilitaryAccess::Blocked
                         || (movement.route.len() == 1
                             && access(movement.owner, destination) == MilitaryAccess::Transit)))
@@ -634,7 +743,7 @@ impl MilitaryWorld {
                 continue;
             }
             let origin = movement.origin;
-            let invasion = !movement.returning_home
+            let invasion = !movement.withdrawing
                 && access(movement.owner, destination) == MilitaryAccess::Invasion;
             movement.route.remove(0);
             // Any hostile arrival stops the order so the caller can start combat before politics.
@@ -653,7 +762,7 @@ impl MilitaryWorld {
                 if access(movement.owner, destination) != MilitaryAccess::Transit
                     && (next >= graph.len()
                         || !graph[destination].neighbors.contains(&next)
-                        || (!movement.returning_home
+                        || (!movement.withdrawing
                             && access(movement.owner, next) == MilitaryAccess::Blocked))
                 {
                     self.insert_units(destination, movement.units);
@@ -740,7 +849,7 @@ impl MilitaryWorld {
 
     /// Join fresh cohorts to an existing battle at the next round boundary.
     /// Existing owners retain their locked plan; a newly allied owner snapshots
-    /// its own plan and rank. No existing troop regains lost manpower.
+    /// its own plan and rank.
     pub fn join_battle(
         &mut self,
         province: ProvinceId,
@@ -783,7 +892,6 @@ impl MilitaryWorld {
             side.formation.reserves.push(unit.id);
             side.units.push(unit);
         }
-        consolidate_army_condition(&mut side.units);
         Ok(())
     }
     /// Resolve battles, retreat survivors, award renown, and return conquest events.
@@ -795,6 +903,22 @@ impl MilitaryWorld {
         let mut events = vec![];
         let mut active = vec![];
         for mut battle in std::mem::take(&mut self.battles) {
+            battle.trapped.clear();
+            for owner in
+                battle.attackers.units.iter().chain(&battle.defenders.units).map(|unit| unit.owner)
+            {
+                if retreat_destination(
+                    graph,
+                    battle.province,
+                    owner,
+                    battle.attacker_origin,
+                    &access,
+                )
+                .is_none()
+                {
+                    battle.trapped.insert(owner);
+                }
+            }
             let mut original_counts = BTreeMap::<ForceOwner, usize>::new();
             for unit in battle.attackers.units.iter().chain(&battle.defenders.units) {
                 *original_counts.entry(unit.owner).or_default() += 1;
@@ -817,14 +941,16 @@ impl MilitaryWorld {
             let outcome = battle.into_outcome(&self.config).unwrap();
             let winner = outcome.winner();
             for (&owner, &gain) in &outcome.renown {
-                let previous = self.rank(owner);
                 *self.renown.entry(owner).or_insert(0.) += gain;
-                let rank = self.rank(owner);
-                if rank != previous {
-                    events.push(MilitaryEvent::RankIncreased {
-                        owner,
-                        rank,
-                    });
+            }
+            let winning_side = match outcome.result {
+                BattleResult::AttackerVictory => Some(&outcome.attackers),
+                BattleResult::DefenderVictory => Some(&outcome.defenders),
+                BattleResult::MutualRout => None,
+            };
+            if let Some(side) = winning_side {
+                for &owner in side.initial_strength.keys() {
+                    *self.victories.entry(owner).or_default() += 1;
                 }
             }
             let mut survivors = BTreeMap::<ForceOwner, usize>::new();
@@ -835,22 +961,25 @@ impl MilitaryWorld {
                     outcome.result == BattleResult::DefenderVictory
                 };
                 for unit in &side.units {
-                    if wins {
+                    let routed = side.routed.contains(&unit.id);
+                    if routed || !wins {
+                        if let Some(destination) = retreat_destination(
+                            graph,
+                            outcome.province,
+                            unit.owner,
+                            if attacker {
+                                outcome.attacker_origin
+                            } else {
+                                None
+                            },
+                            &access,
+                        ) {
+                            *survivors.entry(unit.owner).or_default() += 1;
+                            self.insert_units(destination, vec![unit.clone()]);
+                        }
+                    } else {
                         *survivors.entry(unit.owner).or_default() += 1;
                         self.insert_units(outcome.province, vec![unit.clone()]);
-                    } else if let Some(destination) = retreat_destination(
-                        graph,
-                        outcome.province,
-                        unit.owner,
-                        if attacker {
-                            outcome.attacker_origin
-                        } else {
-                            None
-                        },
-                        &access,
-                    ) {
-                        *survivors.entry(unit.owner).or_default() += 1;
-                        self.insert_units(destination, vec![unit.clone()]);
                     }
                     // No legal retreat: survivors are destroyed, never teleported or healed.
                 }
@@ -861,11 +990,18 @@ impl MilitaryWorld {
                     .forces
                     .get(&ForceOwner::Local(outcome.province))
                     .is_some_and(|units| !units.is_empty());
-                // Direct conquest is handled by the ownership event. A neutral
-                // local force must never be silently conquered by a player-vs-
-                // player battle which it did not join.
-                let occupation = if outcome.territorial_owner.is_none() && !local_defender_remains {
-                    winner
+                // A victory establishes occupation, never immediate ownership.
+                // Neutral local forces that did not join still block occupation.
+                let occupation = if !local_defender_remains {
+                    match winner {
+                        Some(ForceOwner::Player(player))
+                            if outcome.territorial_owner != Some(player) =>
+                        {
+                            winner
+                        },
+                        Some(ForceOwner::Local(_)) if outcome.territorial_owner.is_none() => winner,
+                        _ => None,
+                    }
                 } else {
                     None
                 };
@@ -935,6 +1071,7 @@ impl MilitaryWorld {
     }
     /// Return survivors to their owner groups without losing saved force plans.
     fn insert_units(&mut self, province: ProvinceId, units: Vec<Unit>) {
+        let owners: BTreeSet<_> = units.iter().map(|unit| unit.owner).collect();
         if let Some(state) = self.provinces.get_mut(province) {
             for unit in units {
                 if unit.current_manpower > 0. {
@@ -942,14 +1079,14 @@ impl MilitaryWorld {
                     state.forces.entry(unit.owner).or_default().push(unit);
                 }
             }
-            for army in state.forces.values_mut() {
-                consolidate_army_condition(army);
-            }
+        }
+        for owner in owners {
+            self.observe_peak_manpower(owner);
         }
     }
 }
 
-/// Emit one owner-scoped permanent-loss fact per battle/month, including trapped survivors.
+/// Emit one owner-scoped destroyed-cohort fact per battle or combat month.
 fn record_destroyed_cohorts(
     events: &mut Vec<MilitaryEvent>,
     province: ProvinceId,
@@ -973,9 +1110,10 @@ pub fn initial_defenders(name: &str) -> Vec<UnitType> {
     use UnitType::*;
     match name {
         "Latium" => {
-            let mut guards = vec![HeavyInfantry; 32];
+            let mut guards = vec![HeavyInfantry; 26];
             guards.extend([Archers; 10]);
             guards.extend([HeavyCavalry; 8]);
+            guards.extend([LightCavalry; 6]);
             guards
         },
         "Achaia" | "Asia" | "Africa Proconsularis" | "Aegyptus" | "Syria" => {

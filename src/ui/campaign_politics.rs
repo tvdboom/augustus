@@ -221,12 +221,12 @@ fn draw_chamber(
     player: usize,
     colors: &[egui::Color32],
 ) {
-    let width = ui.available_width().min(680.0);
+    let width = ui.available_width().min(590.0);
     let height = width * 0.56;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let center = egui::pos2(rect.center().x, rect.bottom() - 6.0);
     let outer = width * 0.47;
-    let radius = (width / 64.0).clamp(3.5, 10.5);
+    let radius = (width / 75.0).clamp(3.0, 8.0);
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let hover_angle = pointer.and_then(|p| {
         let d = p - center;
@@ -291,22 +291,20 @@ fn draw_chamber(
             }
         }
         let angle = start + arc * 0.5;
-        let label = match bloc {
-            Bloc::Aristocrats => "Nobles",
-            Bloc::Merchants => "Trade",
-            Bloc::Provincials => "Provinces",
-            Bloc::Populares => "Plebs",
-            Bloc::Military => "Military",
-        };
-        let mut label_point =
-            center + egui::vec2(-angle.cos(), -angle.sin()) * (outer + radius * 2.9);
-        label_point.x = label_point.x.clamp(rect.left() + 32.0, rect.right() - 32.0);
-        ui.painter().text(
-            label_point,
-            egui::Align2::CENTER_CENTER,
-            label,
+        // The outermost seats end just inside `outer`; the names follow the rim
+        // with their baselines tangent to it, leaving the senators unobscured.
+        let label_point = center + egui::vec2(-angle.cos(), -angle.sin()) * (outer + radius);
+        let galley = ui.painter().layout_no_wrap(
+            bloc.label().to_owned(),
             egui::FontId::proportional((width / 46.0).clamp(9.0, 14.0)),
             INK,
+        );
+        let label_origin = label_point - galley.rect.center().to_vec2();
+        ui.painter().add(
+            egui::epaint::TextShape::new(label_origin, galley, INK).with_angle_and_anchor(
+                angle - std::f32::consts::FRAC_PI_2,
+                egui::Align2::CENTER_CENTER,
+            ),
         );
         start += arc;
     }

@@ -13,17 +13,13 @@ const RESOURCE_ICONS: [Icon; 3] = [Icon::Food, Icon::Metal, Icon::Stone];
 const MUTED: egui::Color32 = egui::Color32::from_rgb(112, 91, 71);
 pub(in crate::app) const CIVIC_POWER: &str = "Civic Power";
 
-/// Budget the fixed rows before rendering, including owned wallets.
-pub(in crate::app) fn overview_height(world: &EconomyWorld, province: usize) -> f32 {
-    let p = &world.provinces[province];
-    let economy = if p.owner.is_some() {
-        let civic_power = 12.0 + 28.0 + 2.0 * 34.0;
-        let resources = 12.0 + 28.0 + 3.0 * 34.0;
-        civic_power + resources
-    } else {
-        0.0
-    };
-    48.0 + 10.0 + 28.0 + 4.0 * 34.0 + economy
+/// Use the full province layout as the scale reference, including for NPCs.
+/// Their shorter overview then keeps the same badge and population row sizes.
+pub(in crate::app) fn overview_height(_world: &EconomyWorld, _province: usize) -> f32 {
+    let population = 48.0 + 10.0 + 28.0 + 4.0 * 34.0;
+    let civic_power = 12.0 + 28.0 + 2.0 * 34.0;
+    let resources = 12.0 + 28.0 + 3.0 * 34.0;
+    population + civic_power + resources
 }
 
 /// Paint a value within its column, reducing type only for unusually large numbers.
@@ -74,13 +70,29 @@ pub(super) fn overview_badge(
         egui::Stroke::new(0.7 * scale, RULE),
         egui::StrokeKind::Inside,
     );
+    let compact = rect.width() < 122.0 * scale;
+    let icon_offset = if compact {
+        17.0
+    } else {
+        22.0
+    };
+    let icon_size = if compact {
+        24.0
+    } else {
+        30.0
+    };
+    let text_offset = if compact {
+        32.0
+    } else {
+        41.0
+    };
     let image = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 22.0 * scale, rect.center().y),
-        egui::vec2(30.0, 30.0) * scale,
+        egui::pos2(rect.left() + icon_offset * scale, rect.center().y),
+        egui::vec2(icon_size, icon_size) * scale,
     );
     paint_icon(ui, symbol, image);
     let text = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 41.0 * scale, rect.top()),
+        egui::pos2(rect.left() + text_offset * scale, rect.top()),
         rect.max - egui::vec2(5.0 * scale, 0.0),
     );
     ledger_text(
@@ -90,7 +102,11 @@ pub(super) fn overview_badge(
             egui::pos2(text.right(), text.top() + 23.0 * scale),
         ),
         caption,
-        13.0 * scale,
+        (if compact {
+            11.5
+        } else {
+            13.0
+        }) * scale,
         MUTED,
         egui::Align::Center,
     );
@@ -167,9 +183,15 @@ pub(in crate::app) fn ledger_name(
     name: &str,
     scale: f32,
 ) {
+    // The noble portrait reads larger than the other class portraits at equal bounds.
+    let icon_size = if symbol == Icon::Nobles {
+        24.0
+    } else {
+        28.0
+    };
     let image = egui::Rect::from_center_size(
         egui::pos2(rect.left() + 20.0 * scale, rect.center().y),
-        egui::vec2(28.0, 28.0) * scale,
+        egui::vec2(icon_size, icon_size) * scale,
     );
     paint_icon(ui, symbol, image);
     ui.interact(image, ui.id().with(name), egui::Sense::hover()).on_hover_text(name);
@@ -255,20 +277,19 @@ fn signed_contribution(value: f64, decimals: usize) -> (String, egui::Color32) {
 }
 
 fn rounded_breakdown_total(entries: &[(&str, f64)]) -> f64 {
-    entries.iter().map(|(_, amount)| amount.round()).sum()
+    entries.iter().map(|(_, amount)| (amount * 1000.0).round() / 1000.0).sum()
 }
 
 #[cfg(test)]
 #[test]
 fn population_growth_total_matches_the_displayed_contributions() {
-    let all_zero =
-        [("Births", 0.2), ("Natural deaths", -0.4), ("Famine deaths", 0.0), ("Migration", -0.3)];
-    assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 0).0 == "0"));
+    let all_zero = [("Births", 0.0002), ("Natural deaths", -0.0004)];
+    assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 3).0 == "0"));
     assert_eq!(rounded_breakdown_total(&all_zero), 0.0);
 
-    let mixed = [("Births", 1.6), ("Natural deaths", -0.4), ("Migration", -0.4)];
-    assert_eq!(rounded_breakdown_total(&mixed), 2.0);
-    assert_eq!(signed_contribution(-0.6, 0).0, "-1");
+    let mixed = [("Births", 0.105), ("Natural deaths", -0.06), ("Migration", -0.006)];
+    assert!((rounded_breakdown_total(&mixed) - 0.039).abs() < 1e-9);
+    assert_eq!(signed_contribution(-0.006, 3).0, "-0.006");
 }
 
 fn food_demand_amount(amount: f64) -> (String, egui::Color32) {
@@ -306,7 +327,6 @@ fn ledger_signed_breakdown_value(
     decimals: usize,
     color: egui::Color32,
     scale: f32,
-    consequence: Option<&str>,
 ) {
     ledger_text(
         ui,
@@ -322,10 +342,6 @@ fn ledger_signed_breakdown_value(
         egui::Sense::hover(),
     )
     .on_hover_ui(|ui| {
-        if let Some(consequence) = consequence {
-            ui.label(consequence);
-            ui.separator();
-        }
         for &(label, amount) in entries {
             let (value, color) = signed_contribution(amount, decimals);
             tooltip_numeric_bullet(ui, label, &value, color, 0.0);
@@ -364,7 +380,6 @@ pub(in crate::app) fn overview_for_player(
         return;
     };
     let capacity = p.capacity(&world.config);
-    let ratio = p.total_population() / capacity;
     let last = world.last_report.province_reports.get(province);
     let ink = super::province_panel::INK;
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -499,11 +514,12 @@ pub(in crate::app) fn overview_for_player(
             (Icon::Amount, "Total population"),
             (Icon::Delta, "Monthly growth"),
             (Icon::Happiness, "Happiness"),
+            (Icon::Delta, "Monthly happiness modifiers"),
         ],
         scale,
     );
     for class in 0..4 {
-        ledger_row(ui, 4, 34.0 * scale, class % 2 == 0, |ui, cells| {
+        ledger_row(ui, 5, 34.0 * scale, class % 2 == 0, |ui, cells| {
             ledger_name(ui, cells[0], CLASS_ICONS[class], CLASS_NAMES[class], scale);
             ledger_text(
                 ui,
@@ -524,31 +540,27 @@ pub(in crate::app) fn overview_for_player(
                     entries.push(("Slave revolt", -month.slave_revolt_loss));
                 }
                 let change = rounded_breakdown_total(&entries);
-                let change_color = if change == 0.0 {
+                let displayed_change = change.floor();
+                let change_color = if displayed_change == 0.0 {
                     egui::Color32::BLACK
                 } else {
-                    super::resource_hud::hud_delta_color(change)
+                    super::resource_hud::hud_delta_color(displayed_change)
                 };
                 ledger_signed_breakdown_value(
                     ui,
                     cells[2],
                     &super::resource_hud::format_population_delta(change),
                     &entries,
-                    0,
+                    3,
                     change_color,
                     scale,
-                    None,
                 );
             } else {
                 ledger_value(ui, cells[2], "—", "No month has resolved yet.", MUTED, scale);
             }
-            let overcrowding = ((ratio - 1.0).max(0.0) * world.config.overcrowding_scale)
-                .min(world.config.overcrowding_cap);
-            let supply = last.map_or(1.0, |month| month.food_supply_ratio);
             let food = world.config.food_policy[p.policies.food as usize];
             let slave = world.config.slave_policy[p.policies.slave_labor as usize];
             let mut entries = vec![
-                ("Base happiness", 50.0),
                 ("Food policy", food.happiness),
                 ("Buildings", p.building_effects(&world.config).happiness[class]),
                 (
@@ -569,32 +581,54 @@ pub(in crate::app) fn overview_for_player(
                 ));
                 entries.push(("Civic spending", p.civic_happiness));
             }
-            entries.push(("Overcrowding", -overcrowding));
-            entries.push((
-                "Food shortage",
-                -(1.0 - supply.clamp(0.0, 1.0)) * world.config.shortage_happiness_penalty,
-            ));
+            entries.push(("Overcrowding", -last.map_or(0.0, |month| month.overcrowding_penalty)));
+            entries.push(("Food shortage", -last.map_or(0.0, |month| month.shortage_penalty)));
+            // Show only modifiers large enough to appear at the tooltip's precision.
+            entries.retain(|(_, amount)| (amount * 10.0).round() != 0.0);
+            let modifier: f64 =
+                entries.iter().map(|(_, amount)| (amount * 10.0).round() / 10.0).sum();
+            let (modifier_value, modifier_color) = signed_contribution(modifier, 1);
             let affected =
                 ["Noble Influence", "Citizen taxes", "Plebeian resources", "Slave resources"]
                     [class];
             let threshold = UNHAPPINESS_THRESHOLDS[class];
             let mut consequence = format!(
-                "Below {threshold:.0}% happiness, {affected} fall with happiness. Current output: {:.0}%.",
-                happiness_output_multiplier(class, p.happiness[class], &world.config) * 100.0
+                "Below {threshold:.0} happiness, {affected} fall with happiness. Current output: {:.0}%. Accumulated overcrowding loss: {:.1}; food shortage loss: {:.1}. These recover after conditions improve.",
+                happiness_output_multiplier(class, p.happiness[class], &world.config) * 100.0,
+                p.overcrowding_unhappiness,
+                p.shortage_unhappiness,
             );
             if class == 3 {
-                consequence.push_str(" At 5% or lower, Slaves can revolt.");
+                consequence.push_str(" At 5 or lower, Slaves can revolt.");
             }
-            ledger_signed_breakdown_value(
+            ledger_value(
                 ui,
                 cells[3],
-                &format!("{:.0}%", p.happiness[class]),
-                &entries,
-                1,
+                &format!("{:.0}", p.happiness[class]),
+                &consequence,
                 ink,
                 scale,
-                Some(&consequence),
             );
+            if entries.is_empty() {
+                ledger_text(
+                    ui,
+                    cells[4].shrink2(egui::vec2(4.0 * scale, 0.0)),
+                    &modifier_value,
+                    16.0 * scale,
+                    modifier_color,
+                    egui::Align::Center,
+                );
+            } else {
+                ledger_signed_breakdown_value(
+                    ui,
+                    cells[4],
+                    &modifier_value,
+                    &entries,
+                    1,
+                    modifier_color,
+                    scale,
+                );
+            }
         });
     }
     if p.owner.is_some() {
@@ -795,6 +829,50 @@ pub(in crate::app) fn policies(
 const BUILDING_CELL_SIZE: egui::Vec2 = egui::vec2(108.0, 120.0);
 const BUILDING_COLUMNS: usize = 4;
 
+/// Remember when a project first occupies the active slot within this month.
+fn record_construction_preview_start(ctx: &egui::Context, province: usize, month: u32) {
+    ctx.data_mut(|data| {
+        let fraction = data
+            .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
+            .unwrap_or(0.0);
+        data.insert_temp(
+            egui::Id::new(("construction-preview-start", province)),
+            (month, fraction),
+        );
+    });
+}
+
+fn construction_preview_fraction(ctx: &egui::Context, province: usize, month: u32) -> f32 {
+    ctx.data(|data| {
+        let fraction = data
+            .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
+            .unwrap_or(0.0);
+        let start = data
+            .get_temp::<(u32, f32)>(egui::Id::new(("construction-preview-start", province)))
+            .filter(|(start_month, _)| *start_month == month)
+            .map_or(0.0, |(_, start_fraction)| start_fraction);
+        (fraction - start).max(0.0)
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn construction_preview_starts_at_zero_and_stays_still_while_paused() {
+    let ctx = egui::Context::default();
+    let clock_fraction = egui::Id::new("campaign-construction-month-fraction");
+    ctx.data_mut(|data| data.insert_temp(clock_fraction, 0.4_f32));
+    record_construction_preview_start(&ctx, 2, 7);
+
+    assert_eq!(construction_preview_fraction(&ctx, 2, 7), 0.0);
+    assert_eq!(construction_preview_fraction(&ctx, 2, 7), 0.0);
+
+    ctx.data_mut(|data| data.insert_temp(clock_fraction, 0.5_f32));
+    assert!((construction_preview_fraction(&ctx, 2, 7) - 0.1).abs() < 1e-6);
+
+    ctx.data_mut(|data| data.insert_temp(clock_fraction, 0.05_f32));
+    assert!((construction_preview_fraction(&ctx, 2, 8) - 0.05).abs() < 1e-6);
+}
+
 /// Preview the work accruing this month; completion still belongs to the monthly tick.
 fn construction_completion(
     ui: &egui::Ui,
@@ -804,16 +882,7 @@ fn construction_completion(
     province: usize,
     month: u32,
 ) -> f32 {
-    let fraction = ui.ctx().data(|data| {
-        let fraction = data
-            .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
-            .unwrap_or(0.0);
-        let start = data
-            .get_temp::<(u32, f32)>(egui::Id::new(("construction-preview-start", province)))
-            .filter(|(start_month, _)| *start_month == month)
-            .map_or(0.0, |(_, start_fraction)| start_fraction);
-        (fraction - start).max(0.0)
-    });
+    let fraction = construction_preview_fraction(ui.ctx(), province, month);
     let (progress, required) = project.progress();
     ((progress + project.speed(config, pace) * f64::from(fraction)) / required.max(0.001))
         .clamp(0.0, 0.9999) as f32
@@ -846,16 +915,14 @@ fn building_description(building: BuildingType) -> &'static str {
             "A public square brings together civic business, debate and the bustle of daily life."
         },
         Baths => "Public baths offer a place to wash, unwind and meet neighbours.",
-        UrbanMarket => {
-            "Market stalls gather traders and craftspeople around the exchange of local goods."
-        },
+        UrbanMarket => "Market stalls make the province a more attractive place to settle.",
         Temple => {
             "A sanctuary welcomes worshippers, offerings and the province's religious festivals."
         },
         Arena => "An arena gathers crowds for spectacles, contests and public celebrations.",
         CityWalls => "Strong walls and guarded gates shelter the city from approaching enemies.",
         Academy => "A place of study where scholars share ideas and teach the next generation.",
-        Foundry => "Furnaces and workshops turn raw metal into tools and fittings.",
+        CityHall => "Civic officials manage records, levies and the province's tax collection.",
     }
 }
 
@@ -874,9 +941,30 @@ fn wonder_description(wonder: usize) -> &'static str {
 
 fn wonder_effects_text(definition: &WonderDefinition) -> String {
     format!(
-        "+{:.0} Influence on completion\n+{:.1} Influence/month after completion",
-        definition.completion_influence, definition.monthly_influence
+        "+{} Influence\n+{} Influence/month",
+        effect_number(definition.completion_influence),
+        effect_number(definition.monthly_influence)
     )
+}
+
+fn effect_number(value: f64) -> String {
+    format!("{value:.2}").trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+fn building_cost_order<'a>(
+    definitions: impl Iterator<Item = &'a BuildingDefinition>,
+    province: &EconomicProvince,
+) -> Vec<&'a BuildingDefinition> {
+    let mut ordered: Vec<_> = definitions.collect();
+    ordered.sort_by(|a, b| {
+        let a_quote = a.quote(province.planned_building_level(a.building));
+        let b_quote = b.quote(province.planned_building_level(b.building));
+        (a_quote.stone + a_quote.metal)
+            .total_cmp(&(b_quote.stone + b_quote.metal))
+            .then_with(|| a_quote.stone.total_cmp(&b_quote.stone))
+            .then_with(|| (a.building as usize).cmp(&(b.building as usize)))
+    });
+    ordered
 }
 
 fn resource_shortage(
@@ -1093,21 +1181,15 @@ fn building_cell(
                         ui.label(egui::RichText::new(cost).strong().size(17.0 * scale));
                     }
                 });
-                if let Some(reason) = hover.reason {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(reason)
-                                .size(14.0 * scale)
-                                .color(egui::Color32::from_rgb(170, 45, 35)),
-                        )
-                        .wrap(),
-                    );
-                }
-                ui.add_space(6.0 * scale);
+                ui.add_space(10.0 * scale);
                 ui.add(
                     egui::Label::new(egui::RichText::new(hover.description).size(14.0 * scale))
                         .wrap(),
                 );
+                if let Some(reason) = hover.reason {
+                    ui.add_space(10.0 * scale);
+                    super::campaign_widgets::unavailable_reason(ui, reason, scale);
+                }
                 ui.add_space(6.0 * scale);
                 ui.strong(
                     egui::RichText::new(if hover.level.is_some() {
@@ -1197,6 +1279,7 @@ pub(in crate::app) fn construction_queue_view(
         active,
         &queued,
         owned,
+        false,
         scale,
     )
 }
@@ -1215,12 +1298,14 @@ pub(in crate::app) fn readonly_buildings(
         ("City", None, true),
         ("Countryside", Some("No countryside improvements available."), false),
     ] {
-        let definitions: Vec<_> = world
-            .config
-            .buildings
-            .iter()
-            .filter(|d| d.requires_city == city && (!city || p.has_city))
-            .collect();
+        let definitions = building_cost_order(
+            world
+                .config
+                .buildings
+                .iter()
+                .filter(|d| d.requires_city == city && (!city || p.has_city)),
+            p,
+        );
         if definitions.is_empty() && empty.is_none() {
             continue;
         }
@@ -1238,7 +1323,7 @@ pub(in crate::app) fn readonly_buildings(
                     "Province not owned."
                 }),
                 description: building_description(definition.building),
-                effects: building_effects_text(definition, &world.config),
+                effects: building_effects_text(definition),
             };
             building_cell(
                 ui,
@@ -1320,7 +1405,8 @@ pub(in crate::app) fn buildings(
         ("City", None, true),
         ("Countryside", Some("No countryside improvements available."), false),
     ] {
-        let definitions: Vec<_> = definitions.iter().filter(|d| d.requires_city == city).collect();
+        let definitions =
+            building_cost_order(definitions.iter().filter(|d| d.requires_city == city), &p);
         if definitions.is_empty() && empty.is_none() {
             continue;
         }
@@ -1351,7 +1437,7 @@ pub(in crate::app) fn buildings(
                 level: Some(level),
                 reason,
                 description: building_description(definition.building),
-                effects: building_effects_text(definition, &world.config),
+                effects: building_effects_text(definition),
             };
             let name = definition.building.name();
             let level_label = if active {
@@ -1438,12 +1524,22 @@ pub(in crate::app) fn buildings(
     }
     if let Some(building) = building_action {
         match world.start_building(player, province, building) {
-            Ok(()) => super::audio_controls::request_construction_sound(ui.ctx()),
+            Ok(()) => {
+                if p.construction.is_none() {
+                    record_construction_preview_start(ui.ctx(), province, world.month);
+                }
+                super::audio_controls::request_construction_sound(ui.ctx());
+            },
             Err(error) => message = Some(error),
         }
     } else if let Some(wonder) = wonder_action {
         match world.start_wonder(player, province, wonder) {
-            Ok(()) => super::audio_controls::request_construction_sound(ui.ctx()),
+            Ok(()) => {
+                if p.construction.is_none() {
+                    record_construction_preview_start(ui.ctx(), province, world.month);
+                }
+                super::audio_controls::request_construction_sound(ui.ctx());
+            },
             Err(error) => message = Some(error),
         }
     } else if let Some(ConstructionProject::Wonder(wonder)) = &p.construction {
@@ -1464,15 +1560,7 @@ pub(in crate::app) fn cancel_construction_order(
         WorkQueueAction::CancelActive => {
             let result = world.cancel_construction(player, province);
             if result.is_ok() {
-                ctx.data_mut(|data| {
-                    let fraction = data
-                        .get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
-                        .unwrap_or(0.0);
-                    data.insert_temp(
-                        egui::Id::new(("construction-preview-start", province)),
-                        (world.month, fraction),
-                    );
-                });
+                record_construction_preview_start(ctx, province, world.month);
             }
             result
         },
@@ -1528,15 +1616,17 @@ fn wonder_labor_controls(
 }
 
 /// Compact descriptions are generated from the actual configured benefits.
-fn building_effects_text(definition: &BuildingDefinition, config: &EconomyConfig) -> String {
+fn building_effects_text(definition: &BuildingDefinition) -> String {
     let mut text = effects_text(&definition.effects);
     if definition.building == BuildingType::Road {
         if !text.is_empty() {
             text.push('\n');
         }
         text.push_str(&format!(
-            "Faster army travel across this province\n+{:.1}% route efficiency",
-            config.trade.road_efficiency * 100.0
+            "+{}% army travel speed through this province",
+            effect_number(
+                crate::game::military::MilitaryConfig::default().road_speed_bonus * 100.0
+            )
         ));
     }
     text
@@ -1557,18 +1647,28 @@ fn effects_text(effects: &BuildingEffects) -> String {
     }
     if effects.happiness.iter().any(|value| *value > 0.0) {
         if effects.happiness.windows(2).all(|pair| pair[0] == pair[1]) {
-            parts
-                .push(format!("+{:.0} happiness for every population class", effects.happiness[0]));
+            parts.push(format!(
+                "+{} happiness for every population class each month",
+                effect_number(effects.happiness[0])
+            ));
+        } else if effects.happiness[..3].windows(2).all(|pair| pair[0] == pair[1])
+            && effects.happiness[0] > 0.0
+            && effects.happiness[3] == 0.0
+        {
+            parts.push(format!(
+                "+{} happiness for Nobles, Citizens and Plebeians each month",
+                effect_number(effects.happiness[0])
+            ));
         } else {
             for (name, value) in CLASS_NAMES.iter().zip(effects.happiness) {
                 if value != 0.0 {
-                    parts.push(format!("{value:+.0} {name} happiness"));
+                    parts.push(format!("+{} {name} happiness each month", effect_number(value)));
                 }
             }
         }
     }
     if effects.influence > 0.0 {
-        parts.push(format!("+{:.2} Influence/month", effects.influence));
+        parts.push(format!("+{} Influence/month", effect_number(effects.influence)));
     }
     if effects.tax > 0.0 {
         parts.push(format!("+{:.0}% taxes", effects.tax * 100.0));
@@ -1577,10 +1677,10 @@ fn effects_text(effects: &BuildingEffects) -> String {
         parts.push(format!("+{:.0}% defense", effects.defense * 100.0));
     }
     if effects.migration > 0.0 {
-        parts.push(format!("+{:.2} migration attraction", effects.migration));
-    }
-    if effects.trade > 0.0 {
-        parts.push(format!("+{:.1}% route efficiency", effects.trade * 100.0));
+        parts.push(format!(
+            "+{}% attraction for incoming migrants",
+            effect_number(effects.migration * 100.0)
+        ));
     }
     parts.join("\n")
 }
@@ -1590,8 +1690,45 @@ fn wonder_labor_tooltip(config: &EconomyConfig) -> String {
     let tiers = config
         .wonder_slave_speeds
         .iter()
-        .map(|(slaves, speed)| format!("{slaves:.0}+ Slaves: {speed:.2}× work"))
+        .map(|(slaves, speed)| format!("{slaves:.0}+ Slaves: {}× work", effect_number(*speed)))
         .collect::<Vec<_>>()
         .join("\n");
     format!("{tiers}\nAssignments below the next tier do not increase speed. Assigned Slaves keep consuming Food and stop ordinary resource production.")
+}
+
+#[cfg(test)]
+mod effect_text_tests {
+    use super::*;
+
+    #[test]
+    fn building_and_wonder_effects_show_compact_recurring_values() {
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::Forum)),
+            "+1 Influence/month"
+        );
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::Baths)),
+            "+150 population capacity\n+2 happiness for Nobles, Citizens and Plebeians each month"
+        );
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::Academy)),
+            "+1 happiness for Nobles, Citizens and Plebeians each month\n+0.25 Influence/month"
+        );
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::UrbanMarket)),
+            "+10% attraction for incoming migrants"
+        );
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::CityHall)),
+            "+10% taxes"
+        );
+        assert_eq!(
+            building_effects_text(&BuildingDefinition::for_type(BuildingType::Road)),
+            "+20% army travel speed through this province"
+        );
+        assert_eq!(
+            wonder_effects_text(&WonderDefinition::for_site(0)),
+            "+250 Influence\n+3 Influence/month"
+        );
+    }
 }

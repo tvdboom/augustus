@@ -66,8 +66,11 @@ fn hostile_vassal_releases_without_destroying_relations() {
 }
 
 #[test]
-fn owned_unrest_cannot_transfer_control() {
+fn owned_province_can_be_influenced_without_transferring_ownership() {
     let mut province = ProvincePolitics::owned(2, 0);
+    assert_eq!(province.control(0), 100.0);
+    assert_eq!(province.control(1), 0.0);
+    assert_eq!(province.relation(1), 50.0);
     let mut actor = PoliticalPlayer {
         influence: 100.0,
         ..Default::default()
@@ -83,9 +86,13 @@ fn owned_unrest_cannot_transfer_control() {
         )
         .unwrap();
     assert_eq!(deltas, [0.0, -5.0, -5.0, 0.0]);
-    assert!(province
+    province
         .buy_control(1, &mut actor, Currency::Influence, 5.0, Some(1), &DiplomacyConfig::default())
-        .is_err());
+        .unwrap();
+    province.resolve_month(&[0.0; 2], None, 0.0, &DiplomacyConfig::default());
+    assert_eq!(province.control(0), 95.0);
+    assert_eq!(province.control(1), 5.0);
+    assert_eq!(province.relation(1), 50.0);
     assert_eq!(
         province.state,
         PoliticalState::Owned {

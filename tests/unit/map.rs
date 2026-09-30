@@ -223,7 +223,7 @@ fn starting_population_uses_area_city_bias_and_four_near_standard_classes() {
     for province in provinces {
         let population = ProvincePopulation::starting(province);
         assert!(population.counts().into_iter().all(|count| count > 0.0), "{}", province.name);
-        assert!((20.0..=80.0).contains(&population.total()), "{}", province.name);
+        assert!((200.0..=800.0).contains(&population.total()), "{}", province.name);
         let target_percentages = if URBAN_PROVINCES.contains(&province.name.as_str()) {
             [12.0, 23.0, 37.0, 28.0]
         } else {
@@ -318,16 +318,16 @@ fn owned_population_reconciles_with_class_sources_and_famine_trend() {
     }
     let owned = ownership.owners.iter().position(|owner| *owner == Some(0)).unwrap();
     ownership.populations[owned] = ProvincePopulation {
-        nobles: 40.0,
+        nobles: 400.0,
         citizens: 0.0,
         plebeians: 0.0,
         slaves: 0.0,
     };
     assert_eq!(ownership.population_change_for(0, 0.0, 0), 0.0);
-    assert_eq!(ownership.population_change_for(0, 0.0, 3), -2.0);
-    assert_eq!(ownership.population_change_for(0, 0.0, 8), -5.0);
-    ownership.advance_population(0, -5.0);
-    assert_eq!(ownership.population_for(0).into_iter().sum::<f64>(), 35.0);
+    assert_eq!(ownership.population_change_for(0, 0.0, 3), -20.0);
+    assert_eq!(ownership.population_change_for(0, 0.0, 8), -50.0);
+    ownership.advance_population(0, -50.0);
+    assert_eq!(ownership.population_for(0).into_iter().sum::<f64>(), 350.0);
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn slaves_add_more_output_than_plebeians_and_every_class_eats() {
         plebeians: 4.0,
         slaves: 2.0,
     };
-    assert_eq!(monthly_output([3, 2, 4], population), [21.0, 14.0, 28.0]);
+    assert_eq!(monthly_output([3, 2, 4], population), [2.1, 1.4, 2.8]);
     assert_eq!(
         monthly_output(
             [1, 1, 1],
@@ -482,9 +482,9 @@ fn slaves_add_more_output_than_plebeians_and_every_class_eats() {
                 slaves: 1.0,
             }
         ),
-        [1.5, 1.5, 1.5]
+        [0.15, 0.15, 0.15]
     );
-    assert_eq!(population.food_upkeep(), 11.0);
+    assert_eq!(population.food_upkeep(), 1.1);
 
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED]);
@@ -505,7 +505,7 @@ fn slaves_add_more_output_than_plebeians_and_every_class_eats() {
     };
     let slave_output = ownership.output_for(province);
     assert!(slave_output[0] > plebeian_output[0]);
-    assert_eq!(ownership.food_upkeep_for(province), 40.0);
+    assert_eq!(ownership.food_upkeep_for(province), 4.0);
     assert_eq!(
         ProvincePopulation {
             nobles: 1.0,
@@ -514,7 +514,7 @@ fn slaves_add_more_output_than_plebeians_and_every_class_eats() {
             slaves: 1.0
         }
         .food_upkeep(),
-        4.0
+        0.4
     );
     assert_eq!(
         ProvincePopulation {
@@ -539,7 +539,7 @@ fn each_pop_class_grows_one_percent_per_fed_month() {
     assert_eq!(population.monthly_growth(0.01, 0.01), 20.0);
     population.grow(0.01, 0.01);
     assert_eq!(population.counts(), [202.0, 404.0, 808.0, 606.0]);
-    assert_eq!(population.food_upkeep(), 2_020.0);
+    assert_eq!(population.food_upkeep(), 202.0);
 
     let mut small_population = ProvincePopulation {
         nobles: 0.0,
@@ -549,7 +549,7 @@ fn each_pop_class_grows_one_percent_per_fed_month() {
     };
     small_population.grow(0.01, 0.01);
     assert_eq!(small_population.plebeians, 1.01);
-    assert_eq!(monthly_output([1, 0, 0], small_population)[0], 1.01);
+    assert_eq!(monthly_output([1, 0, 0], small_population)[0], 0.101);
 }
 
 #[test]
@@ -562,7 +562,7 @@ fn province_sources_reconcile_with_all_resource_deltas() {
         let (_, produced, consumed) = sources[0];
         assert_eq!(ownership.production_for(0)[resource], produced);
         if resource == 0 {
-            assert_eq!(consumed, ownership.total_population_for(0));
+            assert_eq!(consumed, ownership.total_population_for(0) / POPULATION_SCALE);
             assert_eq!(ownership.net_production_for(0)[resource], produced - consumed);
         } else {
             assert_eq!(consumed, 0.0);
@@ -587,15 +587,17 @@ fn taxes_use_only_owned_citizens_and_plebeians_and_reconcile_with_monthly_delta(
     };
 
     let opening_taxes = ownership.coin_taxes_for(0);
-    assert_eq!(opening_taxes, 35.0);
-    assert_eq!(ownership.coin_delta_for(0), opening_taxes);
-    assert_eq!(ownership.influence_delta_for(0), 3.0);
+    assert_eq!(opening_taxes, 3.5);
+    let opening_wages = ownership.noble_wages_for(0);
+    assert!((opening_wages - 0.03).abs() < 1e-9);
+    assert!((ownership.coin_delta_for(0) - (opening_taxes - opening_wages)).abs() < 1e-9);
+    assert!((ownership.influence_delta_for(0) - 0.3).abs() < 1e-9);
     assert_eq!(ownership.coin_taxes_for(1), 0.0);
     assert_eq!(ownership.coin_delta_for(1), 0.0);
     assert_eq!(ownership.influence_delta_for(1), 0.0);
 
     ownership.advance_population(0, 1.0);
-    assert!((ownership.coin_delta_for(0) - opening_taxes * 1.01).abs() < 1e-9);
+    assert!((ownership.coin_delta_for(0) - (opening_taxes - opening_wages) * 1.01).abs() < 1e-9);
 }
 
 #[test]
@@ -615,39 +617,44 @@ fn governance_edicts_change_only_the_owning_players_monthly_rates() {
         slaves: 10.0,
     };
     let baseline_output = ownership.output_for(province);
-    assert_eq!(baseline_output[0], 150.0);
-    assert_eq!(ownership.net_production_for(0)[0], 100.0);
-    assert_eq!(ownership.coin_taxes_for(0), 40.0);
-    assert_eq!(ownership.influence_delta_for(0), 10.0);
+    assert_eq!(baseline_output[0], 15.0);
+    assert_eq!(ownership.net_production_for(0)[0], 10.0);
+    assert_eq!(ownership.coin_taxes_for(0), 4.0);
+    assert_eq!(ownership.influence_delta_for(0), 1.0);
 
     let mut edicts = Governance {
         food_rations: EdictLevel::Low,
         ..Default::default()
     };
     ownership.set_governance_for(0, edicts);
-    assert_eq!(ownership.net_production_for(0)[0], 110.0);
-    assert_eq!(ownership.food_upkeep_for(province), 40.0);
+    assert_eq!(ownership.net_production_for(0)[0], 11.0);
+    assert_eq!(ownership.food_upkeep_for(province), 4.0);
     assert_eq!(ownership.governance_for(1), Governance::default());
 
     edicts.food_rations = EdictLevel::High;
     ownership.set_governance_for(0, edicts);
     assert_eq!(ownership.output_for(province), baseline_output);
-    assert_eq!(ownership.food_upkeep_for(province), 60.0);
-    assert_eq!(ownership.net_production_for(0)[0], 90.0);
-    assert_eq!(ownership.influence_delta_for(0), 10.0);
+    assert_eq!(ownership.food_upkeep_for(province), 6.0);
+    assert_eq!(ownership.net_production_for(0)[0], 9.0);
+    assert_eq!(ownership.influence_delta_for(0), 1.0);
 
     edicts.food_rations = EdictLevel::Medium;
     edicts.slave_labor = EdictLevel::Low;
     ownership.set_governance_for(0, edicts);
-    assert_eq!(ownership.output_for(province)[0], 105.0);
+    assert_eq!(ownership.output_for(province)[0], 10.5);
     edicts.slave_labor = EdictLevel::High;
     ownership.set_governance_for(0, edicts);
-    assert_eq!(ownership.output_for(province)[0], 195.0);
+    assert_eq!(ownership.output_for(province)[0], 19.5);
 
     edicts.army_wages = EdictLevel::High;
     ownership.set_governance_for(0, edicts);
     assert_eq!(ownership.military_wages_for(0), 0.0);
-    assert_eq!(ownership.coin_delta_for(0), 40.0);
+    assert!((ownership.coin_delta_for(0) - 3.9).abs() < 1e-9);
+
+    edicts.noble_wages = EdictLevel::High;
+    ownership.set_governance_for(0, edicts);
+    assert!((ownership.noble_wages_for(0) - 0.125).abs() < 1e-9);
+    assert!((ownership.coin_delta_for(0) - 3.875).abs() < 1e-9);
 }
 
 #[test]
@@ -1063,10 +1070,16 @@ fn wonders_show_only_an_icon_or_artwork_without_map_progress_bars() {
                     paid_stone: 0.0,
                     paid_metal: 0.0,
                 }));
-            let switch = (CITY_BLEND_START + CITY_BLEND_END) * 0.5;
-            for zoom in
-                [MIN_ZOOM, CITY_BLEND_START, switch - 0.01, switch, CITY_BLEND_END, MAX_ZOOM]
-            {
+            let midpoint = (CITY_BLEND_START + CITY_BLEND_END) * 0.5;
+            for zoom in [
+                MIN_ZOOM,
+                CITY_BLEND_START,
+                CITY_BLEND_START + 0.01,
+                midpoint,
+                CITY_BLEND_END - 0.01,
+                CITY_BLEND_END,
+                MAX_ZOOM,
+            ] {
                 let projection = Projection {
                     origin: rect.center(),
                     scale: 14.7 * zoom,
@@ -1080,7 +1093,8 @@ fn wonders_show_only_an_icon_or_artwork_without_map_progress_bars() {
                     },
                     |ui| paint_wonders(ui.painter(), &markers, zoom, &textures, Some(&world), 1.5),
                 );
-                let illustrated = zoom >= switch;
+                let blend = city_blend(zoom);
+                let illustrated = blend > 0.0;
                 let expected_texture = if state == 1 && illustrated {
                     wonder_construction_texture(&ctx, index).id()
                 } else {
@@ -1103,15 +1117,22 @@ fn wonders_show_only_an_icon_or_artwork_without_map_progress_bars() {
                     wonder.name
                 );
                 if let Some(mesh) = artwork.first() {
-                    assert!(mesh.vertices.iter().all(|vertex| vertex.color.a() == 255));
+                    let alpha = (blend * 255.0).round() as u8;
+                    assert!(mesh.vertices.iter().all(|vertex| vertex.color.a() == alpha));
                 }
-                let icons = output.shapes.iter().filter(|shape| {
-                    matches!(&shape.shape, egui::Shape::Path(path)
-                        if path.stroke.color == egui::epaint::ColorMode::Solid(egui::Color32::WHITE))
-                }).count();
+                let icon_alpha = ((1.0 - blend) * 255.0).round() as u8;
+                let icons = output
+                    .shapes
+                    .iter()
+                    .filter(|shape| {
+                        matches!(&shape.shape, egui::Shape::Path(path)
+                        if path.stroke.color == egui::epaint::ColorMode::Solid(
+                            egui::Color32::from_white_alpha(icon_alpha)))
+                    })
+                    .count();
                 assert_eq!(
                     icons,
-                    if state == 0 || illustrated {
+                    if state == 0 || icon_alpha == 0 {
                         0
                     } else {
                         3
@@ -1124,7 +1145,7 @@ fn wonders_show_only_an_icon_or_artwork_without_map_progress_bars() {
                     "{} must never show a map progress bar",
                     wonder.name
                 );
-                if state != 0 && illustrated {
+                if state != 0 && blend >= 1.0 {
                     assert_eq!(
                         output.shapes.len(),
                         1,

@@ -39,7 +39,9 @@ pub(in crate::app) fn show(
             })
             .sum()
     });
-    let wages = campaign.map_or_else(
+    let noble_wages = campaign
+        .map_or_else(|| ownership.noble_wages_for(player), |campaign| campaign.noble_wages(player));
+    let army_wages = campaign.map_or_else(
         || ownership.military_wages_for(player),
         |campaign| campaign.army_wages(player),
     );
@@ -56,10 +58,10 @@ pub(in crate::app) fn show(
     let recruitment = campaign.map_or(0.0, |campaign| campaign.recruitment_effort_cost(player));
     let spy_upkeep = campaign.map_or(0.0, |campaign| campaign.spy_upkeep(player));
     let outflow = [
-        ("Wages", wages),
+        ("Noble wages", noble_wages),
+        ("Army wages", army_wages),
         ("Civic spending", civic),
         ("Recruitment effort", recruitment),
-        ("Army maintenance", 0.0),
         ("Spy upkeep", spy_upkeep),
         ("Trade deals", 0.0),
     ];

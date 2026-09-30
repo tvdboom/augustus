@@ -2,13 +2,22 @@
 
 use std::path::PathBuf;
 
+#[path = "scripts/military-animation.rs"]
+mod military_animation;
+#[path = "src/map/military_frames.rs"]
+mod military_frames;
 #[path = "scripts/wonder-construction.rs"]
 mod wonder_construction;
 #[path = "src/map/wonder_frames.rs"]
 mod wonder_frames;
 
 const PANEL_ICONS: &[(&str, &str)] = &[
-    ("images/military/tactics/balanced-owl.png", "balanced-owl"),
+    ("images/military/tactics/shock-action.png", "tactic-shock-action"),
+    ("images/military/tactics/envelopment.png", "tactic-envelopment"),
+    ("images/military/tactics/skirmishing.png", "tactic-skirmishing"),
+    ("images/military/tactics/deception.png", "tactic-deception"),
+    ("images/military/tactics/bottleneck.png", "tactic-bottleneck"),
+    ("images/military/tactics/phalanx.png", "tactic-phalanx"),
     ("images/icons/sestertius.png", "coin"),
     ("images/icons/influence.png", "influence"),
     ("images/icons/manpower.png", "population"),
@@ -16,6 +25,11 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/icons/morale.png", "morale"),
     ("images/icons/terrain.png", "terrain"),
     ("images/icons/military_power.png", "military-power"),
+    ("images/icons/rank-centurion.png", "rank-centurion"),
+    ("images/icons/rank-military-tribune.png", "rank-military-tribune"),
+    ("images/icons/rank-legate.png", "rank-legate"),
+    ("images/icons/rank-imperator.png", "rank-imperator"),
+    ("images/icons/cohorts.png", "cohorts"),
     ("images/icons/nobles.png", "nobles"),
     ("images/icons/civilians.png", "civilians"),
     ("images/icons/plebeians.png", "plebeians"),
@@ -28,6 +42,10 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/icons/spy-improve-relations.png", "spy-improve-relations"),
     ("images/icons/spy-uncover-scandals.png", "spy-uncover-scandals"),
     ("images/icons/spy-undermine-opponents.png", "spy-undermine-opponents"),
+    ("images/icons/spy-support-revolt.png", "spy-support-revolt"),
+    ("images/icons/spy-discredit-rivals.png", "spy-discredit-rivals"),
+    ("images/icons/bribe-nobles.png", "bribe-nobles"),
+    ("images/icons/insult-player.png", "insult-player"),
     ("images/icons/trade.png", "trade"),
     ("images/icons/control.png", "control"),
     ("images/icons/relation.png", "relation"),
@@ -54,6 +72,7 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/icons/confirm.png", "confirm"),
     ("images/icons/court-nobles.png", "court-nobles"),
     ("images/icons/attack.png", "attack"),
+    ("images/events/events-icon.png", "events"),
     ("images/ui/spqr-eagle-gold.png", "spqr-eagle-gold"),
     ("images/icons/province.png", "province"),
     ("images/buildings/aqueduct.png", "aqueduct"),
@@ -64,77 +83,21 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/buildings/walls.png", "walls"),
     ("images/buildings/forum.png", "forum"),
     ("images/buildings/marketplace.png", "marketplace"),
-    ("images/buildings/foundry.png", "foundry"),
+    ("images/buildings/city-hall.png", "city-hall"),
     ("images/buildings/academy.png", "academy"),
     ("images/buildings/great-temple.png", "great-temple"),
     ("images/buildings/grand-theater.png", "grand-theater"),
 ];
 
 fn main() {
+    println!("cargo:rerun-if-changed=scripts/military-animation.rs");
+    println!("cargo:rerun-if-changed=scripts/military-gait.rs");
+    println!("cargo:rerun-if-changed=scripts/military-combat.rs");
+    println!("cargo:rerun-if-changed=src/map/military_frames.rs");
     let repository = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source_root = repository.join("assets");
     let output_root = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("panel-icons");
     std::fs::create_dir_all(&output_root).expect("create panel icon output directory");
-    // Original Imperator symbols extracted with transparent parchment from Paradox's
-    // published army-interface screenshot. See docs/references/README.md.
-    let reference = repository.join("docs/references/imperator-army-tactics.png");
-    println!("cargo:rerun-if-changed={}", reference.display());
-    let tactics = image::open(reference).expect("Imperator army reference").to_rgba8();
-    let tactic_root = output_root.with_file_name("tactic-icons");
-    std::fs::create_dir_all(&tactic_root).expect("create tactic icon directory");
-    for (name, x, y, size) in [
-        ("shock-action", 565, 173, 52),
-        ("envelopment", 565, 253, 52),
-        ("skirmishing", 565, 333, 52),
-        ("deception", 565, 413, 52),
-        ("bottleneck", 565, 493, 52),
-    ] {
-        let mut symbol = image::imageops::crop_imm(&tactics, x, y, size, size.min(46)).to_image();
-        // Remove only edge-connected parchment, preserving enclosed animal detail.
-        let background = *symbol.get_pixel(0, 0);
-        let mut pending = std::collections::VecDeque::new();
-        let mut visited = vec![false; (symbol.width() * symbol.height()) as usize];
-        for x in 0..symbol.width() {
-            pending.push_back((x, 0));
-            pending.push_back((x, symbol.height() - 1));
-        }
-        for y in 0..symbol.height() {
-            pending.push_back((0, y));
-            pending.push_back((symbol.width() - 1, y));
-        }
-        while let Some((x, y)) = pending.pop_front() {
-            let index = (y * symbol.width() + x) as usize;
-            if visited[index] {
-                continue;
-            }
-            visited[index] = true;
-            let pixel = symbol.get_pixel_mut(x, y);
-            let distance = (0..3)
-                .map(|c| (i16::from(pixel[c]) - i16::from(background[c])).unsigned_abs())
-                .max()
-                .unwrap();
-            if distance > 62 {
-                continue;
-            }
-            pixel[3] = 0;
-            if x > 0 {
-                pending.push_back((x - 1, y));
-            }
-            if y > 0 {
-                pending.push_back((x, y - 1));
-            }
-            if x + 1 < symbol.width() {
-                pending.push_back((x + 1, y));
-            }
-            if y + 1 < symbol.height() {
-                pending.push_back((x, y + 1));
-            }
-        }
-        symbol
-            .save(tactic_root.join(format!("{name}.png")))
-            .expect("write transparent tactic symbol");
-    }
-
     for &(source, name) in PANEL_ICONS {
         let path = source_root.join(source);
         println!("cargo:rerun-if-changed={}", path.display());
@@ -151,7 +114,15 @@ fn main() {
         // Retain enough detail for that size and high-DPI displays.
         let size = if matches!(name, "catapult" | "war-chariots") {
             256
-        } else if name == "military-access" {
+        } else if matches!(
+            name,
+            "military-access"
+                | "events"
+                | "rank-centurion"
+                | "rank-military-tribune"
+                | "rank-legate"
+                | "rank-imperator"
+        ) {
             128
         } else {
             64
@@ -174,6 +145,15 @@ fn main() {
             normalize_animation(&path, &large_root.join(format!("{name}.png")), 128);
         }
     }
+    let banner_source = source_root.join("images/cities/policies-panel-banner.png");
+    println!("cargo:rerun-if-changed={}", banner_source.display());
+    let banner_root = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("panel-banners");
+    std::fs::create_dir_all(&banner_root).expect("create panel banner output directory");
+    let banner = image::open(&banner_source).expect("overview banner PNG must be valid");
+    banner
+        .resize(1024, 1024, image::imageops::FilterType::Lanczos3)
+        .save(banner_root.join("policies.png"))
+        .expect("write prepared overview banner PNG");
     // Like the existing embedded panel art, normalize animation sources at build
     // time so opening a map panel never performs a large Lanczos resample.
     let animation_root = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("animations");
@@ -202,7 +182,22 @@ fn main() {
                 println!("cargo:rerun-if-changed={}", workers.display());
                 wonder_construction::build(&path, &workers, &target);
             } else if folder == "military/idle" {
-                normalize_idle(&path, &target);
+                military_animation::build(&path, &target, military_animation::Motion::Idle);
+            } else if folder == "military" {
+                // Panel icons retain their original four-by-four source layout.
+                normalize_animation_size(&path, &target, width, height);
+                for (state, motion) in [
+                    ("movement", military_animation::Motion::Movement),
+                    ("combat", military_animation::Motion::Combat),
+                ] {
+                    let output = output.join(state);
+                    std::fs::create_dir_all(&output).expect("create military cycle directory");
+                    military_animation::build(
+                        &path,
+                        &output.join(path.file_name().unwrap()),
+                        motion,
+                    );
+                }
             } else {
                 normalize_animation_size(&path, &target, width, height);
             }
@@ -210,79 +205,8 @@ fn main() {
     }
 }
 
-/// Keep sixteen generated poses at one scale and foot baseline, with sampling gutters.
-fn normalize_idle(source: &std::path::Path, target: &std::path::Path) {
-    let rgba = image::open(source).expect("idle PNG must be valid").to_rgba8();
-    let mut poses = Vec::with_capacity(16);
-    for row in 0..4 {
-        for column in 0..4 {
-            let left = rgba.width() * column / 4;
-            let top = rgba.height() * row / 4;
-            let right = rgba.width() * (column + 1) / 4;
-            let bottom = rgba.height() * (row + 1) / 4;
-            let mut cell =
-                image::imageops::crop_imm(&rgba, left, top, right - left, bottom - top).to_image();
-            if source.file_name().and_then(|name| name.to_str()) == Some("light-infantry.png") {
-                // The third source row contains tips of the next row's spears.
-                // They must not determine this soldier's bounds or foot baseline.
-                retain_idle_subject(&mut cell);
-            }
-            let (mut x0, mut y0, mut x1, mut y1) = (cell.width(), cell.height(), 0, 0);
-            for (x, y, pixel) in cell.enumerate_pixels() {
-                if pixel[3] > 8 {
-                    x0 = x0.min(x);
-                    y0 = y0.min(y);
-                    x1 = x1.max(x + 1);
-                    y1 = y1.max(y + 1);
-                }
-            }
-            assert!(x1 > x0 && y1 > y0, "idle frame must be visible");
-            // Align the planted feet/wheels, not the entire silhouette: turning
-            // a shield, bow, tail or trunk must not translate the subject sideways.
-            let mut ground_left = x1;
-            let mut ground_right = x0;
-            for (x, y, pixel) in cell.enumerate_pixels() {
-                if y >= y1 - (y1 - y0) / 6 && pixel[3] > 127 {
-                    ground_left = ground_left.min(x);
-                    ground_right = ground_right.max(x + 1);
-                }
-            }
-            let ground_center = if ground_right > ground_left {
-                (ground_left + ground_right) as f32 * 0.5 - x0 as f32
-            } else {
-                (x1 - x0) as f32 * 0.5
-            };
-            poses.push((
-                image::imageops::crop_imm(&cell, x0, y0, x1 - x0, y1 - y0).to_image(),
-                ground_center,
-            ));
-        }
-    }
-    let max_width = poses
-        .iter()
-        .map(|(pose, ground)| ground.max(pose.width() as f32 - ground) * 2.)
-        .fold(0_f32, f32::max);
-    let max_height = poses.iter().map(|(pose, _)| pose.height()).max().unwrap() as f32;
-    let scale = (154. / max_width).min(154. / max_height);
-    let mut sheet = image::RgbaImage::new(768, 768);
-    for (frame, (mut pose, ground)) in poses.into_iter().enumerate() {
-        premultiply(&mut pose);
-        let mut small = image::imageops::resize(
-            &pose,
-            (pose.width() as f32 * scale).round().max(1.) as u32,
-            (pose.height() as f32 * scale).round().max(1.) as u32,
-            image::imageops::FilterType::Lanczos3,
-        );
-        unpremultiply(&mut small);
-        let x = frame as u32 % 4 * 192 + (96. - ground * scale).round() as u32;
-        let y = frame as u32 / 4 * 192 + 173 - small.height();
-        image::imageops::replace(&mut sheet, &small, i64::from(x), i64::from(y));
-    }
-    sheet.save(target).expect("write normalized sixteen-frame idle sheet");
-}
-
-/// Keep the connected soldier, including soft alpha edges, and discard neighboring-cell debris.
-fn retain_idle_subject(cell: &mut image::RgbaImage) {
+/// Keep the connected subject, including soft alpha edges, and discard neighboring-cell debris.
+fn retain_sprite_subject(cell: &mut image::RgbaImage) {
     let width = cell.width() as usize;
     let height = cell.height() as usize;
     let mut visited = vec![false; width * height];
@@ -345,10 +269,43 @@ fn normalize_animation_size(
     height: u32,
 ) {
     let mut rgba = image::open(source).expect("animation PNG must be valid").to_rgba8();
+    // Four generated icon cells contain a detached spear tip or plume from the
+    // animation row below. Keep the connected icon before downsampling, so the
+    // panel icon UVs cannot show that neighboring-frame debris.
+    let clean_icon = if source
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        == Some("military")
+        && matches!(
+            source.file_name().and_then(|name| name.to_str()),
+            Some(
+                "light-cavalry.png" | "heavy-cavalry.png" | "war-camels.png" | "heavy-infantry.png"
+            )
+        ) {
+        let mut icon =
+            image::imageops::crop_imm(&rgba, 0, 0, rgba.width() / 4, rgba.height() / 4).to_image();
+        retain_sprite_subject(&mut icon);
+        Some(icon)
+    } else {
+        None
+    };
     premultiply(&mut rgba);
     let mut small =
         image::imageops::resize(&rgba, width, height, image::imageops::FilterType::Lanczos3);
     unpremultiply(&mut small);
+    if let Some(mut icon) = clean_icon {
+        // Full-sheet filtering can pull the next row back across the icon UV.
+        premultiply(&mut icon);
+        let mut small_icon = image::imageops::resize(
+            &icon,
+            width / 4,
+            height / 4,
+            image::imageops::FilterType::Lanczos3,
+        );
+        unpremultiply(&mut small_icon);
+        image::imageops::replace(&mut small, &small_icon, 0, 0);
+    }
     small.save(target).expect("write optimized animation PNG");
 }
 

@@ -12,11 +12,11 @@ pub fn happiness_output_multiplier(class: usize, happiness: f64, config: &Econom
         * ((threshold - happiness) / threshold).clamp(0.0, 1.0)
 }
 
-/// Convert atlas square-degree geometry into the existing aggregate resident scale.
-/// The current map's starting population is `(220 + 35 * sqrt(area))/10`,
+/// Convert atlas square-degree geometry into the displayed resident scale.
+/// The current map's starting population is `220 + 35 * sqrt(area)`,
 /// before city/starting compensation. Capacity adds its own terrain/city modifiers.
 pub fn normalized_capacity_area(raw_map_area: f64) -> f64 {
-    22.0 + 3.5 * raw_map_area.max(0.0).sqrt()
+    220.0 + 35.0 * raw_map_area.max(0.0).sqrt()
 }
 
 /// Happiness strongly suppresses unhappy births and modestly rewards happy births.
@@ -122,12 +122,8 @@ impl EconomicProvince {
         (allocation, production)
     }
 
-    /// Final happiness, composed afresh each month rather than accumulating policy drift.
-    pub fn calculate_happiness(&self, supply_ratio: f64, config: &EconomyConfig) -> [f64; 4] {
-        let overcrowding = ((self.total_population() / self.capacity(config) - 1.0).max(0.0)
-            * config.overcrowding_scale)
-            .min(config.overcrowding_cap);
-        let shortage = (1.0 - supply_ratio.clamp(0.0, 1.0)) * config.shortage_happiness_penalty;
+    /// Final happiness combines standing modifiers with accumulated hardship.
+    pub fn calculate_happiness(&self, config: &EconomyConfig) -> [f64; 4] {
         let food = config.food_policy[self.policies.food as usize];
         let slave = config.slave_policy[self.policies.slave_labor as usize];
         let buildings = self.building_effects(config);
@@ -138,6 +134,16 @@ impl EconomicProvince {
                 + config.manumission_happiness[self.policies.manumission as usize][class]
                 + self.happiness_modifiers[class]
                 + self.temporary_happiness[class]
+                + if class == 0 {
+                    self.noble_wage_happiness
+                } else {
+                    0.0
+                }
+                - if class == 0 {
+                    self.insolvency_unhappiness
+                } else {
+                    0.0
+                }
                 + if class == 1 || class == 2 {
                     self.recruitment_happiness
                 } else {
@@ -149,8 +155,8 @@ impl EconomicProvince {
                     config.migration_happiness[self.policies.migration as usize]
                         + self.civic_happiness
                 }
-                - overcrowding
-                - shortage)
+                - self.overcrowding_unhappiness
+                - self.shortage_unhappiness)
                 .clamp(0.0, 100.0)
         })
     }
@@ -186,7 +192,23 @@ impl EconomicProvince {
         let food = config.food_policy[self.policies.food as usize];
         let slave = config.slave_policy[self.policies.slave_labor as usize];
         let previous_happiness = self.happiness;
-        self.happiness = self.calculate_happiness(report.food_supply_ratio, config);
+        report.overcrowding_penalty = ((self.total_population() / self.capacity(config) - 1.0)
+            .max(0.0)
+            * config.overcrowding_scale)
+            .min(config.overcrowding_cap);
+        report.shortage_penalty =
+            (1.0 - report.food_supply_ratio.clamp(0.0, 1.0)) * config.shortage_happiness_penalty;
+        self.overcrowding_unhappiness = if report.overcrowding_penalty > 0.0 {
+            (self.overcrowding_unhappiness + report.overcrowding_penalty).min(100.0)
+        } else {
+            (self.overcrowding_unhappiness - config.overcrowding_cap).max(0.0)
+        };
+        self.shortage_unhappiness = if report.shortage_penalty > 0.0 {
+            (self.shortage_unhappiness + report.shortage_penalty).min(100.0)
+        } else {
+            (self.shortage_unhappiness - config.shortage_happiness_penalty).max(0.0)
+        };
+        self.happiness = self.calculate_happiness(config);
         report.happiness_delta =
             std::array::from_fn(|class| self.happiness[class] - previous_happiness[class]);
         let crowding_births = self.crowding_birth_modifier(config);
@@ -207,8 +229,8 @@ impl EconomicProvince {
                 } else {
                     1.0
                 };
-            report.famine_deaths[class] =
-                count * (1.0 - report.food_supply_ratio) * config.max_famine_death_rate;
+            let shortage = 1.0 - report.food_supply_ratio.clamp(0.0, 1.0);
+            report.famine_deaths[class] = count * shortage.powf(1.5) * config.max_famine_death_rate;
             self.population[class] = (count + report.births[class]
                 - report.normal_deaths[class]
                 - report.famine_deaths[class])
@@ -299,8 +321,8 @@ impl EconomyWorld {
                 // Slaves have no free migration regardless of malformed config.
                 let unhappiness = ((50.0 - source.happiness[class]) / 50.0).max(0.0);
                 let rate = self.config.migration_rates[class]
-                    * unhappiness
-                    * (1.0
+                    * (self.config.baseline_migration_pressure.max(0.0)
+                        + unhappiness
                         + (population_ratio - 1.0).max(0.0)
                             * self.config.overpopulation_migration_scale)
                     * self.config.migration_out[source.policies.migration as usize];
@@ -332,8 +354,8 @@ impl EconomyWorld {
                                 weights[2]
                             } else {
                                 0.0
-                            }
-                            + target.building_effects(&self.config).migration)
+                            })
+                            * (1.0 + target.building_effects(&self.config).migration).max(0.0)
                             * self.config.migration_in[target.policies.migration as usize]
                             * relationship;
                         if score > 0.0 && !destinations.iter().any(|(id, _)| *id == target_id) {

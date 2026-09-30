@@ -104,7 +104,7 @@ pub struct TradeAgreement {
     pub last_fulfillment: f64,
     /// Month of the last successful transfer; political profiles can limit rewards to recent trade.
     pub last_executed_month: Option<u32>,
-    /// Final monthly delivery after voluntary NPC cancellation notice.
+    /// Final monthly delivery after voluntary cancellation notice.
     pub cancellation_month: Option<u32>,
 }
 
@@ -235,7 +235,7 @@ pub struct TradePoliticalEffect {
     pub delivered_value: f64,
 }
 
-/// Immediate NPC cancellation changes sentiment only, without changing Control.
+/// Economy-level NPC sentiment effect; the campaign also applies political penalties.
 #[derive(Clone, Copy, Debug)]
 pub struct TradeCancellationEffect {
     /// Province whose agreement was ended.
@@ -411,15 +411,7 @@ impl EconomyWorld {
     /// Route loss applies to both directions and every resource, including currency.
     pub fn route_efficiency(&self, route: &[usize]) -> f64 {
         let extra_steps = route.len().saturating_sub(2) as f64;
-        let bonus: f64 = route
-            .iter()
-            .filter_map(|id| self.provinces.get(*id))
-            .map(|province| {
-                f64::from(province.level(BuildingType::Road)) * self.config.trade.road_efficiency
-                    + province.building_effects(&self.config).trade
-            })
-            .sum();
-        (1.0 - extra_steps * self.config.trade.loss_per_step + bonus)
+        (1.0 - extra_steps * self.config.trade.loss_per_step)
             .clamp(self.config.trade.minimum_efficiency, 1.0)
     }
 
@@ -612,7 +604,7 @@ impl EconomyWorld {
         Ok(effect)
     }
 
-    /// Keep an NPC route running for six monthly deliveries before ending without a penalty.
+    /// Keep any recurring route running for six monthly deliveries before ending without a penalty.
     pub fn schedule_trade_cancellation(&mut self, id: u64, player: usize) -> Result<u32, String> {
         let trade =
             self.trades.iter_mut().find(|trade| trade.id == id).ok_or("Unknown agreement")?;
@@ -621,11 +613,10 @@ impl EconomyWorld {
         {
             return Err("Only a participant can give notice".into());
         }
-        if !matches!(trade.party_b, TradeParty::Npc(_))
-            || trade.frequency != TradeFrequency::Monthly
+        if trade.frequency != TradeFrequency::Monthly
             || !matches!(trade.status, TradeStatus::Active | TradeStatus::Suspended)
         {
-            return Err("Notice is only needed for an open NPC route; player agreements can end immediately without a penalty".into());
+            return Err("Notice requires an open monthly route".into());
         }
         if trade.cancellation_month.is_some() {
             return Err("This route already has cancellation notice".into());

@@ -26,8 +26,12 @@ pub(crate) enum NoticeKind {
     ConsulRemoved,
     /// Senate support or conquest of Rome produced a campaign victor.
     AugustusVictory,
+    /// A player lost their last directly owned province.
+    PlayerDefeated,
     /// A paid cohort completed recruitment.
     RecruitmentCompleted,
+    /// A player disbanded their whole stationary army.
+    ArmyDisbanded,
     /// Whole cohorts were permanently destroyed in combat or a failed retreat.
     UnitsDestroyed,
     /// Foreign units arrived in owned or vassal territory with peaceful access.
@@ -54,6 +58,10 @@ pub(crate) enum NoticeKind {
     BuildingCompleted,
     /// Civilian and military demand exceeded the owner's global Food supply.
     FoodShortage,
+    /// An empty treasury cannot cover recurring outflow.
+    TreasuryExhausted,
+    /// A player's class happiness fell below its warning threshold.
+    PopulationUnhappy(usize),
     /// Enslaved residents left the province and formed hostile infantry.
     SlaveRevolt,
     /// One or more recurring agreements failed or were cancelled.
@@ -66,6 +74,8 @@ pub(crate) enum NoticeKind {
     ControlFifty,
     /// Independent Control crossed 100 upward.
     ControlFull,
+    /// Directly owned Control first fell below 90.
+    OwnedControlThreatened,
     /// A local spy was discovered and removed.
     SpyDetected,
     /// An unmaintained local spy was withdrawn.
@@ -213,7 +223,10 @@ impl CampaignNotifications {
         let same = |old: &CampaignNotice| {
             !matches!(
                 notice.kind,
-                NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+                NoticeKind::MilitaryAccessGranted
+                    | NoticeKind::MilitaryAccessRevoked
+                    | NoticeKind::ArmyDisbanded
+                    | NoticeKind::MilitaryRankIncreased
             ) && old.recipient == notice.recipient
                 && old.kind == notice.kind
                 && old.province == notice.province
@@ -270,6 +283,7 @@ impl CampaignNotifications {
 #[derive(Debug, Clone)]
 pub(crate) struct NotificationSnapshot {
     politics: Vec<(PoliticalState, Vec<f64>)>,
+    controls: Vec<Vec<f64>>,
     completed_wonders: Vec<Option<usize>>,
     building_wonders: Vec<Option<usize>>,
     military_access: Vec<Vec<MilitaryAccess>>,
@@ -408,7 +422,7 @@ impl Campaign {
                     .or_else(|| (!self.economy.provinces.is_empty()).then_some(0))
                 {
                     self.notifications.province_notice(player,province,month,NoticeSeverity::Info,NoticeKind::MilitaryRankIncreased,
-                        format!("Promoted to {}",rank.name()),format!("Your military career now grants +{:.0} Morale and stronger garrison support. Political rank is separate.",self.military.config.rank_morale[rank as usize]));
+                        format!("Congratulations — promoted to {}",rank.name()),format!("Your armies now gain +{:.0} combat Morale, {:.1}% monthly manpower recovery, and stronger garrison Control. Your military rank also improves Military bloc Senate support.",self.military.config.rank_morale[rank as usize],self.military.config.rank_recovery[rank as usize]));
                 }
             },
             MilitaryEvent::BattleEnded {
@@ -595,6 +609,11 @@ impl Campaign {
                 .iter()
                 .map(|p| (p.state.clone(), p.relations.clone()))
                 .collect(),
+            controls: self
+                .politics
+                .iter()
+                .map(|p| (0..self.actors.len()).map(|player| p.control(player)).collect())
+                .collect(),
             completed_wonders: self.economy.provinces.iter().map(|p| p.completed_wonder).collect(),
             building_wonders: self
                 .economy
@@ -633,6 +652,30 @@ impl Campaign {
                 continue;
             };
             let name = &self.economy.provinces[province].name;
+            if let (
+                PoliticalState::Owned {
+                    owner: old_owner,
+                },
+                PoliticalState::Owned {
+                    owner,
+                },
+            ) = (old_state, &politics.state)
+            {
+                if old_owner == owner {
+                    let old_control = before
+                        .controls
+                        .get(province)
+                        .and_then(|shares| shares.get(*owner))
+                        .copied()
+                        .unwrap_or(100.0);
+                    let new_control = politics.control(*owner);
+                    if old_control >= 90.0 && new_control < 90.0 {
+                        self.notifications.province_notice(*owner, province, month, NoticeSeverity::Warning, NoticeKind::OwnedControlThreatened,
+                            format!("Control in {name} is slipping"),
+                            "Someone is gaining Control over your province. Open its overview to inspect your remaining Control.");
+                    }
+                }
+            }
             for player in 0..self.actors.len() {
                 if let (
                     PoliticalState::Independent {

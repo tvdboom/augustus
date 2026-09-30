@@ -8,19 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone)]
 pub struct EspionageConfig {
     /// One-time Influence prices for control, relations, scandals, and undermining.
-    pub deployment_influence: [f64; 4],
+    pub deployment_influence: [f64; 6],
     /// Coin maintenance paid before each detection check.
     pub monthly_coin: f64,
-    /// Monthly political pressure from a surviving control mission.
-    pub monthly_control: f64,
-    /// Monthly sentiment gain from a surviving relationship mission.
-    pub monthly_relation: f64,
-    /// Chance for a surviving spy to undermine one rival in NPC land each month.
-    pub undermine_chance: f64,
-    /// Rival Control, Relation, or player-owned population Happiness lost on success.
-    pub undermine_points: f64,
     /// Detection chance with zero and fully happy Nobles.
     pub detection_range: [f64; 2],
+    /// Months an orderly recall remains deployed.
+    pub recall_months: u32,
     /// Relation penalty when an NPC catches a spy.
     pub npc_detection_relation_loss: f64,
     /// Maximum lifetime of ordinary evidence in months.
@@ -41,13 +35,10 @@ impl Default for EspionageConfig {
     /// Recommended specification defaults, with a bounded NPC discovery rate.
     fn default() -> Self {
         Self {
-            deployment_influence: [10.0, 5.0, 15.0, 20.0],
+            deployment_influence: [10.0, 5.0, 15.0, 20.0, 20.0, 20.0],
             monthly_coin: 5.0,
-            monthly_control: 1.0,
-            monthly_relation: 1.0,
-            undermine_chance: 0.25,
-            undermine_points: 1.0,
             detection_range: [0.02, 0.10],
+            recall_months: 6,
             npc_detection_relation_loss: 10.0,
             evidence_lifetime: 24,
             npc_generation_chance: 0.05,
@@ -67,6 +58,8 @@ impl EspionageConfig {
             SpyAssignment::ImproveRelations => 1,
             SpyAssignment::DiscoverScandals => 2,
             SpyAssignment::UndermineOpponents => 3,
+            SpyAssignment::SupportRevolt => 4,
+            SpyAssignment::DiscreditRivals => 5,
         }]
     }
 
@@ -114,6 +107,8 @@ pub enum ScandalKind {
     Espionage,
     /// Actual coin spending on Senate bribery.
     PoliticalBribery,
+    /// Secret payments to a province's nobles to purchase political control.
+    NobleBribery,
     /// NPC corruption.
     CorruptGovernor,
     /// NPC secret payments.
@@ -144,9 +139,10 @@ impl ScandalKind {
             Self::HighTribute => "High Vassal Tribute",
             Self::HostileOccupation => "Hostile Vassal Occupation",
             Self::TreatyViolation => "Broken Agreement",
-            Self::FriendlyAttack => "Attack on a Friendly Province",
+            Self::FriendlyAttack => "Attack Without Casus Belli",
             Self::Espionage => "Detected Espionage",
             Self::PoliticalBribery => "Political Bribery",
+            Self::NobleBribery => "Bribed Nobles",
             Self::CorruptGovernor => "Corrupt Governor",
             Self::SecretPayments => "Secret Payments",
             Self::CitizenAbuse => "Abuse of Citizens",
@@ -165,7 +161,7 @@ impl ScandalKind {
             Self::HighTaxes => 0.06,
             Self::Famine | Self::MassStarvation => 0.20,
             Self::TreatyViolation | Self::FriendlyAttack => 0.25,
-            Self::PoliticalBribery => 0.15,
+            Self::PoliticalBribery | Self::NobleBribery => 0.15,
             _ => 0.10,
         }
     }
@@ -176,9 +172,10 @@ impl ScandalKind {
             Self::LowFood | Self::Famine | Self::MassStarvation => [0.02, 0.03, 0.08, 0.14, 0.03],
             Self::HarshLabor | Self::CitizenAbuse => [0.01, 0.02, 0.08, 0.09, 0.01],
             Self::HighTribute | Self::HostileOccupation => [0.02, 0.03, 0.14, 0.05, 0.01],
-            Self::PoliticalBribery | Self::CorruptGovernor | Self::SecretPayments => {
-                [0.12, 0.10, 0.03, 0.04, 0.02]
-            },
+            Self::PoliticalBribery
+            | Self::NobleBribery
+            | Self::CorruptGovernor
+            | Self::SecretPayments => [0.12, 0.10, 0.03, 0.04, 0.02],
             Self::Espionage | Self::TreatyViolation | Self::FriendlyAttack => {
                 [0.07, 0.07, 0.08, 0.07, 0.05]
             },
@@ -286,18 +283,30 @@ pub enum SpyAssignment {
     DiscoverScandals,
     /// Occasionally weaken rival politics or player-owned population Happiness.
     UndermineOpponents,
+    /// Lower only enslaved people's happiness to encourage an uprising.
+    SupportRevolt,
+    /// Erode another player's political standing in independent territory.
+    DiscreditRivals,
 }
 
 impl SpyAssignment {
-    /// A foreign owned province cannot be politically bought away.
+    /// Rival players can build relation and political control in owned provinces.
     pub fn eligible(self, state: &PoliticalState) -> bool {
         match self {
-            Self::GainControl => matches!(state, PoliticalState::Independent { .. }),
+            Self::GainControl => {
+                matches!(state, PoliticalState::Independent { .. } | PoliticalState::Owned { .. })
+            },
             Self::ImproveRelations => {
-                matches!(state, PoliticalState::Independent { .. } | PoliticalState::Vassal { .. })
+                matches!(
+                    state,
+                    PoliticalState::Independent { .. }
+                        | PoliticalState::Vassal { .. }
+                        | PoliticalState::Owned { .. }
+                )
             },
             Self::DiscoverScandals => *state != PoliticalState::Rome,
-            Self::UndermineOpponents => *state != PoliticalState::Rome,
+            Self::UndermineOpponents | Self::SupportRevolt => *state != PoliticalState::Rome,
+            Self::DiscreditRivals => matches!(state, PoliticalState::Independent { .. }),
         }
     }
 }
@@ -332,11 +341,11 @@ pub struct SpyMission {
     pub province: ProvinceId,
     /// Number of paid, resolved operational months.
     pub months_active: u32,
+    /// Month at which an orderly recall finishes, after that month's work.
+    pub recall_month: Option<u32>,
     /// Exactly one monthly task, fixed until the spy is recalled.
     pub assignment: SpyAssignment,
-    /// Losing the political route withdraws the network.
-    pub reachable: bool,
-    /// Current route length, refreshed before each campaign monthly charge.
+    /// Current political distance, refreshed before each campaign monthly charge.
     pub distance: usize,
     /// Running costs and mission results since launch.
     pub totals: SpyMissionTotals,
@@ -373,6 +382,8 @@ pub enum EspionageEvent {
     Withdrawn(PlayerId, ProvinceId),
     /// Target uncovered and removed the foreign network.
     Detected(PlayerId, ProvinceId),
+    /// An orderly recall finished after its sixth month.
+    Recalled(PlayerId, ProvinceId),
     /// Holder acquired an evidence item.
     EvidenceDiscovered(PlayerId, u64),
     /// A surviving spy reduces one randomly selected population class's Happiness.
@@ -440,7 +451,7 @@ impl EspionageState {
         )
     }
 
-    /// Deploy at the selected mission's price, requiring a usable political route.
+    /// Deploy at the selected mission's political-distance price.
     pub fn deploy_assignment(
         &mut self,
         player: PlayerId,
@@ -473,9 +484,9 @@ impl EspionageState {
             owner: player,
             province,
             months_active: 0,
+            recall_month: None,
             assignment,
-            reachable: true,
-            distance: distance.expect("a quoted deployment has a route"),
+            distance: distance.unwrap_or(16),
             totals: SpyMissionTotals {
                 influence_spent: cost,
                 ..Default::default()
@@ -485,7 +496,67 @@ impl EspionageState {
         Ok(())
     }
 
-    /// Voluntary withdrawal stops maintenance and performs no detection roll.
+    /// Schedule an orderly recall. The network remains active until the due month.
+    pub fn recall(
+        &mut self,
+        player: PlayerId,
+        province: ProvinceId,
+        month: u32,
+        config: &EspionageConfig,
+    ) -> Result<u32, PoliticalError> {
+        let mission = self
+            .missions
+            .iter_mut()
+            .find(|m| m.owner == player && m.province == province)
+            .ok_or(PoliticalError::MissingTarget)?;
+        if mission.recall_month.is_some() {
+            return Err(PoliticalError::AlreadyUsed);
+        }
+        let due = month.saturating_add(config.recall_months);
+        mission.recall_month = Some(due);
+        Ok(due)
+    }
+
+    /// Flee immediately, resolving exactly one elevated detection check.
+    pub fn flee(
+        &mut self,
+        player: PlayerId,
+        province: ProvinceId,
+        target: &SpyProvince,
+        politics: &mut [ProvincePolitics],
+        month: u32,
+        config: &EspionageConfig,
+    ) -> Result<Vec<EspionageEvent>, PoliticalError> {
+        let index = self
+            .missions
+            .iter()
+            .position(|m| m.owner == player && m.province == province)
+            .ok_or(PoliticalError::MissingTarget)?;
+        self.missions.remove(index);
+        let mut events = Vec::new();
+        if self.rng.unit() < flee_detection_chance(target.noble_happiness, config) {
+            events.push(EspionageEvent::Detected(player, province));
+            if let Some(victim) = target.owner {
+                let source = self.allocate_id();
+                let id = self.grant(
+                    victim,
+                    ScandalTarget::Player(player),
+                    ScandalKind::Espionage,
+                    Severity::Medium,
+                    Some(province),
+                    source,
+                    month,
+                    config,
+                );
+                events.push(EspionageEvent::EvidenceDiscovered(victim, id));
+            } else if let Some(target_politics) = politics.get_mut(province) {
+                target_politics.change_relation(player, -config.npc_detection_relation_loss);
+            }
+        }
+        Ok(events)
+    }
+
+    /// Remove a network forcibly, without a detection roll.
     pub fn withdraw(&mut self, player: PlayerId, province: ProvinceId) {
         self.missions.retain(|m| m.owner != player || m.province != province);
     }
@@ -510,6 +581,39 @@ impl EspionageState {
             expires: Some(month + config.evidence_lifetime),
         });
         id
+    }
+
+    /// An observing rival network has a fixed chance to catch a noble payment at once.
+    pub fn observe_noble_bribe(
+        &mut self,
+        actor: PlayerId,
+        province: ProvinceId,
+        month: u32,
+        config: &EspionageConfig,
+    ) -> Option<(PlayerId, u64)> {
+        let observers: BTreeSet<_> = self
+            .missions
+            .iter()
+            .filter(|mission| mission.owner != actor && mission.province == province)
+            .map(|mission| mission.owner)
+            .collect();
+        for observer in observers {
+            if self.rng.unit() < 0.30 {
+                let source = self.allocate_id();
+                let id = self.grant(
+                    observer,
+                    ScandalTarget::Player(actor),
+                    ScandalKind::NobleBribery,
+                    Severity::Medium,
+                    Some(province),
+                    source,
+                    month,
+                    config,
+                );
+                return Some((observer, id));
+            }
+        }
+        None
     }
 
     /// Reconcile a real player-wide policy such as high tribute. Deactivation prevents
@@ -702,12 +806,8 @@ impl EspionageState {
                 events.push(EspionageEvent::Withdrawn(mission.owner, mission.province));
                 continue;
             }
-            if !mission.reachable {
-                events.push(EspionageEvent::Withdrawn(mission.owner, mission.province));
-                continue;
-            }
             let upkeep =
-                config.monthly_cost_at(Some(mission.distance)).expect("a deployed spy has a route");
+                config.monthly_cost_at(Some(mission.distance)).expect("a deployed spy has a price");
             let paid = players
                 .get_mut(mission.owner)
                 .is_some_and(|actor| actor.spend(Currency::Coin, upkeep).is_ok());
@@ -773,36 +873,46 @@ impl EspionageState {
             if let Some(target) = politics.get_mut(mission.province) {
                 match mission.assignment {
                     SpyAssignment::GainControl => {
-                        if target.queue_control_gain(mission.owner, config.monthly_control).is_ok()
+                        let points = (self.rng.unit() * 4.0).floor();
+                        if points > 0.0 && target.queue_control_gain(mission.owner, points).is_ok()
                         {
-                            self.missions[index].totals.control_contributed +=
-                                config.monthly_control;
+                            self.missions[index].totals.control_contributed += points;
                         }
                         continue;
                     },
                     SpyAssignment::ImproveRelations => {
                         if mission.assignment.eligible(&target.state) {
                             let before = target.relation(mission.owner);
-                            target.change_relation(mission.owner, config.monthly_relation);
+                            target.change_relation(mission.owner, (self.rng.unit() * 4.0).floor());
                             self.missions[index].totals.relation_gained +=
                                 target.relation(mission.owner) - before;
                         }
                         continue;
                     },
                     SpyAssignment::DiscoverScandals => {},
-                    SpyAssignment::UndermineOpponents => {
+                    SpyAssignment::UndermineOpponents | SpyAssignment::SupportRevolt => {
                         if mission.assignment.eligible(&target.state) {
-                            if provinces[mission.province].owner.is_some() {
-                                let class = (self.rng.unit() * 4.0) as usize;
+                            let points = (self.rng.unit() * 4.0).floor();
+                            if points > 0.0 {
+                                let class = if mission.assignment == SpyAssignment::SupportRevolt {
+                                    3
+                                } else {
+                                    (self.rng.unit() * 3.0).floor() as usize
+                                };
                                 events.push(EspionageEvent::PopulationUndermined(
                                     mission.owner,
                                     mission.province,
                                     class,
-                                    config.undermine_points,
+                                    points,
                                 ));
-                                continue;
                             }
-                            if self.rng.unit() >= config.undermine_chance {
+                        }
+                        continue;
+                    },
+                    SpyAssignment::DiscreditRivals => {
+                        if mission.assignment.eligible(&target.state) {
+                            let points = (self.rng.unit() * 4.0).floor();
+                            if points <= 0.0 {
                                 continue;
                             }
                             let rivals: Vec<_> = (0..players.len())
@@ -818,16 +928,12 @@ impl EspionageState {
                                 let control = target.control(rival) > 0.0;
                                 let relation = target.relation(rival) > 0.0;
                                 if control && (!relation || self.rng.unit() < 0.5) {
-                                    if target
-                                        .queue_control_loss(rival, config.undermine_points)
-                                        .is_ok()
-                                    {
-                                        self.missions[index].totals.rival_control_reduced +=
-                                            config.undermine_points;
+                                    if target.queue_control_loss(rival, points).is_ok() {
+                                        self.missions[index].totals.rival_control_reduced += points;
                                     }
                                 } else {
                                     let before = target.relation(rival);
-                                    target.change_relation(rival, -config.undermine_points);
+                                    target.change_relation(rival, -points);
                                     self.missions[index].totals.rival_relation_reduced +=
                                         before - target.relation(rival);
                                 }
@@ -898,6 +1004,14 @@ impl EspionageState {
                 }
             }
         }
+        self.missions.retain(|mission| {
+            if mission.recall_month.is_some_and(|due| month >= due) {
+                events.push(EspionageEvent::Recalled(mission.owner, mission.province));
+                false
+            } else {
+                true
+            }
+        });
         self.scandals.retain(|s| s.expires > month || s.reserved_for_motion);
         self.favorable_trade.retain(|b| b.expires > month);
         events
@@ -984,6 +1098,12 @@ pub fn detection_chance(noble_happiness: f64, config: &EspionageConfig) -> f64 {
     config.detection_range[0]
         + noble_happiness.clamp(0.0, 100.0) / 100.0
             * (config.detection_range[1] - config.detection_range[0])
+}
+
+/// Twice the cumulative chance of detection during a full orderly recall, capped at 100%.
+pub fn flee_detection_chance(noble_happiness: f64, config: &EspionageConfig) -> f64 {
+    let monthly = detection_chance(noble_happiness, config).clamp(0.0, 1.0);
+    (2.0 * (1.0 - (1.0 - monthly).powf(f64::from(config.recall_months)))).min(1.0)
 }
 
 #[cfg(test)]

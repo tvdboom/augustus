@@ -10,7 +10,7 @@ pub enum BuildingType {
     Granary,
     /// Metal and stone storage.
     Warehouse,
-    /// Faster army travel and more efficient trade routes.
+    /// Faster army travel through the province.
     Road,
     /// Comfortable population capacity.
     Aqueduct,
@@ -18,7 +18,7 @@ pub enum BuildingType {
     Forum,
     /// City capacity and happiness.
     Baths,
-    /// City taxes and trade.
+    /// City attraction for new residents.
     UrbanMarket,
     /// City happiness and influence.
     Temple,
@@ -26,16 +26,16 @@ pub enum BuildingType {
     Arena,
     /// City defenses.
     CityWalls,
-    /// City influence and citizen happiness.
+    /// City influence and free-class happiness.
     Academy,
-    /// City metal production.
-    Foundry,
+    /// City tax administration.
+    CityHall,
 }
 
 impl BuildingType {
     /// Number of supported normal buildings.
     pub const COUNT: usize = 12;
-    /// Stable UI order, with city improvements grouped together.
+    /// Stable building indexes; cards are sorted by their current cost in the UI.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Granary,
         Self::Warehouse,
@@ -48,7 +48,7 @@ impl BuildingType {
         Self::Arena,
         Self::CityWalls,
         Self::Academy,
-        Self::Foundry,
+        Self::CityHall,
     ];
 
     /// Player-facing building name.
@@ -65,7 +65,7 @@ impl BuildingType {
             Self::UrbanMarket => "Market",
             Self::CityWalls => "Walls",
             Self::Academy => "Academy",
-            Self::Foundry => "Foundry",
+            Self::CityHall => "City Hall",
         }
     }
 }
@@ -79,7 +79,7 @@ pub struct BuildingEffects {
     pub capacity: f64,
     /// Additive production multiplier per resource: 0.1 means +10% per level.
     pub production: [f64; 3],
-    /// Flat class happiness change per level.
+    /// Standing class happiness modifier per level, recalculated each month.
     pub happiness: [f64; 4],
     /// Monthly influence per level.
     pub influence: f64,
@@ -87,10 +87,8 @@ pub struct BuildingEffects {
     pub tax: f64,
     /// Local military defense contribution per level.
     pub defense: f64,
-    /// Extra inbound migration attractiveness.
+    /// Inbound migration attraction multiplier: 0.1 means +10% per level.
     pub migration: f64,
-    /// Added route efficiency per completed level.
-    pub trade: f64,
 }
 
 /// Cost/time/effects definition for a normal building.
@@ -129,17 +127,17 @@ impl BuildingDefinition {
                 (140.0, 20.0, 4.0, false)
             },
             Aqueduct => {
-                effects.capacity = 20.0;
+                effects.capacity = 20.0 * crate::map::POPULATION_SCALE;
                 (160.0, 20.0, 4.0, false)
             },
             Road => (100.0, 10.0, 3.0, false),
             Forum => {
-                effects.influence = 0.5;
+                effects.influence = 1.0;
                 (180.0, 20.0, 4.0, true)
             },
             Baths => {
-                effects.capacity = 15.0;
-                effects.happiness = [2.0; 4];
+                effects.capacity = 15.0 * crate::map::POPULATION_SCALE;
+                effects.happiness = [2.0, 2.0, 2.0, 0.0];
                 (180.0, 20.0, 4.0, true)
             },
             Temple => {
@@ -152,8 +150,7 @@ impl BuildingDefinition {
                 (220.0, 30.0, 5.0, true)
             },
             UrbanMarket => {
-                effects.tax = 0.1;
-                effects.trade = 0.005;
+                effects.migration = 0.1;
                 (150.0, 20.0, 4.0, true)
             },
             CityWalls => {
@@ -162,11 +159,11 @@ impl BuildingDefinition {
             },
             Academy => {
                 effects.influence = 0.25;
-                effects.happiness[1] = 3.0;
+                effects.happiness = [1.0, 1.0, 1.0, 0.0];
                 (200.0, 20.0, 5.0, true)
             },
-            Foundry => {
-                effects.production[1] = 0.15;
+            CityHall => {
+                effects.tax = 0.1;
                 (150.0, 40.0, 4.0, true)
             },
         };
@@ -339,7 +336,6 @@ impl EconomicProvince {
             result.tax += definition.effects.tax * level;
             result.defense += definition.effects.defense * level;
             result.migration += definition.effects.migration * level;
-            result.trade += definition.effects.trade * level;
         }
         result
     }

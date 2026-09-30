@@ -1,18 +1,196 @@
 //! Shared cards and destinations for live campaign notices and province history.
 
+use super::campaign::Campaign;
 use super::campaign_notifications::{CampaignNotice, NoticeKind, NoticeSeverity};
-use super::campaign_widgets::{paint_icon, Icon};
+use super::campaign_widgets::{icon, paint_icon, Icon};
 use super::province_panel::{INK, RULE, TABLE_STRIPE};
 use bevy_egui::egui;
+
+const FILTER_CATEGORIES: [(&str, Icon); 5] = [
+    ("Resources", Icon::Coin),
+    ("Spies", Icon::Spy),
+    ("Military", Icon::Attack),
+    ("Buildings", Icon::Construction),
+    ("Politics", Icon::Diplomacy),
+];
+
+/// Notification filters are local presentation state; each view starts with all types visible.
+#[derive(Clone, Copy)]
+pub(in crate::app) struct NoticeFilters {
+    enabled: [bool; 5],
+}
+
+impl Default for NoticeFilters {
+    fn default() -> Self {
+        Self {
+            enabled: [true; 5],
+        }
+    }
+}
+
+fn category(kind: NoticeKind) -> usize {
+    use NoticeKind::*;
+    match kind {
+        FoodShortage | TreasuryExhausted | TradeInterrupted | PopulationUnhappy(_) => 0,
+        SpyDetected | SpyWithdrawn | ScandalDiscovered | ForeignUnrest => 1,
+        RecruitmentCompleted
+        | ArmyDisbanded
+        | UnitsDestroyed
+        | ForeignArrival
+        | InvasionBegins
+        | BattleResolved
+        | NpcDefeated
+        | OccupationEstablished
+        | MilitaryAccessGranted
+        | MilitaryAccessRevoked
+        | MilitaryMovementStopped
+        | GarrisonWeakened
+        | MilitaryRankIncreased
+        | SlaveRevolt => 2,
+        BuildingCompleted | WonderStarted | WonderCompleted => 3,
+        SenateOfficeAppointed
+        | ConsulTermExpired
+        | ConsulRemoved
+        | AugustusVictory
+        | PlayerDefeated
+        | ControlFifty
+        | ControlFull
+        | OwnedControlThreatened
+        | VassalWeakened
+        | HostileRelation
+        | VeryHostileRelation
+        | VassalRelationDecay => 4,
+    }
+}
+
+fn filtered_history<'a>(
+    campaign: &'a Campaign,
+    player: usize,
+    filters: &'a NoticeFilters,
+) -> impl Iterator<Item = &'a CampaignNotice> {
+    campaign
+        .notifications
+        .history_for(player)
+        .filter(move |notice| filters.enabled[category(notice.kind)])
+}
+
+pub(super) fn filters_row(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
+    ui.add_space(4.0 * scale);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 3.0 * scale;
+        for (index, &(name, artwork)) in FILTER_CATEGORIES.iter().enumerate().rev() {
+            icon(ui, artwork, 18.0 * scale).on_hover_text(name);
+            ui.checkbox(&mut filters.enabled[index], "").on_hover_text(name);
+            if index > 0 {
+                ui.add_space(17.0 * scale);
+            }
+        }
+    });
+    ui.separator();
+}
+
+pub(super) fn allows(filters: &NoticeFilters, notice: &CampaignNotice) -> bool {
+    filters.enabled[category(notice.kind)]
+}
+
+/// Show all notices received by this player, most recent first, using province history cards.
+pub(in crate::app) fn overview(
+    ui: &mut egui::Ui,
+    campaign: &Campaign,
+    player: usize,
+    filters: &mut NoticeFilters,
+    scale: f32,
+) -> Option<CampaignNotice> {
+    filters_row(ui, filters, scale);
+    ui.spacing_mut().item_spacing.y = 8.0 * scale;
+    let mut navigation = None;
+    let mut any = false;
+    for notice in filtered_history(campaign, player, filters) {
+        any = true;
+        ui.push_id(notice.id, |ui| {
+            if card(ui, notice, scale).clicked() {
+                navigation = Some(notice.clone());
+            }
+        });
+    }
+    if !any {
+        ui.add_space(8.0 * scale);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0 * scale);
+            ui.label("No notifications match these filters.");
+        });
+    }
+    navigation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overview_filters_history_by_type_and_recipient() {
+        let mut campaign = Campaign::default();
+        for (player, kind, title) in [
+            (0, NoticeKind::FoodShortage, "Food"),
+            (0, NoticeKind::BattleResolved, "Battle"),
+            (0, NoticeKind::SpyDetected, "Spy"),
+            (1, NoticeKind::BuildingCompleted, "Other player"),
+        ] {
+            campaign.notifications.province_notice(
+                player,
+                if title == "Battle" {
+                    1
+                } else {
+                    0
+                },
+                0,
+                NoticeSeverity::Info,
+                kind,
+                title,
+                "Details",
+            );
+        }
+        campaign.notifications.push(CampaignNotice {
+            id: 0,
+            recipient: 0,
+            severity: NoticeSeverity::Info,
+            title: "Senate".into(),
+            body: "Details".into(),
+            kind: NoticeKind::SenateOfficeAppointed,
+            province: None,
+            building: None,
+            wonder: None,
+            scandal: None,
+            month: 1,
+            action: super::super::campaign_notifications::NoticeAction::OpenSenate,
+        });
+        let mut filters = NoticeFilters::default();
+        let titles = |filters: &NoticeFilters| {
+            filtered_history(&campaign, 0, filters)
+                .map(|notice| notice.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&filters), ["Senate", "Spy", "Battle", "Food"]);
+        filters.enabled[2] = false;
+        assert_eq!(titles(&filters), ["Senate", "Spy", "Food"]);
+        filters.enabled.fill(false);
+        assert!(titles(&filters).is_empty());
+        filters.enabled.fill(true);
+        assert_eq!(titles(&filters), ["Senate", "Spy", "Battle", "Food"]);
+    }
+}
 
 pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
     use NoticeKind::*;
     match kind {
         FoodShortage => Icon::Food,
+        TreasuryExhausted => Icon::Coin,
+        PopulationUnhappy(_) => Icon::Happiness,
         BuildingCompleted | WonderStarted | WonderCompleted => Icon::Construction,
         TradeInterrupted => Icon::Trade,
         RecruitmentCompleted
         | UnitsDestroyed
+        | ArmyDisbanded
         | ForeignArrival
         | InvasionBegins
         | BattleResolved
@@ -24,15 +202,32 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | GarrisonWeakened
         | SlaveRevolt
         | MilitaryRankIncreased => Icon::Attack,
-        SenateOfficeAppointed | ConsulRemoved | ConsulTermExpired | AugustusVictory => Icon::Eagle,
+        SenateOfficeAppointed
+        | ConsulRemoved
+        | ConsulTermExpired
+        | AugustusVictory
+        | PlayerDefeated => Icon::Eagle,
         SpyDetected | SpyWithdrawn | ScandalDiscovered => Icon::Spy,
         ForeignUnrest => Icon::Happiness,
-        ControlFifty | ControlFull | VassalWeakened | HostileRelation | VeryHostileRelation
+        ControlFifty
+        | ControlFull
+        | OwnedControlThreatened
+        | VassalWeakened
+        | HostileRelation
+        | VeryHostileRelation
         | VassalRelationDecay => Icon::Diplomacy,
     }
 }
 
 pub(in crate::app) fn province_section(kind: NoticeKind) -> usize {
+    if matches!(
+        kind,
+        NoticeKind::FoodShortage
+            | NoticeKind::OwnedControlThreatened
+            | NoticeKind::PopulationUnhappy(_)
+    ) {
+        return 0;
+    }
     match symbol(kind) {
         Icon::Food => 1,
         Icon::Construction => 2,

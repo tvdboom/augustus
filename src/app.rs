@@ -12,6 +12,8 @@ use ui::*;
 pub(crate) mod campaign;
 #[path = "game/campaign_espionage.rs"]
 mod campaign_espionage;
+#[path = "game/campaign_events.rs"]
+mod campaign_events;
 #[path = "game/campaign_governance.rs"]
 mod campaign_governance;
 #[path = "game/campaign_intelligence.rs"]
@@ -24,9 +26,13 @@ mod campaign_trade;
 mod game_controls;
 #[path = "game/resources.rs"]
 mod resource_simulation;
+#[path = "game/terminal.rs"]
+mod terminal;
 
 use game_controls::*;
 use menu_audio::*;
+pub(crate) use terminal::TerminalPresentation;
+use terminal::{detect_terminal, prepare_spectator, TerminalOutcome};
 
 use audio_controls::*;
 use hud::*;
@@ -113,6 +119,8 @@ pub enum AppState {
     GameMenu,
     /// Audio settings shown over the current game.
     GameSettings,
+    /// Final result over the still-loaded map.
+    EndGame,
     /// Blank screen shown after starting the prototype lobby.
     EmptyScreen,
 }
@@ -292,6 +300,7 @@ struct MapPanelParams<'w> {
     province: ResMut<'w, ProvincePanelOpen>,
     close_click: ResMut<'w, MapPanelCloseClick>,
     campaign_ui: ResMut<'w, campaign_panel::CampaignUi>,
+    terminal: Option<Res<'w, TerminalPresentation>>,
 }
 
 const SECONDS_PER_MONTH: f32 = 3.0;
@@ -420,6 +429,7 @@ impl Plugin for AugustusPlugin {
             .init_resource::<MenuDraft>()
             .init_resource::<GamePaused>()
             .init_resource::<GameClock>()
+            .init_resource::<TerminalPresentation>()
             .init_resource::<HudResources>()
             .init_resource::<campaign::Campaign>()
             .init_resource::<campaign_panel::CampaignUi>()
@@ -433,6 +443,7 @@ impl Plugin for AugustusPlugin {
             .init_resource::<MapView>()
             .init_resource::<ProvinceOwnership>()
             .init_resource::<toasts::ToastQueue>()
+            .init_resource::<celebration::EventCelebration>()
             .init_resource::<toasts::WarningWatch>()
             .add_systems(Startup, (setup_camera, setup_background, start_music).chain())
             .add_systems(OnEnter(AppState::Loading), (start_loading_wallpaper, reset_game_time))
@@ -448,6 +459,7 @@ impl Plugin for AugustusPlugin {
                 (
                     advance_game_time,
                     campaign::sync_campaign,
+                    detect_terminal,
                     toasts::watch_warnings,
                     toasts::play_pending_sounds,
                     toasts::advance,
@@ -463,8 +475,9 @@ impl Plugin for AugustusPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                draw_menu
-                    .run_if(not(in_state(AppState::Map).or_else(in_state(AppState::EmptyScreen)))),
+                draw_menu.run_if(not(in_state(AppState::Map)
+                    .or_else(in_state(AppState::EmptyScreen))
+                    .or_else(in_state(AppState::EndGame)))),
             )
             .add_systems(EguiPrimaryContextPass, draw_audio_controls.run_if(audio_controls_visible))
             .add_systems(
@@ -485,6 +498,22 @@ impl Plugin for AugustusPlugin {
                 draw_map.run_if(map_visible).after(draw_map_resources),
             )
             .add_systems(EguiPrimaryContextPass, toasts::draw.after(draw_map_resources))
+            .add_systems(EguiPrimaryContextPass, celebration::draw.after(toasts::draw))
+            .add_systems(
+                EguiPrimaryContextPass,
+                campaign_military::draw_promotion.after(celebration::draw),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                spectator::draw_spectator.after(draw_map).run_if(in_state(AppState::Map)),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                spectator::draw_end_game
+                    .after(draw_map)
+                    .after(toasts::draw)
+                    .run_if(in_state(AppState::EndGame)),
+            )
             .add_systems(
                 EguiPrimaryContextPass,
                 campaign_confirmation::draw
@@ -497,6 +526,7 @@ impl Plugin for AugustusPlugin {
                 draw_loading_reveal.run_if(in_state(AppState::Loading)),
             )
             .add_systems(Update, update_music_volume);
+        app.add_systems(OnEnter(AppState::Map), prepare_spectator);
         #[cfg(target_arch = "wasm32")]
         app.init_resource::<LoadingWallpaperDiscovery>();
         #[cfg(not(target_arch = "wasm32"))]

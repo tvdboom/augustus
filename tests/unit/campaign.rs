@@ -24,7 +24,12 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
             campaign.start(&ownership, player_count);
             let mut discovered = false;
             for player in 0..player_count {
-                let province = campaign.home_provinces[player].unwrap();
+                let province = campaign
+                    .economy
+                    .provinces
+                    .iter()
+                    .position(|p| p.owner == Some(player))
+                    .unwrap();
                 let p = &campaign.economy.provinces[province];
                 let production = p.production(&campaign.economy.config).1;
                 let food_need = p.food_request(&campaign.economy.config)
@@ -33,8 +38,8 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                 let influence_income =
                     p.population[0] * campaign.economy.config.influence_per_noble;
                 assert!(
-                    p.total_population() <= p.capacity(&campaign.economy.config) * 1.1,
-                    "{} starts with severe overcrowding: {:.1} residents for {:.1} capacity",
+                    p.total_population() <= p.capacity(&campaign.economy.config) * 0.6,
+                    "{} starts too close to capacity: {:.1} residents for {:.1} capacity",
                     p.name,
                     p.total_population(),
                     p.capacity(&campaign.economy.config)
@@ -62,8 +67,13 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
             for month in 0..12 {
                 campaign.advance_month();
                 for player in 0..player_count {
-                    let home = campaign.home_provinces[player].unwrap();
-                    let province = &campaign.economy.provinces[home];
+                    let owned = campaign
+                        .economy
+                        .provinces
+                        .iter()
+                        .position(|p| p.owner == Some(player))
+                        .unwrap();
+                    let province = &campaign.economy.provinces[owned];
                     assert!(
                         campaign.economy.last_report.food_supply_ratio[player] >= 0.999,
                         "{} has a food shortage in month {} of its opening year: ratio {:.3}, stock {:.1}, output {:.1}, need {:.1}, pop {:?}, cap {:.1}, happiness {:?}, owner {:?}, rebellion {}, players {} sample {}",
@@ -73,7 +83,7 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                         province.production(&campaign.economy.config).1[0],
                         province.food_request(&campaign.economy.config),
                         province.population, province.capacity(&campaign.economy.config), province.happiness, province.owner,
-                        campaign.military.provinces[home].slave_rebellion,
+                        campaign.military.provinces[owned].slave_rebellion,
                         player_count, sample
                     );
                     assert!(campaign.economy.players[player].coin > 0.0);
@@ -94,23 +104,26 @@ fn opening_recruitment_construction_and_market_trade_remain_affordable() {
         let mut campaign = Campaign::default();
         campaign.start(&ownership, 1);
         campaign.economy.config.slave_revolt_chance = [0.0; 2];
-        let home = campaign.home_provinces[0].unwrap();
-        let plebeians = campaign.economy.provinces[home].population[2];
+        let province = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+        let plebeians = campaign.economy.provinces[province].population[2];
         campaign
             .military
             .recruit(
-                home,
+                province,
                 0,
                 UnitType::HeavyInfantry,
                 true,
                 &[],
-                &mut campaign.economy.provinces[home].population,
+                &mut campaign.economy.provinces[province].population,
                 &mut campaign.economy.players[0].resources[1],
             )
             .unwrap();
-        assert_eq!(campaign.economy.provinces[home].population[2], plebeians - 1.0);
-        campaign.economy.start_building(0, home, BuildingType::Road).unwrap();
-        campaign.economy.provinces[home].policies.civic_spending = CivicSpending::Normal;
+        assert_eq!(
+            campaign.economy.provinces[province].population[2],
+            plebeians - crate::map::POPULATION_SCALE
+        );
+        campaign.economy.start_building(0, province, BuildingType::Road).unwrap();
+        campaign.economy.provinces[province].policies.civic_spending = CivicSpending::Normal;
         campaign.economy.exchange_open_market(0, 0, MarketSide::Sell, 100.0).unwrap();
         campaign.economy.exchange_open_market(0, 1, MarketSide::Buy, 20.0).unwrap();
         for _ in 0..12 {
@@ -118,14 +131,14 @@ fn opening_recruitment_construction_and_market_trade_remain_affordable() {
             assert!(
                 campaign.economy.last_report.food_supply_ratio[0] >= 0.999,
                 "{} ran short after a modest opening",
-                campaign.economy.provinces[home].name
+                campaign.economy.provinces[province].name
             );
             assert!(campaign.economy.players[0].coin > 0.0);
         }
         assert!(campaign.military.all_units().any(|unit| {
             unit.owner == ForceOwner::Player(0) && unit.unit_type == UnitType::HeavyInfantry
         }));
-        assert_eq!(campaign.economy.provinces[home].level(BuildingType::Road), 1);
+        assert_eq!(campaign.economy.provinces[province].level(BuildingType::Road), 1);
     }
 }
 
@@ -159,7 +172,9 @@ fn surviving_spy_control_resolves_in_the_same_campaign_month() {
     campaign.push_wallets();
     assert_eq!(campaign.politics[target].independent_control(0), 0.0);
     campaign.advance_month();
-    assert_eq!(campaign.politics[target].independent_control(0), 1.0);
+    let rolled = campaign.espionage.missions[0].totals.control_contributed;
+    assert!((0.0..=3.0).contains(&rolled));
+    assert_eq!(campaign.politics[target].independent_control(0), rolled);
     assert_eq!(campaign.politics[target].queued_control_pressure(0), 0.0);
 }
 
@@ -320,6 +335,7 @@ fn nationwide_edicts_follow_ownership_and_leave_local_focus_and_migration_intact
             food_rations: EdictLevel::High,
             slave_labor: EdictLevel::High,
             army_wages: EdictLevel::High,
+            ..Default::default()
         },
     );
     let p = &campaign.economy.provinces[owned];
@@ -363,16 +379,63 @@ fn nationwide_wages_charge_real_soldiers_and_change_peaceful_morale_targets() {
         campaign.military.config.unit(unit.unit_type).coin_per_month * unit.manpower_ratio() * 1.25;
     campaign.pay_army_wages(0, 1.0);
     assert!((campaign.economy.players[0].coin - (100.0 - wage)).abs() < 1e-8);
-    assert_eq!(campaign.military.provinces[owned].forces[&owner][0].morale, 51.0);
+    assert_eq!(campaign.military.provinces[owned].forces[&owner][0].morale, 100.0);
     campaign.pay_army_wages(0, 1.0);
     assert_eq!(
-        campaign.military.provinces[owned].forces[&owner][0].morale, 51.0,
+        campaign.military.provinces[owned].forces[&owner][0].morale, 100.0,
         "Wage morale must not accumulate each month"
     );
     campaign.economy.players[0].coin = 0.0;
     campaign.pay_army_wages(0, 1.0);
     assert_eq!(campaign.economy.players[0].coin, 0.0);
-    assert!(campaign.military.provinces[owned].forces[&owner][0].morale < 51.0);
+    assert!(campaign.military.provinces[owned].forces[&owner][0].morale < 100.0);
+}
+
+#[test]
+fn noble_wages_charge_owned_nobles_and_recompose_happiness() {
+    use crate::map::EdictLevel;
+    let mut campaign = atlas_campaign();
+    let owned = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    let foreign = campaign.economy.provinces.iter().position(|p| p.owner == Some(1)).unwrap();
+    for province in &mut campaign.economy.provinces {
+        if province.owner == Some(0) {
+            province.population = [0.0; 4];
+        }
+    }
+    campaign.economy.provinces[owned].population[0] = 100.0;
+    let foreign_happiness = campaign.economy.provinces[foreign].happiness[0];
+    for (level, cost, happiness) in [
+        (EdictLevel::Low, 0.75, -2.0),
+        (EdictLevel::Medium, 1.0, 0.0),
+        (EdictLevel::High, 1.25, 1.0),
+    ] {
+        campaign.set_governance(
+            0,
+            Governance {
+                noble_wages: level,
+                ..Default::default()
+            },
+        );
+        campaign.economy.players[0].coin = 100.0;
+        assert!((campaign.noble_wages(0) - cost).abs() < 1e-9);
+        campaign.pay_noble_wages(0);
+        assert!((campaign.economy.players[0].coin - (100.0 - cost)).abs() < 1e-9);
+        assert!((campaign.economy.provinces[owned].happiness[0] - (50.0 + happiness)).abs() < 1e-9);
+        assert_eq!(campaign.economy.provinces[foreign].happiness[0], foreign_happiness);
+    }
+    campaign.economy.players[0].coin = 0.0;
+    campaign.pay_noble_wages(0);
+    assert_eq!(campaign.economy.provinces[owned].happiness[0], 51.0);
+    let report = MonthlyReport {
+        province_reports: vec![Default::default(); campaign.economy.provinces.len()],
+        ..Default::default()
+    };
+    campaign.apply_insolvency(&report, &Default::default());
+    assert_eq!(campaign.economy.provinces[owned].insolvency_unhappiness, 3.0);
+    assert_eq!(campaign.economy.provinces[owned].happiness[0], 48.0);
+    campaign.apply_insolvency(&report, &Default::default());
+    assert_eq!(campaign.economy.provinces[owned].insolvency_unhappiness, 6.0);
+    assert_eq!(campaign.economy.provinces[owned].happiness[0], 45.0);
 }
 
 #[test]

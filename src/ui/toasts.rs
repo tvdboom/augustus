@@ -7,12 +7,14 @@ use bevy_egui::{egui, EguiContexts};
 
 use super::{
     play_click, viewport_ui_scale, ActiveGame, AppState, AudioMode, GovernancePanelOpen,
-    HudResource, HudResources, LocalPractice, MenuAudio, ProvinceOwnership, POP_CLASS_NAMES,
+    HudResource, HudResources, LocalPractice, MenuAudio, ProvinceOwnership, TerminalPresentation,
+    POP_CLASS_NAMES,
 };
 use bevy_kira_audio::prelude::{Audio, AudioControl};
 
 const TOAST_SECONDS: f32 = 5.0;
 const MAX_TOASTS: usize = 7;
+use super::campaign_notifications::{NoticeKind, NoticeSeverity};
 use crate::game::economy::UNHAPPINESS_THRESHOLDS;
 const FORECAST_MONTHS: f64 = 3.0;
 const LOW_FOOD: f64 = 10.0;
@@ -37,7 +39,9 @@ pub(in crate::app) enum ToastAction {
 #[derive(Clone, Debug)]
 pub(in crate::app) struct Toast {
     text: String,
+    title: Option<&'static str>,
     level: ToastLevel,
+    play_sound: bool,
     action: Option<ToastAction>,
     seconds_left: f32,
     notice: Option<super::campaign_notifications::CampaignNotice>,
@@ -61,7 +65,9 @@ impl Toast {
     fn new(text: impl Into<String>, level: ToastLevel) -> Self {
         Self {
             text: text.into(),
+            title: None,
             level,
+            play_sound: true,
             action: None,
             seconds_left: TOAST_SECONDS,
             notice: None,
@@ -71,6 +77,16 @@ impl Toast {
 
     pub(in crate::app) fn with_action(mut self, action: ToastAction) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    pub(in crate::app) fn with_title(mut self, title: &'static str) -> Self {
+        self.title = Some(title);
+        self
+    }
+
+    pub(in crate::app) fn without_sound(mut self) -> Self {
+        self.play_sound = false;
         self
     }
 
@@ -84,7 +100,9 @@ impl Toast {
 
     fn message(&self, month: u32) -> super::campaign_notices::Message<'_> {
         use super::campaign_widgets::Icon;
-        let (icon, title) = if self.text.contains("Food stores") {
+        let (icon, title) = if let Some(title) = self.title {
+            (Icon::Events, title)
+        } else if self.text.contains("Food stores") {
             (Icon::Food, "Low food stocks")
         } else if self.text.contains("treasury") {
             (Icon::Coin, "Low treasury")
@@ -113,7 +131,9 @@ impl ToastQueue {
     pub(in crate::app) fn push(&mut self, toast: Toast) {
         // Domain notification IDs and WarningWatch own deduplication. Text alone
         // cannot distinguish a fresh relapse after recovery from the old warning.
-        self.1[toast.level as usize] = true;
+        if toast.play_sound {
+            self.1[toast.level as usize] = true;
+        }
         self.0.push_back(toast);
         while self.0.len() > MAX_TOASTS {
             self.0.pop_front();
@@ -132,9 +152,10 @@ pub(in crate::app) fn play_pending_sounds(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    terminal: Res<TerminalPresentation>,
 ) {
     let pending = std::mem::take(&mut toasts.1);
-    if sound.mode == AudioMode::Mute || sound.volume <= 0.001 {
+    if terminal.outcome.is_some() || sound.mode == AudioMode::Mute || sound.volume <= 0.001 {
         return;
     }
     let decibels = 20.0 * sound.volume.clamp(0.001, 1.0).log10();
@@ -161,6 +182,7 @@ impl WarningWatch {
         player: usize,
         resources: [HudResource; 7],
         happiness: [HudResource; 4],
+        campaign: &mut super::campaign::Campaign,
         toasts: &mut ToastQueue,
     ) {
         if self.player != Some(player) {
@@ -178,16 +200,53 @@ impl WarningWatch {
         let conditions = warning_conditions(resources, happiness);
         for (index, is_active) in conditions.into_iter().enumerate() {
             if is_active && !self.active[index] {
-                let text = match index {
-                    0..=3 => format!("{} are unhappy.", POP_CLASS_NAMES[index]),
-                    4 => "Food stores are almost empty.".to_owned(),
-                    _ => "The treasury is almost empty.".to_owned(),
-                };
-                toasts.push(Toast::warning(text).with_action(ToastAction::OpenGovernance));
+                if index < POP_CLASS_NAMES.len() {
+                    if let Some(province) = most_unhappy_province(campaign, player, index) {
+                        let name = campaign.economy.provinces[province].name.clone();
+                        campaign.notifications.province_notice(
+                            player,
+                            province,
+                            campaign.economy.month,
+                            NoticeSeverity::Warning,
+                            NoticeKind::PopulationUnhappy(index),
+                            "Population unhappy",
+                            format!("{} are unhappy in {name}.", POP_CLASS_NAMES[index]),
+                        );
+                    } else {
+                        toasts.push(
+                            Toast::warning(format!("{} are unhappy.", POP_CLASS_NAMES[index]))
+                                .with_action(ToastAction::OpenGovernance),
+                        );
+                    }
+                } else {
+                    let text = if index == 4 {
+                        "Food stores are almost empty."
+                    } else {
+                        "The treasury is almost empty."
+                    };
+                    toasts.push(Toast::warning(text).with_action(ToastAction::OpenGovernance));
+                }
             }
             self.active[index] = is_active;
         }
     }
+}
+
+/// The HUD average is weighted across owned residents; show the province with the
+/// lowest happiness for the affected class when that average becomes unhappy.
+fn most_unhappy_province(
+    campaign: &super::campaign::Campaign,
+    player: usize,
+    class: usize,
+) -> Option<usize> {
+    campaign
+        .economy
+        .provinces
+        .iter()
+        .enumerate()
+        .filter(|(_, province)| province.owner == Some(player) && province.population[class] > 0.0)
+        .min_by(|(_, a), (_, b)| a.happiness[class].total_cmp(&b.happiness[class]))
+        .map(|(id, _)| id)
 }
 
 fn almost_empty(stock: HudResource, low_stock: f64) -> bool {
@@ -211,6 +270,7 @@ pub(in crate::app) fn watch_warnings(
     practice: Res<LocalPractice>,
     ownership: Res<ProvinceOwnership>,
     resources: Res<HudResources>,
+    mut campaign: ResMut<super::campaign::Campaign>,
     mut watch: ResMut<WarningWatch>,
     mut toasts: ResMut<ToastQueue>,
 ) {
@@ -224,7 +284,7 @@ pub(in crate::app) fn watch_warnings(
     let mut current = resources.for_player(player);
     current[0].monthly_delta = ownership.net_production_for(player)[0];
     current[3].monthly_delta = ownership.coin_delta_for(player);
-    watch.observe(player, current, resources.happiness_for(player), &mut toasts);
+    watch.observe(player, current, resources.happiness_for(player), &mut campaign, &mut toasts);
 }
 
 pub(in crate::app) fn advance(
@@ -255,8 +315,13 @@ pub(in crate::app) fn draw(
     audio: Res<Audio>,
     assets: Res<AssetServer>,
     campaign: Res<super::campaign::Campaign>,
+    terminal: Res<TerminalPresentation>,
 ) {
-    if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice || toasts.0.is_empty() {
+    if terminal.spectating
+        || *state.get() != AppState::Map
+        || *game != ActiveGame::LocalPractice
+        || toasts.0.is_empty()
+    {
         return;
     }
     let Ok(context) = contexts.ctx_mut() else {

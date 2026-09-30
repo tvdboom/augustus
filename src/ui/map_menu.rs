@@ -3,10 +3,10 @@
 use super::*;
 
 pub(in crate::app) const MAP_MENU_ICONS: [(&str, &[u8]); 4] = [
-    ("Governance", include_bytes!("../../assets/images/ui/map-menu/laws.png")),
+    ("Overview", include_bytes!("../../assets/images/ui/map-menu/laws.png")),
     ("Military", include_bytes!("../../assets/images/ui/map-menu/military.png")),
     ("Trade", include_bytes!("../../assets/images/ui/map-menu/trade.png")),
-    ("Politics", include_bytes!("../../assets/images/ui/map-menu/politics.png")),
+    ("Senate", include_bytes!("../../assets/images/ui/map-menu/politics.png")),
 ];
 
 pub(in crate::app) fn map_menu_icon(
@@ -14,42 +14,52 @@ pub(in crate::app) fn map_menu_icon(
     textures: &mut [Option<egui::TextureHandle>; 4],
     index: usize,
 ) -> egui::TextureHandle {
-    textures[index]
-        .get_or_insert_with(|| {
-            let (name, bytes) = MAP_MENU_ICONS[index];
-            let image =
-                image::load_from_memory(bytes).expect("map menu icon PNG must be valid").to_rgba8();
-            // The source art has uneven transparent margins. Crop those margins so
-            // centering the texture also centers the visible glyph.
-            let mut min = (image.width(), image.height());
-            let mut max = (0, 0);
-            for (x, y, pixel) in image.enumerate_pixels() {
-                if pixel[3] > 8 {
-                    min.0 = min.0.min(x);
-                    min.1 = min.1.min(y);
-                    max.0 = max.0.max(x + 1);
-                    max.1 = max.1.max(y + 1);
-                }
+    textures[index].get_or_insert_with(|| map_menu_icon_texture(ctx, index)).clone()
+}
+
+pub(in crate::app) fn map_menu_icon_texture(
+    ctx: &egui::Context,
+    index: usize,
+) -> egui::TextureHandle {
+    let key = egui::Id::new(("augustus-map-menu-icon", index));
+    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key)) {
+        return texture;
+    }
+    let texture = {
+        let (name, bytes) = MAP_MENU_ICONS[index];
+        let image =
+            image::load_from_memory(bytes).expect("map menu icon PNG must be valid").to_rgba8();
+        // The source art has uneven transparent margins. Crop those margins so
+        // centering the texture also centers the visible glyph.
+        let mut min = (image.width(), image.height());
+        let mut max = (0, 0);
+        for (x, y, pixel) in image.enumerate_pixels() {
+            if pixel[3] > 8 {
+                min.0 = min.0.min(x);
+                min.1 = min.1.min(y);
+                max.0 = max.0.max(x + 1);
+                max.1 = max.1.max(y + 1);
             }
-            let image = if max.0 > min.0 && max.1 > min.1 {
-                image::imageops::crop_imm(&image, min.0, min.1, max.0 - min.0, max.1 - min.1)
-                    .to_image()
-            } else {
-                image
-            };
-            let image = image::DynamicImage::ImageRgba8(image)
-                .resize(128, 128, image::imageops::FilterType::Lanczos3)
-                .to_rgba8();
-            ctx.load_texture(
-                format!("augustus_map_menu_{name}"),
-                egui::ColorImage::from_rgba_unmultiplied(
-                    [image.width() as usize, image.height() as usize],
-                    image.as_raw(),
-                ),
-                egui::TextureOptions::LINEAR,
-            )
-        })
-        .clone()
+        }
+        let image = if max.0 > min.0 && max.1 > min.1 {
+            image::imageops::crop_imm(&image, min.0, min.1, max.0 - min.0, max.1 - min.1).to_image()
+        } else {
+            image
+        };
+        let image = image::DynamicImage::ImageRgba8(image)
+            .resize(128, 128, image::imageops::FilterType::Lanczos3)
+            .to_rgba8();
+        ctx.load_texture(
+            format!("augustus_map_menu_{name}"),
+            egui::ColorImage::from_rgba_unmultiplied(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            ),
+            egui::TextureOptions::LINEAR,
+        )
+    };
+    ctx.data_mut(|data| data.insert_temp(key, texture.clone()));
+    texture
 }
 
 pub(in crate::app) fn draw_map_left_menu(

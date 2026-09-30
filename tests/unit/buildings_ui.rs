@@ -69,6 +69,7 @@ fn render(
                             &campaign.economy.provinces,
                             0,
                             &mut view,
+                            None,
                         );
                         egui::Frame::new()
                             .inner_margin(egui::Margin {
@@ -277,11 +278,11 @@ fn four_building_cards_fill_each_category_width_evenly() {
                 let (output, _) =
                     render(&ctx, &mut campaign, egui::vec2(width, height), scale, "", 0.0, vec![]);
                 let mut groups =
-                    vec![("Countryside", ["Granary", "Warehouse", "Road", "Aqueduct"])];
+                    vec![("Countryside", ["Granary", "Road", "Warehouse", "Aqueduct"])];
                 if city {
                     groups.extend([
-                        ("City", ["Forum", "Baths", "Market", "Temple"]),
-                        ("City", ["Arena", "Walls", "Academy", "Foundry"]),
+                        ("City", ["Market", "Temple", "City Hall", "Forum"]),
+                        ("City", ["Baths", "Academy", "Arena", "Walls"]),
                     ]);
                 }
                 for (category, names) in groups {
@@ -319,6 +320,23 @@ fn four_building_cards_fill_each_category_width_evenly() {
             }
         }
     }
+}
+
+#[test]
+fn building_cards_follow_the_current_upgrade_cost() {
+    let ctx = egui::Context::default();
+    let mut campaign = fixture(true);
+    campaign.economy.provinces[0].wonder_sites.clear();
+    let (first, _) = render(&ctx, &mut campaign, egui::vec2(570.0, 720.0), 1.0, "", 0.0, vec![]);
+    assert!(cell_rect(&first, "Market").left() < cell_rect(&first, "Temple").left());
+
+    campaign.economy.provinces[0].buildings[BuildingType::UrbanMarket as usize] = 1;
+    let (upgraded, _) = render(&ctx, &mut campaign, egui::vec2(570.0, 720.0), 1.0, "", 0.1, vec![]);
+    let market = cell_rect(&upgraded, "Market");
+    let arena = cell_rect(&upgraded, "Arena");
+    let walls = cell_rect(&upgraded, "Walls");
+    assert_eq!(market.top(), arena.top());
+    assert!(arena.left() < market.left() && market.left() < walls.left());
 }
 
 #[test]
@@ -834,6 +852,13 @@ fn foreign_hover_cards_show_real_costs_and_omit_zero_cost_resources() {
             .collect();
         assert_eq!(numbers, costs.iter().map(|cost| format!("{cost:.0}")).collect::<Vec<_>>());
         let reason = text_rect(&hover, "Province not owned.");
+        assert!(hover.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(rect)
+                if rect.rect.contains(reason.center())
+                    && rect.fill.r() > rect.fill.g()
+                    && rect.fill.g() > rect.fill.b()
+                    && rect.fill.b() > 150
+        )));
         let description = hover
             .shapes
             .iter()
@@ -845,12 +870,16 @@ fn foreign_hover_cards_show_real_costs_and_omit_zero_cost_resources() {
                         _ => "A royal palace",
                     }) =>
                 {
-                    Some(text.pos)
+                    Some(text.galley.rect.translate(text.pos.to_vec2()))
                 },
                 _ => None,
             })
             .expect("Each building and wonder needs a short description");
-        assert!(reason.bottom() <= description.y);
+        assert!(reason.top() - description.bottom() >= 10.0);
+        if let Some(cost) = costs.first() {
+            let cost = text_rect(&hover, &format!("{cost:.0}"));
+            assert!(description.top() - cost.bottom() >= 10.0);
+        }
     }
 }
 
@@ -1084,7 +1113,7 @@ fn right_clicking_the_shared_queue_refunds_the_correct_global_order() {
     for building in [
         BuildingType::Academy,
         BuildingType::Granary,
-        BuildingType::Foundry,
+        BuildingType::CityHall,
         BuildingType::Academy,
         BuildingType::Road,
     ] {
@@ -1187,7 +1216,7 @@ fn right_clicking_the_shared_queue_refunds_the_correct_global_order() {
             _ => unreachable!(),
         })
         .collect();
-    assert_eq!(waiting, [BuildingType::Granary, BuildingType::Foundry, BuildingType::Road]);
+    assert_eq!(waiting, [BuildingType::Granary, BuildingType::CityHall, BuildingType::Road]);
     assert!(
         matches!(&campaign.economy.provinces[0].construction, Some(ConstructionProject::Building(p)) if p.building == BuildingType::Academy)
     );

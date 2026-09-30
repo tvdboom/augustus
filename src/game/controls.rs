@@ -13,6 +13,10 @@ pub(super) fn handle_escape(
     if !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
+    if *state.get() == AppState::EndGame {
+        next.set(AppState::MainMenu);
+        return;
+    }
     if panels.campaign_ui.dismiss_confirmation() {
         return;
     }
@@ -63,6 +67,7 @@ pub(super) fn escape_destination(state: AppState, game: ActiveGame) -> Option<Ap
         AppState::Map | AppState::EmptyScreen => Some(AppState::GameMenu),
         AppState::GameMenu => Some(game.screen()),
         AppState::GameSettings => Some(AppState::GameMenu),
+        AppState::EndGame => Some(AppState::MainMenu),
         _ => Some(AppState::MainMenu),
     }
 }
@@ -80,7 +85,11 @@ pub(super) fn handle_game_shortcuts(
     mut campaign: ResMut<campaign::Campaign>,
     mut resources: ResMut<HudResources>,
     mut ownership: ResMut<ProvinceOwnership>,
+    terminal: Res<TerminalPresentation>,
 ) {
+    if terminal.spectating || *state.get() == AppState::EndGame {
+        return;
+    }
     if campaign_ui.confirmation_open() {
         return;
     }
@@ -145,6 +154,15 @@ pub(super) fn apply_practice_boost(
         }
         wallet.coin += 5_000.0;
         wallet.influence += 1_000.0;
+        let owner = crate::game::military::ForceOwner::Player(player);
+        if let Some(requirements) =
+            crate::game::military::MilitaryRank::Imperator.promotion_requirements()
+        {
+            let peak = campaign.military.peak_manpower.entry(owner).or_default();
+            *peak = (*peak).max(requirements.peak_manpower);
+            let victories = campaign.military.victories.entry(owner).or_default();
+            *victories = (*victories).max(requirements.victories);
+        }
         for province in &mut campaign.economy.provinces {
             if province.owner == Some(player) {
                 for population in &mut province.population {
@@ -180,6 +198,7 @@ pub(super) fn reset_game_time(
     ownership: Res<ProvinceOwnership>,
     mut campaign: ResMut<campaign::Campaign>,
     mut campaign_ui: ResMut<campaign_panel::CampaignUi>,
+    mut terminal: ResMut<TerminalPresentation>,
 ) {
     paused.0 = false;
     governance_open.0 = false;
@@ -189,6 +208,7 @@ pub(super) fn reset_game_time(
     *clock = GameClock::default();
     *resources = HudResources::default();
     *campaign_ui = campaign_panel::CampaignUi::default();
+    *terminal = TerminalPresentation::default();
     *campaign = campaign::Campaign::default();
     if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
         resources.start_players(practice.players.len(), &ownership);

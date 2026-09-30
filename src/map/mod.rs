@@ -4,6 +4,7 @@ mod crossings;
 mod governance;
 mod marker_icon;
 mod population;
+pub(crate) use population::POPULATION_SCALE;
 mod production;
 mod terrain;
 mod terrain_type;

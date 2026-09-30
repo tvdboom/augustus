@@ -40,10 +40,10 @@ fn side(units: Vec<Unit>, width: usize, config: &MilitaryConfig) -> BattleSide {
 fn cohorts_display_whole_people_and_combat_removes_whole_people() {
     let config = MilitaryConfig::default();
     assert_eq!(config.unit(UnitType::HeavyInfantry).cohort_people(), 1_000);
-    assert_eq!(config.unit(UnitType::WarElephants).cohort_people(), 200);
+    assert_eq!(config.unit(UnitType::WarElephants).cohort_people(), 1_000);
     let infantry = unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry);
     let elephants = unit(2, ForceOwner::Player(1), UnitType::WarElephants);
-    assert_eq!((infantry.people(), elephants.people()), (1_000, 200));
+    assert_eq!((infantry.people(), elephants.people()), (1_000, 1_000));
     let mut battle = Battle::new(
         1,
         0,
@@ -72,6 +72,127 @@ fn cohort_wages_reflect_type_and_surviving_strength() {
     assert_eq!(elephants.coin_demand(&config), 5.0);
     infantry.current_manpower *= 0.5;
     assert_eq!(infantry.coin_demand(&config), 1.0);
+}
+
+#[test]
+fn army_strength_never_returns_negative_zero() {
+    let config = MilitaryConfig::default();
+    let mut cohort = unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry);
+    cohort.current_manpower = -0.0;
+    assert_eq!(format!("{:.0}", cohort.effective_strength(&config)), "0");
+    cohort.current_manpower = -1.0;
+    assert_eq!(cohort.effective_strength(&config), 0.0);
+}
+
+#[test]
+fn merging_packs_same_type_and_weights_morale_by_people() {
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    for _ in 0..3 {
+        world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+    }
+    let units = world.provinces[0].forces.get_mut(&owner).unwrap();
+    for (unit, (people, morale)) in units.iter_mut().zip([(800, 80.), (400, 60.), (200, 20.)]) {
+        unit.current_manpower = people as f64 / PEOPLE_PER_POPULATION;
+        unit.morale = morale;
+    }
+    assert_eq!(world.merge_army(0, owner).unwrap(), 1);
+    let units = &world.provinces[0].forces[&owner];
+    assert_eq!(units.iter().map(Unit::people).collect::<Vec<_>>(), vec![1_000, 400]);
+    assert!((units[0].morale - 68.).abs() < 1e-9);
+    assert_eq!(units[1].morale, 60.);
+    assert_eq!(units.iter().map(Unit::people).sum::<u64>(), 1_400);
+}
+
+#[test]
+fn highest_rank_recovers_five_percent_manpower_and_five_morale() {
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    world.seed_unit(0, owner, UnitType::WarElephants).unwrap();
+    world.ranks.insert(owner, MilitaryRank::Imperator);
+    let unit = &mut world.provinces[0].forces.get_mut(&owner).unwrap()[0];
+    unit.current_manpower = 2.;
+    unit.morale = 50.;
+    world.apply_supply(owner, 1.);
+    let unit = &world.provinces[0].forces[&owner][0];
+    assert_eq!(unit.people(), 250);
+    assert_eq!(unit.morale, 55.);
+    assert_eq!(unit.food_demand(&world.config), 1.5);
+    assert_eq!(unit.coin_demand(&world.config), 1.25);
+}
+
+#[test]
+fn morale_below_twenty_routes_only_when_escape_is_possible() {
+    let mut config = MilitaryConfig::default();
+    config.base_manpower_damage = 0.;
+    config.base_morale_damage = 0.;
+    let a = ForceOwner::Player(0);
+    let d = ForceOwner::Player(1);
+    let mut attacker = unit(1, a, UnitType::HeavyInfantry);
+    attacker.morale = 19.;
+    let mut defender = unit(2, d, UnitType::HeavyInfantry);
+    defender.morale = 20.;
+    let mut battle = Battle::new(
+        1,
+        0,
+        None,
+        None,
+        MilitaryTerrain::Plains,
+        0,
+        side(vec![attacker.clone()], 4, &config),
+        side(vec![defender.clone()], 4, &config),
+        1,
+    );
+    battle.advance_round(&config);
+    assert_eq!(battle.result, Some(BattleResult::DefenderVictory));
+    assert!(battle.attackers.routed.contains(&attacker.id));
+    assert_eq!(battle.attackers.units[0].people(), 1_000);
+    assert!(!battle.defenders.routed.contains(&defender.id));
+
+    let mut trapped = Battle::new(
+        2,
+        0,
+        None,
+        None,
+        MilitaryTerrain::Plains,
+        0,
+        side(vec![attacker], 4, &config),
+        side(vec![defender], 4, &config),
+        1,
+    );
+    trapped.trapped.insert(a);
+    trapped.advance_round(&config);
+    assert_eq!(trapped.result, None);
+    assert!(trapped.attackers.routed.is_empty());
+}
+
+#[test]
+fn depleted_cohort_deals_damage_in_proportion_to_its_people() {
+    let mut config = MilitaryConfig::default();
+    config.random_range = [1., 1.];
+    config.units[UnitType::LightInfantry as usize].offense = 0.;
+    let damage = |people: u64| {
+        let mut attacker = unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry);
+        attacker.current_manpower = people as f64 / PEOPLE_PER_POPULATION;
+        let defender = unit(2, ForceOwner::Player(1), UnitType::LightInfantry);
+        let mut battle = Battle::new(
+            1,
+            0,
+            None,
+            None,
+            MilitaryTerrain::Plains,
+            0,
+            side(vec![attacker], 4, &config),
+            side(vec![defender], 4, &config),
+            5,
+        );
+        battle.advance_round(&config);
+        (1_000 - battle.defenders.units[0].people(), 50. - battle.defenders.units[0].morale)
+    };
+    let full = damage(1_000);
+    let fifth = damage(200);
+    assert!((fifth.0 as f64 - full.0 as f64 * 0.2).abs() <= 1.);
+    assert!((fifth.1 - full.1 * 0.2).abs() < 1e-9);
 }
 
 #[test]
@@ -159,7 +280,7 @@ fn interrupted_passage_withdraws_without_stationing_in_friendly_province() {
 }
 
 #[test]
-fn merging_armies_averages_training_per_type_and_shares_morale() {
+fn assembling_armies_preserves_each_cohorts_training_and_morale() {
     let mut world = MilitaryWorld::new(3);
     let own = ForceOwner::Player(0);
     let guest = ForceOwner::Player(1);
@@ -189,12 +310,11 @@ fn merging_armies_averages_training_per_type_and_shares_morale() {
     assert_eq!(army.len(), 3);
     assert!(army.iter().any(|unit| unit.id == first));
     assert!(army.iter().any(|unit| unit.id == arriving));
-    assert!(army
-        .iter()
-        .filter(|unit| unit.unit_type == UnitType::HeavyInfantry)
-        .all(|unit| unit.training == 15.));
+    assert_eq!(army.iter().find(|unit| unit.id == first).unwrap().training, 10.);
+    assert_eq!(army.iter().find(|unit| unit.id == arriving).unwrap().training, 20.);
     assert_eq!(army.iter().find(|unit| unit.unit_type == UnitType::Archers).unwrap().training, 80.);
-    assert!(army.iter().all(|unit| (unit.morale - army[0].morale).abs() < 1e-9));
+    assert_eq!(army.iter().find(|unit| unit.id == arriving).unwrap().morale, 80.);
+    assert_eq!(army.iter().find(|unit| unit.id == first).unwrap().morale, 40.);
     assert_eq!(world.provinces[0].forces[&guest][0].training, world.config.starting_training);
     assert_eq!(world.all_units().map(|unit| unit.current_manpower).sum::<f64>(), before);
 }
@@ -232,7 +352,7 @@ fn disband_whole_army_is_owner_scoped_and_returns_only_survivors() {
 }
 
 #[test]
-fn battle_losses_keep_army_morale_and_type_training_shared() {
+fn battle_losses_affect_each_cohorts_own_morale() {
     let config = MilitaryConfig::default();
     let owner = ForceOwner::Player(0);
     let enemy = ForceOwner::Player(1);
@@ -260,32 +380,30 @@ fn battle_losses_keep_army_morale_and_type_training_shared() {
         19,
     );
     battle.advance_round(&config);
-    assert!(battle
-        .attackers
-        .units
-        .iter()
-        .all(|unit| (unit.morale - battle.attackers.units[0].morale).abs() < 1e-9));
+    assert!(battle.attackers.units.iter().any(|unit| unit.morale < 50.));
+    assert!(battle.attackers.units.iter().any(|unit| unit.morale == 50.));
 }
 
 #[test]
-fn recruitment_queue_caps_orders_at_fifty_without_drafting_or_charging_rejected_orders() {
+fn recruitment_queue_caps_waiting_orders_at_thirteen_without_charging_rejected_orders() {
     let mut world = MilitaryWorld::new(2);
     let mut population = [1_000.; 4];
     let mut metal = 10_000.;
-    for _ in 0..50 {
+    for _ in 0..=ProvinceMilitaryState::MAX_RECRUITMENT_QUEUE {
         world
             .recruit(0, 0, UnitType::LightInfantry, true, &[], &mut population, &mut metal)
             .unwrap();
     }
     assert!(world.provinces[0].recruitment_queue_full());
-    assert_eq!(world.provinces[0].recruitment_queue.len(), 49);
+    assert!(world.provinces[0].recruitment.is_some());
+    assert_eq!(world.provinces[0].recruitment_queue.len(), 13);
     let before = (population, metal, world.provinces[0].draft_penalties);
     assert_eq!(
         world.recruit(0, 0, UnitType::Archers, true, &[], &mut population, &mut metal),
         Err(MilitaryError::RecruitmentBusy)
     );
     assert_eq!((population, metal, world.provinces[0].draft_penalties), before);
-    assert_eq!(world.provinces[0].recruitment_queue.len(), 49);
+    assert_eq!(world.provinces[0].recruitment_queue.len(), 13);
     world.recruit(1, 0, UnitType::LightInfantry, true, &[], &mut population, &mut metal).unwrap();
     world.cancel_queued_recruitment(0, 0, 0, true, &mut population, &mut metal).unwrap();
     assert!(!world.provinces[0].recruitment_queue_full());
@@ -309,10 +427,10 @@ fn recruitment_is_atomic_and_uses_real_population_once() {
     assert_eq!(pops, [5., 10., 20., 10.]);
     assert_eq!(metal, 100.);
     world.recruit(0, 0, UnitType::HeavyInfantry, true, &[], &mut pops, &mut metal).unwrap();
-    assert_eq!(pops, [5., 10., 19., 10.]);
+    assert_eq!(pops, [5., 10., 10., 10.]);
     assert_eq!(metal, 60.);
     world.recruit(0, 0, UnitType::LightInfantry, true, &[], &mut pops, &mut metal).unwrap();
-    assert_eq!(pops[2], 18.);
+    assert_eq!(pops[2], 0.);
     assert_eq!(metal, 48.);
     assert_eq!(world.provinces[0].recruitment_queue.len(), 1);
     assert!(world.provinces[0].draft_penalties[2] > 0.);
@@ -335,16 +453,16 @@ fn recruitment_is_atomic_and_uses_real_population_once() {
 #[test]
 fn one_population_levy_causes_persistent_and_stacking_draft_fatigue() {
     let mut world = MilitaryWorld::new(1);
-    let mut population = [0.0, 20.0, 30.0, 0.0];
+    let mut population = [0.0, 200.0, 300.0, 0.0];
     let mut metal = 100.0;
     world.recruit(0, 0, UnitType::LightInfantry, true, &[], &mut population, &mut metal).unwrap();
-    assert_eq!(population[2], 29.0);
+    assert_eq!(population[2], 290.0);
     let first = world.provinces[0].draft_penalties[2];
     assert!(first >= 5.0);
     world.advance_recruitment(|_| Some(0));
     assert!(world.provinces[0].draft_penalties[2] >= first - 1.0 - 1e-9);
     world.recruit(0, 0, UnitType::LightInfantry, true, &[], &mut population, &mut metal).unwrap();
-    assert_eq!(population[2], 28.0);
+    assert_eq!(population[2], 280.0);
     assert!(world.provinces[0].draft_penalties[2] > first);
     for _ in 0..12 {
         world.advance_recruitment(|_| Some(0));
@@ -408,26 +526,30 @@ fn disband_returns_only_survivors_without_refunding_equipment() {
     let mut pops = [0.; 4];
     assert_eq!(world.disband(0, 0, id, false, &mut pops), Err(MilitaryError::NotDirectlyOwned));
     world.disband(0, 0, id, true, &mut pops).unwrap();
-    assert!((pops[2] - 0.34).abs() < 1e-9);
+    assert!((pops[2] - 3.4).abs() < 1e-9);
     assert_eq!((pops[0], pops[1], pops[3]), (0., 0., 0.));
     assert_eq!(world.all_units().count(), 0);
 }
 
 #[test]
-fn supply_never_heals_manpower_and_shortages_reduce_morale() {
+fn supply_restores_manpower_by_rank_and_shortages_reduce_morale() {
     let mut world = MilitaryWorld::new(1);
     let owner = ForceOwner::Player(0);
     world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
     world.provinces[0].forces.get_mut(&owner).unwrap()[0].current_manpower = 4.;
     world.apply_supply(owner, 0.);
-    assert_eq!(world.provinces[0].forces[&owner][0].morale, 25.);
+    assert_eq!(world.provinces[0].forces[&owner][0].morale, 75.);
+    world.apply_supply(owner, 1.);
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 410);
+    assert_eq!(world.provinces[0].forces[&owner][0].morale, 76.);
     for _ in 0..100 {
         world.apply_supply(owner, 1.);
     }
     let troop = &world.provinces[0].forces[&owner][0];
-    assert_eq!(troop.current_manpower, 4.);
+    assert_eq!(troop.current_manpower, 10.);
+    assert_eq!(troop.morale, 100.);
     assert_eq!(troop.training, 100.);
-    assert!((world.food_demand(owner) - 1.0).abs() < 1e-10);
+    assert!((world.food_demand(owner) - 2.5).abs() < 1e-10);
 }
 
 #[test]
@@ -438,7 +560,7 @@ fn recruitment_ownership_change_cancels_and_npc_defenders_do_not_regenerate() {
     world.recruit(0, 0, UnitType::LightInfantry, true, &[], &mut pop, &mut metal).unwrap();
     world.advance_recruitment(|_| Some(1));
     assert!(world.provinces[0].recruitment.is_none());
-    assert_eq!(pop[2], 19.);
+    assert_eq!(pop[2], 10.);
     assert_eq!(metal, 88.);
     world.seed_local_defenders(0, "Achaia").unwrap();
     assert_eq!(world.all_units().count(), 4);
@@ -494,17 +616,44 @@ fn deterministic_formation_obeys_primary_secondary_and_narrow_flanks() {
 }
 
 #[test]
+fn rear_line_preference_keeps_the_only_matching_cohort_out_of_the_flanks() {
+    let owner = ForceOwner::Player(0);
+    let config = MilitaryConfig::default();
+    let mut units: Vec<_> = (0..16).map(|id| unit(id, owner, UnitType::HeavyInfantry)).collect();
+    units.push(unit(16, owner, UnitType::HeavyCavalry));
+    let plans = BTreeMap::from([(
+        owner,
+        BattlePlan {
+            secondary_unit_type: UnitType::HeavyCavalry,
+            flank_size: 5,
+            ..Default::default()
+        },
+    )]);
+    let formation = deploy_formation(&units, &plans, 16, &BTreeSet::new(), &config);
+    assert_eq!(formation.front.iter().filter(|id| id.is_some()).count(), 16);
+    assert!(!formation.front.contains(&Some(16)));
+    assert_eq!(formation.reserves, vec![16]);
+
+    units.reverse();
+    assert_eq!(formation, deploy_formation(&units, &plans, 16, &BTreeSet::new(), &config));
+    units.retain(|unit| unit.id != 0);
+    let shortage = deploy_formation(&units, &plans, 16, &BTreeSet::new(), &config);
+    assert!(shortage.front.contains(&Some(16)));
+    assert!(shortage.reserves.is_empty());
+}
+
+#[test]
 fn flanks_fit_sixteen_slots_with_five_on_each_side() {
     let config = MilitaryConfig::default();
     let plan = BattlePlan {
         flank_size: 5,
         ..Default::default()
     };
-    for (width, expected) in [(16, 5), (12, 4), (10, 3)] {
+    for (width, expected) in [(16, 5), (14, 4), (12, 4), (10, 3), (8, 2)] {
         assert_eq!(plan.effective_flank_size(width), expected);
         assert!(width - 2 * expected >= expected);
     }
-    assert_eq!(config.combat_widths, [16, 16, 12, 12, 10, 16, 10]);
+    assert_eq!(config.combat_widths, [16, 16, 10, 12, 8, 14, 8]);
     for choice in [1, 2, 3, 4, 5] {
         assert_eq!(
             BattlePlan {
@@ -559,7 +708,7 @@ fn reserves_replace_routed_troops_and_never_return_them() {
 }
 
 #[test]
-fn tactic_fit_uses_depleted_actual_units_and_balanced_has_no_counter() {
+fn tactic_fit_uses_depleted_actual_units_and_each_tactic_has_two_counters() {
     let config = MilitaryConfig::default();
     let owner = ForceOwner::Player(0);
     let mut units =
@@ -568,10 +717,46 @@ fn tactic_fit_uses_depleted_actual_units_and_balanced_has_no_counter() {
     let fit = tactic_effectiveness(units.iter(), CombatTactic::Envelopment, &config);
     assert!(fit < 0.21);
     for tactic in CombatTactic::ALL {
-        assert!(!tactic.counters(CombatTactic::Balanced, &config));
-        assert!(!CombatTactic::Balanced.counters(tactic, &config));
+        let wins =
+            CombatTactic::ALL.into_iter().filter(|other| tactic.counters(*other, &config)).count();
+        let losses =
+            CombatTactic::ALL.into_iter().filter(|other| other.counters(tactic, &config)).count();
+        assert_eq!((wins, losses), (2, 2));
+        assert!(!tactic.counters(tactic, &config));
+        for other in CombatTactic::ALL {
+            assert!(!(tactic.counters(other, &config) && other.counters(tactic, &config)));
+        }
     }
     assert!(CombatTactic::Bottleneck.counters(CombatTactic::ShockAction, &config));
+    assert!(CombatTactic::Phalanx.counters(CombatTactic::ShockAction, &config));
+}
+
+#[test]
+fn tactics_without_a_counter_have_no_casualty_multiplier() {
+    let mut config = MilitaryConfig::default();
+    config.random_range = [1., 1.];
+    let fight = |tactic| {
+        let attacker = ForceOwner::Player(0);
+        let defender = ForceOwner::Player(1);
+        let mut attackers = side(vec![unit(1, attacker, UnitType::HeavyInfantry)], 4, &config);
+        attackers.plans.get_mut(&attacker).unwrap().tactic = tactic;
+        let mut defenders = side(vec![unit(2, defender, UnitType::HeavyInfantry)], 4, &config);
+        defenders.plans.get_mut(&defender).unwrap().tactic = tactic;
+        let mut battle =
+            Battle::new(1, 0, None, None, MilitaryTerrain::Plains, 0, attackers, defenders, 1);
+        battle.advance_round(&config);
+        [
+            (battle.attackers.units[0].current_manpower, battle.attackers.units[0].morale),
+            (battle.defenders.units[0].current_manpower, battle.defenders.units[0].morale),
+        ]
+    };
+    let shock = fight(CombatTactic::ShockAction);
+    let skirmishing = fight(CombatTactic::Skirmishing);
+    let phalanx = fight(CombatTactic::Phalanx);
+    for side in 0..2 {
+        assert_eq!(shock[side], skirmishing[side]);
+        assert_eq!(shock[side], phalanx[side]);
+    }
 }
 
 #[test]
@@ -727,11 +912,7 @@ fn conquest_event_keeps_previous_owner_and_returns_survivors() {
             ..
         }
     )));
-    assert_eq!(
-        world.occupation_control(1, a),
-        0.,
-        "direct conquest must not create independent Control"
-    );
+    assert!(world.occupation_control(1, a) > 0.);
     assert!(!world.provinces[1].forces[&a].is_empty());
 }
 
@@ -740,6 +921,7 @@ fn every_roster_entry_has_complete_finite_configuration() {
     let c = MilitaryConfig::default();
     for kind in UnitType::ALL {
         let d = c.unit(kind);
+        assert_eq!(d.cohort_people(), 1_000);
         assert!(
             d.manpower > 0.
                 && d.metal_cost > 0.
@@ -881,25 +1063,31 @@ fn support_forced_into_the_front_line_takes_exposure_casualties() {
         let mut battle =
             Battle::new(1, 0, None, None, MilitaryTerrain::Plains, 0, attackers, defenders, 1);
         battle.advance_round(&config);
-        3. - battle.defenders.units[0].current_manpower
+        10. - battle.defenders.units[0].current_manpower
     };
     assert!((loss(1.5) - loss(1.) * 1.5).abs() <= 0.02);
 }
 
 #[test]
-fn loss_events_include_trapped_survivors_without_double_counting() {
+fn trapped_armies_ignore_timeout_and_fight_to_destruction() {
     let mut world = MilitaryWorld::new(3);
     let attacker = ForceOwner::Player(0);
     let defender = ForceOwner::Player(1);
     world.seed_unit(1, attacker, UnitType::HeavyInfantry).unwrap();
     world.seed_unit(1, defender, UnitType::HeavyInfantry).unwrap();
     world.config.maximum_battle_months = 1;
-    world.config.base_manpower_damage = 0.;
-    world.config.base_morale_damage = 0.;
+    world.config.base_manpower_damage = 0.5;
+    world.config.base_morale_damage = 100.;
     world
         .start_battle(1, &[attacker], &[defender], Some(1), Some(0), MilitaryTerrain::Plains, 0, 1)
         .unwrap();
-    let events = world.advance_battles(&graph(), |_, _| MilitaryAccess::Blocked);
+    let mut events = vec![];
+    for _ in 0..10 {
+        events.extend(world.advance_battles(&graph(), |_, _| MilitaryAccess::Blocked));
+        if world.battles.is_empty() {
+            break;
+        }
+    }
     let losses: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -911,13 +1099,8 @@ fn loss_events_include_trapped_survivors_without_double_counting() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        losses,
-        vec![(attacker, 1)],
-        "timeout survivors with no retreat are real destroyed cohorts"
-    );
-    assert_eq!(world.all_units().filter(|unit| unit.owner == attacker).count(), 0);
-    assert_eq!(world.all_units().filter(|unit| unit.owner == defender).count(), 1);
+    assert!(world.battles.is_empty());
+    assert!(losses.iter().map(|(_, count)| count).sum::<usize>() >= 1);
     assert!(world.advance_battles(&graph(), |_, _| MilitaryAccess::Blocked).is_empty());
 }
 
@@ -931,7 +1114,7 @@ fn recruitment_queue_cancel_and_capture_never_refund_or_duplicate_cohorts() {
             .recruit(0, 0, UnitType::LightInfantry, true, &[], &mut population, &mut metal)
             .unwrap();
     }
-    assert_eq!(population[2], 37.);
+    assert_eq!(population[2], 10.);
     assert_eq!(metal, 64.);
     world.cancel_recruitment(0, ForceOwner::Player(0)).unwrap();
     assert_eq!(world.provinces[0].recruitment_queue.len(), 1);
@@ -941,6 +1124,6 @@ fn recruitment_queue_cancel_and_capture_never_refund_or_duplicate_cohorts() {
     assert!(world.provinces[0].recruitment.is_none());
     assert!(world.provinces[0].recruitment_queue.is_empty());
     assert_eq!(world.all_units().count(), 0);
-    assert_eq!(population[2], 37.);
+    assert_eq!(population[2], 10.);
     assert_eq!(metal, 64.);
 }

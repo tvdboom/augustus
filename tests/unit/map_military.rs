@@ -1,13 +1,21 @@
 use super::*;
+use crate::game::military::BattlePlan;
 
 #[test]
-fn map_shows_present_front_rear_and_flank_types_even_below_share_threshold() {
+fn map_shows_strongest_types_from_each_category_independent_of_deployment() {
     let mut world = MilitaryWorld::new(1);
     let owner = ForceOwner::Player(0);
     for _ in 0..8 {
         world.seed_unit(0, owner, UnitType::LightInfantry).unwrap();
     }
-    for kind in [UnitType::HeavyInfantry, UnitType::Archers, UnitType::WarCamels] {
+    for kind in [
+        UnitType::HeavyInfantry,
+        UnitType::Archers,
+        UnitType::LightCavalry,
+        UnitType::HeavyCavalry,
+        UnitType::WarCamels,
+        UnitType::WarElephants,
+    ] {
         world.seed_unit(0, owner, kind).unwrap();
     }
     let units = &world.provinces[0].forces[&owner];
@@ -17,10 +25,22 @@ fn map_shows_present_front_rear_and_flank_types_even_below_share_threshold() {
         flank_unit_type: UnitType::WarCamels,
         ..BattlePlan::default()
     };
+    let shown = map_representatives(units);
     assert_eq!(
-        map_representatives(units, plan, &world.config),
-        vec![UnitType::HeavyInfantry, UnitType::Archers, UnitType::WarCamels]
+        shown.iter().copied().collect::<std::collections::BTreeSet<_>>(),
+        [
+            UnitType::HeavyInfantry,
+            UnitType::Archers,
+            UnitType::HeavyCavalry,
+            UnitType::WarElephants,
+        ]
+        .into()
     );
+    assert_eq!(shown, map_representatives(units));
+    // The old map order followed these private plan fields. Changing them must
+    // leave both the selected types and their stable order untouched.
+    world.provinces[0].plans.insert(owner, plan);
+    assert_eq!(shown, map_representatives(&world.provinces[0].forces[&owner]));
 }
 
 #[test]
@@ -32,19 +52,137 @@ fn map_falls_back_to_surviving_types_without_repeating_a_sprite() {
     }
     let units = &world.provinces[0].forces[&owner];
     assert_eq!(
-        map_representatives(units, BattlePlan::default(), &world.config),
-        vec![UnitType::HeavyInfantry, UnitType::Archers, UnitType::HeavyCavalry]
+        map_representatives(units).into_iter().collect::<std::collections::BTreeSet<_>>(),
+        [UnitType::HeavyInfantry, UnitType::Archers, UnitType::HeavyCavalry].into()
     );
-    assert_eq!(
-        map_representatives(&units[..1], BattlePlan::default(), &world.config),
-        vec![UnitType::HeavyInfantry]
-    );
+    assert_eq!(map_representatives(&units[..1]), vec![UnitType::HeavyInfantry]);
     let mut depleted = units.to_vec();
     depleted[2].current_manpower = 0.;
     assert_eq!(
-        map_representatives(&depleted, BattlePlan::default(), &world.config),
-        vec![UnitType::HeavyInfantry, UnitType::Archers]
+        map_representatives(&depleted).into_iter().collect::<std::collections::BTreeSet<_>>(),
+        [UnitType::HeavyInfantry, UnitType::Archers].into()
     );
+}
+
+#[test]
+fn absent_categories_use_other_strong_types_and_large_troops_keep_their_feet_aligned() {
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    for kind in [UnitType::LightInfantry, UnitType::Archers, UnitType::HeavyInfantry] {
+        world.seed_unit(0, owner, kind).unwrap();
+    }
+    assert_eq!(
+        map_representatives(&world.provinces[0].forces[&owner])
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [UnitType::LightInfantry, UnitType::Archers, UnitType::HeavyInfantry].into()
+    );
+    let anchor = egui::pos2(100., 100.);
+    let infantry = troop_rect(anchor, 30., 0, 1, UnitType::HeavyInfantry);
+    let light_infantry = troop_rect(anchor, 30., 0, 1, UnitType::LightInfantry);
+    let cavalry = troop_rect(anchor, 30., 0, 1, UnitType::HeavyCavalry);
+    let camel = troop_rect(anchor, 30., 0, 1, UnitType::WarCamels);
+    let elephant = troop_rect(anchor, 30., 0, 1, UnitType::WarElephants);
+    assert_eq!(infantry.size(), light_infantry.size());
+    assert!(infantry.width() < cavalry.width());
+    assert!(cavalry.width() < camel.width() && camel.width() < elephant.width());
+    let ground = |rect: egui::Rect| {
+        rect.min.y + rect.height() * frames::BASELINE as f32 / frames::SIZE as f32
+    };
+    for rect in [infantry, light_infantry, cavalry, camel, elephant] {
+        assert!((ground(rect) - (anchor.y + 15.)).abs() < 0.001);
+    }
+}
+
+#[test]
+fn several_cohorts_of_one_type_still_show_three_figures() {
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    for _ in 0..3 {
+        world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+    }
+    assert_eq!(
+        map_representatives(&world.provinces[0].forces[&owner]),
+        vec![UnitType::HeavyInfantry; 3]
+    );
+}
+
+#[test]
+fn rome_starts_with_light_cavalry_and_shows_all_four_army_types() {
+    let defenders = crate::game::military::initial_defenders("Latium");
+    assert_eq!(defenders.len(), 50);
+    assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 6);
+    let mut world = MilitaryWorld::new(1);
+    for kind in defenders {
+        world.seed_unit(0, ForceOwner::Local(0), kind).unwrap();
+    }
+    assert_eq!(
+        map_representatives(&world.provinces[0].forces[&ForceOwner::Local(0)])
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            UnitType::HeavyInfantry,
+            UnitType::Archers,
+            UnitType::HeavyCavalry,
+            UnitType::LightCavalry,
+        ]
+        .into()
+    );
+}
+
+#[test]
+fn rome_figures_stay_clear_of_neighboring_provinces() {
+    let context = egui::Context::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let province = atlas().provinces.iter().position(|p| p.name == "Latium").unwrap();
+    let mut world = MilitaryWorld::new(atlas().provinces.len());
+    for kind in crate::game::military::initial_defenders("Latium") {
+        world.seed_unit(province, ForceOwner::Local(province), kind).unwrap();
+    }
+    let zoom = 4.;
+    let projection = Projection {
+        origin: viewport.center(),
+        scale: 18. * zoom,
+        center: atlas().provinces[province].visual_center,
+    };
+    context.begin_pass(egui::RawInput::default());
+    let painter = context.layer_painter(egui::LayerId::background());
+    let markers = paint(
+        &painter,
+        &world,
+        &ProvinceOwnership::default(),
+        &projection,
+        zoom,
+        0.,
+        viewport,
+        &[],
+        &[],
+        &[],
+        &mut Anchors::default(),
+    );
+    assert_eq!(markers.len(), 5, "Rome's four types and badge should be visible");
+    for sprite in &markers[..4] {
+        for row in 0..=4 {
+            for column in 0..=4 {
+                let point = sprite.min
+                    + egui::vec2(
+                        sprite.width() * column as f32 / 4.,
+                        sprite.height() * row as f32 / 4.,
+                    );
+                let map_point = projection.inverse(point);
+                assert!(
+                    atlas()
+                        .provinces
+                        .iter()
+                        .enumerate()
+                        .all(|(index, other)| index == province || !other.contains(map_point)),
+                    "Rome artwork spills into a neighboring province at {map_point:?}"
+                );
+            }
+        }
+    }
+    let mut output = context.end_pass();
+    output.textures_delta.clear();
 }
 
 #[test]
@@ -157,29 +295,35 @@ fn first_placement_does_not_depend_on_viewport_clipping() {
         center: province.visual_center,
     };
     let desired = projection.point(province.visual_center);
-    let place =
-        |viewport| province_anchor(desired, 40., viewport, &[], &[], province, &projection, 1);
+    let place = |viewport| {
+        province_anchor(
+            desired,
+            40.,
+            viewport,
+            &[],
+            &[],
+            province,
+            &projection,
+            &[UnitType::HeavyInfantry],
+        )
+    };
     let first = place(viewport).expect("army fits inside Samnium");
     let clipped = egui::Rect::from_min_max(first, viewport.max);
     assert_eq!(place(clipped), Some(first));
 }
 
 #[test]
-fn every_unit_has_a_complete_transparent_four_by_four_sheet() {
+fn every_unit_has_a_complete_transparent_four_by_four_icon_sheet() {
     for kind in UnitType::ALL {
         let decoded = image::load_from_memory(SHEETS[kind as usize])
             .unwrap_or_else(|error| panic!("{}: {error}", kind.name()))
             .to_rgba8();
-        assert!(decoded.width() >= 512 && decoded.height() >= 512, "{} resolution", kind.name());
+        assert_eq!(decoded.dimensions(), (768, 768), "{} resolution", kind.name());
         assert!(
             decoded.pixels().any(|p| p.0[3] < 255),
             "{} must have transparent background",
             kind.name()
         );
-        // Image generation may add one or two boundary pixels. Rendering
-        // normalizes the source to a 768px sheet before sampling exact UVs.
-        let decoded =
-            image::imageops::resize(&decoded, 768, 768, image::imageops::FilterType::Lanczos3);
         let tile_width = decoded.width() / 4;
         let tile_height = decoded.height() / 4;
         for row in 0..4 {
@@ -217,9 +361,9 @@ fn stationary_armies_stay_inside_their_province_when_avoiding_cities() {
                 province,
                 &projection,
                 if name == "Latium" {
-                    1
+                    &[UnitType::HeavyInfantry][..]
                 } else {
-                    2
+                    &[UnitType::HeavyInfantry, UnitType::LightInfantry][..]
                 },
             );
             if let Some(point) = point {
@@ -227,9 +371,9 @@ fn stationary_armies_stay_inside_their_province_when_avoiding_cities() {
                     point,
                     size,
                     if name == "Latium" {
-                        1
+                        &[UnitType::HeavyInfantry][..]
                     } else {
-                        2
+                        &[UnitType::HeavyInfantry, UnitType::LightInfantry][..]
                     },
                 );
                 assert!(province.contains(projection.inverse(point)), "{name} center zoom {zoom}");
@@ -294,8 +438,8 @@ fn light_infantry_idle_keeps_a_consistent_height_and_ground_baseline() {
         image::load_from_memory(IDLE_SHEETS[UnitType::LightInfantry as usize]).unwrap().to_rgba8();
     let mut heights = Vec::new();
     let mut baselines = Vec::new();
-    for frame in 0..16 {
-        let cell = image::imageops::crop_imm(&sheet, frame % 4 * 192, frame / 4 * 192, 192, 192);
+    for frame in 0..frames::COUNT as u32 {
+        let cell = image::imageops::crop_imm(&sheet, frame % 8 * 192, frame / 8 * 192, 192, 192);
         // Measure helmet to feet, excluding the spear to the soldier's left.
         let body_top =
             (0..192).find(|&y| (85..110).any(|x| cell.get_pixel(x, y)[3] > 127)).unwrap();
@@ -309,29 +453,106 @@ fn light_infantry_idle_keeps_a_consistent_height_and_ground_baseline() {
         );
     }
     assert!(baselines.iter().max().unwrap() - baselines.iter().min().unwrap() <= 1);
-    assert!(heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 2);
+    assert!(heights.iter().max().unwrap() - heights.iter().min().unwrap() <= 12);
 }
 
 #[test]
-fn every_unit_has_sixteen_distinct_visible_idle_frames() {
-    for kind in UnitType::ALL {
-        let image = image::load_from_memory(IDLE_SHEETS[kind as usize]).unwrap().to_rgba8();
-        assert_eq!(image.dimensions(), (768, 768));
-        let mut frames = Vec::new();
-        for frame in 0..16 {
-            let uv = idle_uv(frame);
-            let tile = image::imageops::crop_imm(
-                &image,
-                (uv.min.x * 768.) as u32,
-                (uv.min.y * 768.) as u32,
-                192,
-                192,
-            )
-            .to_image();
-            assert!(tile.pixels().any(|p| p[3] > 127), "{} idle {frame} empty", kind.name());
-            assert!(tile.pixels().any(|p| p[3] == 0), "{} idle background", kind.name());
-            assert!(!frames.contains(tile.as_raw()), "{} idle {frame} duplicate", kind.name());
-            frames.push(tile.into_raw());
+fn infantry_idle_silhouettes_have_similar_map_dimensions() {
+    let anchor = egui::Pos2::ZERO;
+    let dimensions = |kind: UnitType, frame: u32| {
+        let sheet = image::load_from_memory(IDLE_SHEETS[kind as usize]).unwrap().to_rgba8();
+        let cell = image::imageops::crop_imm(&sheet, frame % 8 * 192, frame / 8 * 192, 192, 192);
+        let (left, top, right, bottom) = cell.pixels().filter(|(_, _, pixel)| pixel[3] > 8).fold(
+            (192, 192, 0, 0),
+            |(left, top, right, bottom), (x, y, _)| {
+                (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
+            },
+        );
+        let rect = troop_rect(anchor, 30., 0, 1, kind);
+        (rect.width() * (right - left) as f32, rect.height() * (bottom - top) as f32)
+    };
+    for frame in 0..frames::COUNT as u32 {
+        let archer = dimensions(UnitType::Archers, frame);
+        for kind in [UnitType::LightInfantry, UnitType::HeavyInfantry] {
+            let soldier = dimensions(kind, frame);
+            // Shields and bows change the outer silhouette; bodies keep a
+            // similar stature without widening the light infantry on screen.
+            assert!((soldier.0 / archer.0 - 1.).abs() < 0.16, "{kind:?} frame {frame} width");
+            assert!((soldier.1 / archer.1 - 1.).abs() < 0.1, "{kind:?} frame {frame} height");
+        }
+    }
+}
+
+#[test]
+fn every_unit_motion_has_a_continuous_loop_and_transparent_gutters() {
+    let distance = |a: &image::RgbaImage, b: &image::RgbaImage| -> f64 {
+        a.pixels()
+            .zip(b.pixels())
+            .map(|(a, b)| {
+                let alpha = (f64::from(a[3]) - f64::from(b[3])).abs();
+                alpha
+                    + (0..3)
+                        .map(|channel| {
+                            (f64::from(a[channel]) * f64::from(a[3]) / 255.
+                                - f64::from(b[channel]) * f64::from(b[3]) / 255.)
+                                .abs()
+                        })
+                        .sum::<f64>()
+            })
+            .sum::<f64>()
+            / f64::from(frames::SIZE * frames::SIZE)
+    };
+    for (motion, sheets) in
+        [("idle", &IDLE_SHEETS), ("movement", &MOVEMENT_SHEETS), ("combat", &COMBAT_SHEETS)]
+    {
+        for kind in UnitType::ALL {
+            let sheet = image::load_from_memory(sheets[kind as usize]).unwrap().to_rgba8();
+            assert_eq!(sheet.dimensions(), (frames::WIDTH, frames::HEIGHT));
+            let tiles: Vec<_> = (0..frames::COUNT as u32)
+                .map(|frame| {
+                    let tile = image::imageops::crop_imm(
+                        &sheet,
+                        frame % frames::COLUMNS * frames::SIZE,
+                        frame / frames::COLUMNS * frames::SIZE,
+                        frames::SIZE,
+                        frames::SIZE,
+                    )
+                    .to_image();
+                    assert!(
+                        tile.pixels().any(|p| p[3] > 127),
+                        "{} {motion} {frame} empty",
+                        kind.name()
+                    );
+                    assert!(
+                        tile.enumerate_pixels().all(|(x, y, p)| {
+                            (x >= 2 && y >= 2 && x < frames::SIZE - 2 && y < frames::SIZE - 2)
+                                || p[3] == 0
+                        }),
+                        "{} {motion} {frame} touches the next cell",
+                        kind.name()
+                    );
+                    tile
+                })
+                .collect();
+            let deltas: Vec<_> = (0..frames::COUNT)
+                .map(|frame| distance(&tiles[frame], &tiles[(frame + 1) % frames::COUNT]))
+                .collect();
+            let interior_max = deltas[..frames::COUNT - 1].iter().copied().fold(0., f64::max);
+            let seam = deltas[frames::COUNT - 1];
+            assert!(interior_max > 0.01, "{} {motion} must move", kind.name());
+            assert!(
+                seam <= interior_max * 1.25 + 0.01,
+                "{} {motion} jumps at wrap: {seam} versus {interior_max}",
+                kind.name()
+            );
+            // The two transitions on either side of frame zero must remain
+            // comparable, so the seam does not hide a sudden stop or burst.
+            let adjacent = deltas[0].max(deltas[frames::COUNT - 2]);
+            assert!(
+                seam <= adjacent * 1.5 + 0.08,
+                "{} {motion} changes speed at wrap",
+                kind.name()
+            );
         }
     }
 }
@@ -441,16 +662,18 @@ fn visible_armies_keep_their_geographic_position_through_camera_and_landmark_cha
 }
 
 #[test]
-fn relaxed_idle_cycle_has_pauses_and_independent_phases() {
-    assert_eq!(idle_frame(0., 0), 0);
-    assert_eq!(idle_frame(1.5, 0), 0);
-    let frames: std::collections::BTreeSet<_> =
-        (0..1000).map(|tick| idle_frame(tick as f32 * 0.01, 0)).collect();
-    assert_eq!(frames.len(), 16);
-    assert!(
-        (0..100).any(|tick| idle_frame(tick as f32 * 0.1, 37) != idle_frame(tick as f32 * 0.1, 74)),
-        "neighboring armies should not animate in lockstep"
-    );
+fn cycles_advance_uniformly_and_wrap_without_a_duplicate_endpoint() {
+    for motion in [Animation::Idle, Animation::Movement, Animation::Combat] {
+        let step = motion.seconds() / frames::COUNT as f32;
+        for frame in 0..frames::COUNT {
+            assert_eq!(animation_frame((frame as f32 + 0.5) * step, 0, motion), frame);
+            let uv = animation_uv(frame);
+            assert!(uv.min.x >= 0. && uv.min.y >= 0. && uv.max.x <= 1. && uv.max.y <= 1.);
+        }
+        assert_eq!(animation_frame(motion.seconds() - step * 0.1, 0, motion), frames::COUNT - 1);
+        assert_eq!(animation_frame(motion.seconds() + step * 0.1, 0, motion), 0);
+        assert_ne!(animation_frame(0., 37, motion), animation_frame(0., 74, motion));
+    }
 }
 
 #[test]

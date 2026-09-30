@@ -242,7 +242,7 @@ fn flow_section(
 }
 
 fn flow_color(value: f64, income: bool, muted: egui::Color32) -> egui::Color32 {
-    if format_hud_number(value.abs()) == "0" {
+    if flow_value(value) == "0" {
         muted
     } else {
         hud_delta_color(if income {
@@ -254,12 +254,26 @@ fn flow_color(value: f64, income: bool, muted: egui::Color32) -> egui::Color32 {
 }
 
 fn flow_number(value: f64, income: bool) -> String {
-    let number = format_hud_number(value.abs());
+    let number = flow_value(value);
     if income || number == "0" {
         number
     } else {
         format!("-{number}")
     }
+}
+
+fn flow_value(value: f64) -> String {
+    let amount = value.abs();
+    if amount >= 1_000.0 {
+        return format_hud_number(amount);
+    }
+    let precision = if amount < 1.0 {
+        2
+    } else {
+        1
+    };
+    let number = format!("{amount:.precision$}");
+    number.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 #[cfg(test)]

@@ -3,43 +3,43 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Universally available tactics; Balanced has no counter relationship.
+/// Universally available tactics; each counters two, loses to two, and is neutral to one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(usize)]
 pub enum CombatTactic {
-    /// Neutral and immune to tactic counters.
+    /// Direct charge against a mobile line.
     #[default]
-    Balanced,
-    /// Aggressive action, increasing both sides' casualties.
     ShockAction,
-    /// Strong defensive center.
-    Bottleneck,
     /// Mobile wing attack.
     Envelopment,
-    /// Ranged harassment, reducing both sides' casualties.
+    /// Ranged harassment and withdrawal.
     Skirmishing,
     /// Feints and flexible mobile forces.
     Deception,
+    /// Strong defensive center.
+    Bottleneck,
+    /// Dense spear and shield formation.
+    Phalanx,
 }
 
 impl CombatTactic {
     /// UI selection order.
     pub const ALL: [Self; 6] = [
-        Self::Balanced,
         Self::ShockAction,
-        Self::Bottleneck,
         Self::Envelopment,
         Self::Skirmishing,
         Self::Deception,
+        Self::Bottleneck,
+        Self::Phalanx,
     ];
     /// Player-facing label.
     pub fn name(self) -> &'static str {
-        ["Balanced", "Shock Action", "Bottleneck", "Envelopment", "Skirmishing", "Deception"]
+        ["Shock Action", "Envelopment", "Skirmishing", "Deception", "Bottleneck", "Phalanx"]
             [self as usize]
     }
     /// Whether this tactic counters the opponent.
     pub fn counters(self, other: Self, config: &MilitaryConfig) -> bool {
-        config.counters[self as usize] == Some(other)
+        config.counters[self as usize].contains(&other)
     }
 }
 
@@ -48,7 +48,7 @@ impl CombatTactic {
 pub struct BattlePlan {
     /// Preferred center type.
     pub primary_unit_type: UnitType,
-    /// Center replacement type.
+    /// Preferred rear reserve and center replacement type.
     pub secondary_unit_type: UnitType,
     /// Preferred wing type.
     pub flank_unit_type: UnitType,
@@ -65,7 +65,7 @@ impl Default for BattlePlan {
             secondary_unit_type: UnitType::LightInfantry,
             flank_unit_type: UnitType::LightCavalry,
             flank_size: 1,
-            tactic: CombatTactic::Balanced,
+            tactic: CombatTactic::ShockAction,
         }
     }
 }
@@ -104,9 +104,6 @@ pub fn tactic_effectiveness<'a>(
     tactic: CombatTactic,
     config: &MilitaryConfig,
 ) -> f64 {
-    if tactic == CombatTactic::Balanced {
-        return 1.;
-    }
     let (fit, weight) =
         units.filter(|u| u.current_manpower > 0.).fold((0., 0.), |(fit, weight), unit| {
             let w = unit.manpower_ratio();
@@ -136,10 +133,8 @@ pub fn deploy_formation(
         reserves: vec![],
         flank_size,
     };
-    let mut available: Vec<&Unit> = units
-        .iter()
-        .filter(|u| u.current_manpower > 0. && u.morale > 0. && !routed.contains(&u.id))
-        .collect();
+    let mut available: Vec<&Unit> =
+        units.iter().filter(|u| u.current_manpower > 0. && !routed.contains(&u.id)).collect();
     // Undersized forces occupy a centered contiguous frontage. Otherwise one
     // lone infantry cohort would be stranded in an outer wing unable to engage
     // another small force with a different requested flank size.
@@ -147,6 +142,33 @@ pub fn deploy_formation(
     let left = width.saturating_sub(occupied_width) / 2;
     let right = left + occupied_width;
     let occupied_flanks = flank_size.min(occupied_width / 3);
+    // Keep the selected rear-line type out of the front when other combat
+    // cohorts can fill it. Otherwise a preferred flank can consume the only
+    // rear-line cohort before the rear row is considered at all.
+    let rear_capacity = available
+        .iter()
+        .filter(|unit| !unit.unit_type.is_support())
+        .count()
+        .saturating_sub(occupied_width)
+        .min(width.saturating_sub(2 * flank_size));
+    let mut rear_candidates: Vec<_> = available
+        .iter()
+        .copied()
+        .filter(|unit| {
+            let plan = plans.get(&unit.owner).copied().unwrap_or_default();
+            !unit.unit_type.is_support() && unit.unit_type == plan.secondary_unit_type
+        })
+        .collect();
+    rear_candidates.sort_by(|a, b| {
+        b.manpower_ratio()
+            .total_cmp(&a.manpower_ratio())
+            .then_with(|| b.training.total_cmp(&a.training))
+            .then_with(|| b.morale.total_cmp(&a.morale))
+            .then(a.id.cmp(&b.id))
+    });
+    let reserved: Vec<_> = rear_candidates.into_iter().take(rear_capacity).collect();
+    let reserved_ids: BTreeSet<_> = reserved.iter().map(|unit| unit.id).collect();
+    available.retain(|unit| !reserved_ids.contains(&unit.id));
     // Wings receive their preferred mobile type before the center is populated.
     for slot in (left..left + occupied_flanks).chain(right.saturating_sub(occupied_flanks)..right) {
         formation.front[slot] = take_best(&mut available, plans, true, false, false, config);
@@ -154,6 +176,7 @@ pub fn deploy_formation(
     for slot in left + occupied_flanks..right.saturating_sub(occupied_flanks) {
         formation.front[slot] = take_best(&mut available, plans, false, false, false, config);
     }
+    available.extend(reserved);
     let mut support_slots: Vec<_> = (0..width).collect();
     support_slots.sort_by_key(|&slot| (formation.front[slot].is_none(), slot));
     for slot in support_slots {
@@ -174,7 +197,7 @@ pub fn refill_formation(
 ) {
     let alive: BTreeSet<UnitId> = units
         .iter()
-        .filter(|u| u.current_manpower > 0. && u.morale > 0. && !routed.contains(&u.id))
+        .filter(|u| u.current_manpower > 0. && !routed.contains(&u.id))
         .map(|u| u.id)
         .collect();
     for slot in formation.front.iter_mut().chain(formation.support.iter_mut()) {

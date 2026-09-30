@@ -116,9 +116,7 @@ pub enum PoliticalError {
     MissingTarget,
     /// The province state or rank does not permit this action.
     Ineligible,
-    /// No usable political route exists.
-    NoConnection,
-    /// A once-per-month action has already been performed.
+    /// An action limited by its cooldown has already been performed.
     AlreadyUsed,
     /// Both Consul seats are occupied at the time of appointment.
     NoConsulSeat,
@@ -138,8 +136,7 @@ impl std::fmt::Display for PoliticalError {
             Self::InsufficientFunds => "Insufficient funds for this action.",
             Self::MissingTarget => "The selected target no longer exists.",
             Self::Ineligible => "The current office or province state does not permit this action.",
-            Self::NoConnection => "No usable political route connects to this province.",
-            Self::AlreadyUsed => "This action has already been used this month.",
+            Self::AlreadyUsed => "This action is still on cooldown.",
             Self::NoConsulSeat => "Both Consul seats are occupied.",
             Self::ScandalRequired => "An unexpired scandal against this player is required.",
             Self::InsufficientSupport => {

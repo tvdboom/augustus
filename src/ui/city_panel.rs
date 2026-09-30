@@ -21,7 +21,11 @@ const BUILDINGS: [(&str, &str, &[u8]); 8] = [
         "marketplace",
         include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/marketplace.png")),
     ),
-    ("Foundry", "foundry", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/foundry.png"))),
+    (
+        "City Hall",
+        "city-hall",
+        include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/city-hall.png")),
+    ),
     ("Academy", "academy", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/academy.png"))),
     (
         "Great Temple",

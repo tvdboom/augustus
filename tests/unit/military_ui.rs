@@ -1,19 +1,49 @@
 use super::*;
 
 #[test]
+fn army_badges_show_unsigned_zero_strength_and_morale() {
+    let (mut world, economy, graph) = military_fixture();
+    let unit = &mut world.provinces[0].forces.get_mut(&ForceOwner::Player(0)).unwrap()[0];
+    unit.current_manpower = -0.0;
+    unit.morale = -0.0;
+    let ctx = egui::Context::default();
+    let (output, _) = render_army(&ctx, &world, &economy, &graph, 0.0, vec![]);
+    text_position(&output, "0");
+    text_position(&output, "0%");
+    let negatives: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if text.galley.job.text == "-0" || text.galley.job.text == "-0%" =>
+            {
+                Some((text.galley.job.text.clone(), text.pos))
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(negatives.is_empty(), "{negatives:?}");
+
+    let unit = &mut world.provinces[0].forces.get_mut(&ForceOwner::Player(0)).unwrap()[0];
+    unit.current_manpower = 1.0;
+    unit.morale = -1.0;
+    assert_eq!(format!("{:.0}%", army_morale(std::slice::from_ref(unit))), "0%");
+}
+
+#[test]
 fn cohort_strength_uses_whole_people_instead_of_fractional_population() {
     let mut world = MilitaryWorld::new(1);
     world.seed_unit(0, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
     world.seed_unit(0, ForceOwner::Player(0), UnitType::WarElephants).unwrap();
     let units = &mut world.provinces[0].forces.get_mut(&ForceOwner::Player(0)).unwrap();
     assert_eq!(cohort_manpower_text(&units[0]), "1000/1000");
-    assert_eq!(cohort_manpower_text(&units[1]), "200/200");
+    assert_eq!(cohort_manpower_text(&units[1]), "1000/1000");
     units[1].current_manpower = 1.89;
-    assert_eq!(cohort_manpower_text(&units[1]), "189/200");
+    assert_eq!(cohort_manpower_text(&units[1]), "189/1000");
 }
 
 #[test]
-fn army_unit_hover_shows_survivors_full_strength_and_upkeep() {
+fn army_unit_hover_keeps_description_and_current_condition_beside_the_image() {
     let mut world = MilitaryWorld::new(1);
     world.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
     world.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
@@ -36,24 +66,86 @@ fn army_unit_hover_shows_survivors_full_strength_and_upkeep() {
     );
     output.textures_delta.clear();
     for label in [
-        "1,885 / 2,000",
-        "800 / 800",
+        "Statistics",
+        "Offense",
+        "Defense",
+        "Speed",
+        "Maneuver",
+        "Training",
+        "Morale",
+        "Cohort capabilities",
+        "Tactic capabilities",
+    ] {
+        text_position(&output, label);
+    }
+    let description = text_position(&output, unit_description(UnitType::LightInfantry));
+    let title = text_position(&output, "Light Infantry");
+    let stats = text_position(&output, "Statistics");
+    let capabilities = text_position(&output, "Cohort capabilities");
+    let tactics = text_position(&output, "Tactic capabilities");
+    assert!(title.y < description.y && description.y < stats.y && stats.y < capabilities.y);
+    assert!(capabilities.y < tactics.y);
+    assert!(
+        stats.x > 120. && capabilities.x > 120. && tactics.x > 120.,
+        "tables should stay beside the art"
+    );
+    let label_left = |label| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos.x),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing military control: {label}"))
+    };
+    let label_x = label_left("Offense");
+    for label in
+        ["Defense", "Speed", "Maneuver", "Training", "Morale", "Heavy Infantry", "War Elephants"]
+    {
+        assert!(
+            (label_left(label) - label_x).abs() < 1.,
+            "{label} should start at the left edge of its label column"
+        );
+    }
+    for removed in [
         "Soldiers",
         "Cohorts",
         "New cohort",
         "Food",
         "Wages",
-        "Training",
-        "Offense",
-        "Defense",
-        "Speed",
-        "Maneuver",
-        "Cohort capabilities",
+        "Individual cohorts: 885 / 1,000 · 1,000 / 1,000",
     ] {
-        text_position(&output, label);
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == removed)));
     }
-    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text == unit_description(UnitType::LightInfantry))));
+}
+
+#[test]
+fn unit_hover_tactic_table_shows_one_configured_percentage_per_tactic() {
+    let mut config = MilitaryConfig::default();
+    config.tactic_fit[UnitType::LightInfantry as usize][CombatTactic::ShockAction as usize] = 0.37;
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600., 1000.))),
+            ..Default::default()
+        },
+        |ui| recruitment_hover(ui, UnitType::LightInfantry, &config, 1., None, 1.),
+    );
+    output.textures_delta.clear();
+    let section = text_position(&output, "Tactic capabilities");
+    let shock = text_position(&output, "Shock Action");
+    let fit = text_position(&output, "37%");
+    assert!(shock.y > section.y);
+    assert!((shock.y - fit.y).abs() < 2.);
+    for tactic in CombatTactic::ALL {
+        assert!(text_position(&output, tactic.name()).y > section.y);
+    }
+    for removed in ["Fit", "Bonus", "Manpower", "Casualties", "×1.10"] {
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == removed)));
+    }
 }
 
 #[test]
@@ -139,23 +231,31 @@ fn army_overview_covers_players_and_uses_shared_badges_and_section_headers() {
         );
         assert!((panel.right() - (size.x - 8. * scale)).abs() < 3.);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == color && rect.rect.contains(title))));
-        let badges = ["Cohorts", "Food demand", "Army morale"].map(|label| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text)
-                        if text.galley.job.text == label && panel.contains(text.pos) =>
-                    {
-                        Some(text.pos + text.galley.size() * 0.5)
-                    },
-                    _ => None,
-                })
-                .expect("Overview badge")
-        });
+        let badges =
+            ["Army strength", "Cohorts", "Terrain", "Food demand", "Army morale"].map(|label| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.job.text == label && panel.contains(text.pos) =>
+                        {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        },
+                        _ => None,
+                    })
+                    .expect("Overview badge")
+            });
         for pair in badges.windows(2) {
             assert!(pair[0].x < pair[1].x && (pair[0].y - pair[1].y).abs() < 2.);
         }
+        let cohort_count = world.provinces[0].forces[&ForceOwner::Player(0)].len().to_string();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text)
+                if text.galley.job.text == cohort_count
+                    && (text.visual_bounding_rect().center().x - badges[1].x).abs() < 10. * scale
+                    && (0. ..30. * scale).contains(&(text.visual_bounding_rect().center().y - badges[1].y))
+        )));
         let deployment = output
             .shapes
             .iter()
@@ -198,26 +298,23 @@ fn army_overview_covers_players_and_uses_shared_badges_and_section_headers() {
 }
 
 #[test]
-fn army_tabs_separate_formation_units_and_deferred_orders() {
+fn army_banner_shows_disband_and_merge_without_orders() {
     let (mut world, economy, graph) = military_fixture();
     for kind in UnitType::ALL {
         world.seed_unit(0, ForceOwner::Player(0), kind).unwrap();
     }
     let ctx = egui::Context::default();
-    let key = egui::Id::new(("army-detail-tab", 0usize, ForceOwner::Player(0), None::<u64>));
-    for (tab, visible, hidden) in [
-        (ArmyDetailTab::Overview, "Deployment", "Heavy Infantry · 2 cohorts"),
-        (ArmyDetailTab::Orders, "Army orders will be added here later.", "Deployment"),
-    ] {
-        ctx.data_mut(|data| data.insert_temp(key, tab));
-        let (output, _) = render_army(&ctx, &world, &economy, &graph, 0., vec![]);
-        text_position(&output, visible);
-        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == hidden)));
+    let (output, _) = render_army(&ctx, &world, &economy, &graph, 0., vec![]);
+    for label in ["Deployment", "Disband", "Merge"] {
+        text_position(&output, label);
     }
+    assert!(text_position(&output, "Merge").x < text_position(&output, "Disband").x);
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "Orders" | "Army orders"))));
 }
 
 #[test]
-fn orders_button_returns_to_overview_and_all_unit_types_stay_in_one_row() {
+fn army_actions_use_banner_buttons_and_all_unit_types_stay_in_one_row() {
     let (mut world, economy, graph) = military_fixture();
     for kind in UnitType::ALL {
         world.seed_unit(0, ForceOwner::Player(0), kind).unwrap();
@@ -242,7 +339,7 @@ fn orders_button_returns_to_overview_and_all_unit_types_stay_in_one_row() {
         .iter()
         .filter_map(|shape| match &shape.shape {
             egui::Shape::Rect(rect)
-                if (rect.rect.height() - 66.).abs() < 0.1
+                if (rect.rect.height() - 86.).abs() < 0.1
                     && rect.fill == super::super::province_panel::TABLE_STRIPE =>
             {
                 Some(rect.rect)
@@ -250,7 +347,7 @@ fn orders_button_returns_to_overview_and_all_unit_types_stay_in_one_row() {
             _ => None,
         })
         .collect();
-    // Formation slots share the same height and fill; count only the lower unit-type row.
+    // Count the lower unit-type row.
     let unit_row_top = cards.iter().map(|rect| rect.top()).fold(f32::NEG_INFINITY, f32::max);
     let cards: Vec<_> =
         cards.into_iter().filter(|rect| (rect.top() - unit_row_top).abs() < 0.1).collect();
@@ -265,15 +362,22 @@ fn orders_button_returns_to_overview_and_all_unit_types_stay_in_one_row() {
     let first_row =
         deployment_cells(&output).into_iter().filter(|rect| rect.top() as i32 == rows[0]).count();
     assert_eq!(first_row, 16);
-    let orders = text_position(&output, "Orders");
-    render_army(&ctx, &world, &economy, &graph, 0.1, click_events(orders, true));
-    render_army(&ctx, &world, &economy, &graph, 0.2, click_events(orders, false));
+    let disband = text_position(&output, "Disband");
+    render_army(&ctx, &world, &economy, &graph, 0.1, click_events(disband, true));
+    let (_, action) =
+        render_army(&ctx, &world, &economy, &graph, 0.2, click_events(disband, false));
+    assert!(matches!(action, Some(MilitaryUiAction::DisbandArmy)));
+    let units = world.provinces[0].forces.get_mut(&ForceOwner::Player(0)).unwrap();
+    let heavy = units.iter_mut().find(|unit| unit.unit_type == UnitType::HeavyInfantry).unwrap();
+    heavy.current_manpower = 5.;
+    let second = units.iter_mut().find(|unit| unit.unit_type == UnitType::LightInfantry).unwrap();
+    second.unit_type = UnitType::HeavyInfantry;
+    second.current_manpower = 5.;
     let (output, _) = render_army(&ctx, &world, &economy, &graph, 0.3, vec![]);
-    text_position(&output, "Army orders");
-    let orders = text_position(&output, "Orders");
-    render_army(&ctx, &world, &economy, &graph, 0.4, click_events(orders, true));
-    let (output, _) = render_army(&ctx, &world, &economy, &graph, 0.5, click_events(orders, false));
-    text_position(&output, "Deployment");
+    let merge = text_position(&output, "Merge");
+    render_army(&ctx, &world, &economy, &graph, 0.4, click_events(merge, true));
+    let (_, action) = render_army(&ctx, &world, &economy, &graph, 0.5, click_events(merge, false));
+    assert!(matches!(action, Some(MilitaryUiAction::MergeArmy)));
 }
 #[test]
 fn scouting_excludes_neutral_guests_and_includes_engaged_hostile_cohorts() {
@@ -394,6 +498,7 @@ fn render_overview(
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, Option<ProvinceId>) {
     let mut selected = None;
+    let mut promotion = None;
     let mut output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 650.))),
@@ -403,12 +508,60 @@ fn render_overview(
         },
         |ui| {
             *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
-            selected =
-                overview(ui, world, economy, 0, &[egui::Color32::RED, egui::Color32::BLUE], scale);
+            selected = overview(
+                ui,
+                world,
+                economy,
+                0,
+                economy.players[0].influence,
+                &[egui::Color32::RED, egui::Color32::BLUE],
+                scale,
+                &mut promotion,
+            );
         },
     );
     output.textures_delta.clear();
     (output, selected)
+}
+
+#[test]
+fn rank_cards_only_accept_the_next_fully_earned_promotion() {
+    let ctx = egui::Context::default();
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    let draw = |time, events, world: &MilitaryWorld| {
+        let mut promotion = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600., 180.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| rank_ladder(ui, world, 0, 600., 1., &mut promotion),
+        );
+        output.textures_delta.clear();
+        (output, promotion)
+    };
+    let (output, _) = draw(0., vec![], &world);
+    let tribune = text_position(&output, "Tribune");
+    draw(0.1, click_events(tribune, true), &world);
+    assert_eq!(draw(0.2, click_events(tribune, false), &world).1, None);
+
+    world.peak_manpower.insert(owner, 600.);
+    world.victories.insert(owner, 6);
+    draw(0.3, click_events(tribune, true), &world);
+    assert_eq!(
+        draw(0.4, click_events(tribune, false), &world).1,
+        Some(MilitaryRank::MilitaryTribune)
+    );
+    let (output, _) = draw(0.5, vec![], &world);
+    let imperator = text_position(&output, "Imperator");
+    draw(0.6, click_events(imperator, true), &world);
+    assert_eq!(draw(0.7, click_events(imperator, false), &world).1, None);
 }
 #[test]
 fn overview_groups_armies_and_foreign_row_opens_the_province() {
@@ -706,16 +859,65 @@ fn stationed_rows_hide_details_and_only_owned_armies_open_a_panel() {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("campaign-player-colors"), colors.clone()));
     render_military(&ctx, &world, &economy, &graph, 0., vec![]);
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0., vec![]);
-    for label in ["Cohorts", "Army morale", "Food demand", "81%"] {
+    let military_icon = super::super::campaign_widgets::texture(&ctx, Icon::Attack);
+    for label in ["Army strength", "Cohorts", "Army morale", "Food demand", "81%"] {
         text_position(&output, label);
     }
+    let strength_badge = text_position(&output, "Army strength");
     let cohort_badge = text_position(&output, "Cohorts");
     let food_badge = text_position(&output, "Food demand");
     let morale_badge = text_position(&output, "Army morale");
+    assert!((strength_badge.y - cohort_badge.y).abs() < 1.);
     assert!((cohort_badge.y - food_badge.y).abs() < 1.);
     assert!((food_badge.y - morale_badge.y).abs() < 1.);
-    assert!(cohort_badge.x < food_badge.x && food_badge.x < morale_badge.x);
-    for value in ["−5/mo", "−2/mo", "−3/mo", "60%"] {
+    assert!(
+        strength_badge.x < cohort_badge.x
+            && cohort_badge.x < food_badge.x
+            && food_badge.x < morale_badge.x
+    );
+    for (owner, title) in [(ForceOwner::Player(0), "Player 1"), (enemy, "Player 2")] {
+        let title_pos = text_position(&output, title);
+        let card = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::super::province_panel::TABLE_STRIPE
+                        && rect.rect.contains(title_pos) =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+            .expect("Army card");
+        let mut badges: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == egui::Color32::from_rgb(235, 226, 208)
+                        && card.contains_rect(rect.rect) =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Mesh(mesh) if mesh.texture_id == military_icon
+                && card.contains_rect(mesh.calc_bounds()))));
+        badges.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        assert_eq!(badges.len(), 3);
+        let units = &world.provinces[0].forces[&owner];
+        let strength: f64 = units.iter().map(|unit| unit.effective_strength(&world.config)).sum();
+        let label = format!("{strength:.0}");
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == label
+                && badges[0].contains(text.visual_bounding_rect().center()))));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Mesh(mesh) if badges[0].contains(mesh.calc_bounds().center()))));
+    }
+    for value in ["−5/mo", "−2/mo", "−3/mo", "100%"] {
         text_position(&output, value);
     }
     for shape in &output.shapes {
@@ -740,8 +942,8 @@ fn stationed_rows_hide_details_and_only_owned_armies_open_a_panel() {
     ] {
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == forbidden)));
     }
-    let foreign = text_position(&output, "Player 2's army");
-    for (index, name) in ["Player 1's army", "Player 2's army"].into_iter().enumerate() {
+    let foreign = text_position(&output, "Player 2");
+    for (index, name) in ["Player 1", "Player 2"].into_iter().enumerate() {
         let title = output
             .shapes
             .iter()
@@ -758,7 +960,7 @@ fn stationed_rows_hide_details_and_only_owned_armies_open_a_panel() {
     assert!(action.is_none());
     assert!(selected_army(&ctx).is_none());
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0.3, vec![]);
-    let own = text_position(&output, "Player 1's army");
+    let own = text_position(&output, "Player 1");
     render_military(&ctx, &world, &economy, &graph, 0.4, click_events(own, true));
     render_military(&ctx, &world, &economy, &graph, 0.5, click_events(own, false));
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0.6, vec![]);
@@ -827,6 +1029,54 @@ fn army_window_renders_without_the_province_military_panel() {
     text_position(&output, "Italia");
     text_position(&output, "Deployment");
 }
+
+#[test]
+fn army_window_helmet_requests_its_province_military_tab() {
+    let (world, economy, graph) = military_fixture();
+    let ctx = egui::Context::default();
+    open_army_panel(&ctx, 0, 0, None);
+    let render = |time, events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600., 1000.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                draw_army_panel(
+                    ui.ctx(),
+                    &world,
+                    &economy,
+                    &graph,
+                    0,
+                    |_| true,
+                    |_| None,
+                    |_, _| MilitaryAccess::Peaceful,
+                    |a, b| a != b,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        output
+    };
+    render(0., vec![]);
+    let output = render(0.1, vec![]);
+    let scale = super::super::viewport_ui_scale(egui::vec2(1600., 1000.));
+    let helmet = egui::pos2(
+        1600. - (7. + 640. - 23.) * scale,
+        text_position(&output, "Italia").y + 8. * scale,
+    );
+    render(0.2, click_events(helmet, true));
+    assert_eq!(take_army_province_click(&ctx), None);
+    render(0.3, click_events(helmet, false));
+    assert_eq!(take_army_province_click(&ctx), Some(0));
+    assert_eq!(take_army_province_click(&ctx), None);
+}
+
 #[test]
 fn army_title_search_lists_owned_armies_and_switches_provinces() {
     let (mut world, mut economy, mut graph) = military_fixture();
@@ -885,9 +1135,12 @@ fn stationed_army_tooltips_are_specific_and_disband_does_not_open_the_army() {
     let (mut world, _, _) = military_fixture();
     world.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
     let units = &world.provinces[0].forces[&ForceOwner::Player(0)];
+    let strength: f64 = units.iter().map(|unit| unit.effective_strength(&world.config)).sum();
+    let strength_label = format!("{strength:.0}");
     for (target, tooltip) in [
         ("Army", None),
-        ("50%", Some("Army morale")),
+        (strength_label.as_str(), Some("Army strength")),
+        ("100%", Some("Army morale")),
         ("−4/mo", Some("Food demand")),
         ("Light Infantry", Some("Light Infantry")),
         ("Heavy Infantry", Some("Heavy Infantry")),
@@ -946,7 +1199,7 @@ fn stationed_army_tooltips_are_specific_and_disband_does_not_open_the_army() {
                     if target == "Light Infantry" {
                         21.
                     } else {
-                        75.
+                        110.
                     },
                     -20.,
                 )
@@ -964,7 +1217,9 @@ fn stationed_army_tooltips_are_specific_and_disband_does_not_open_the_army() {
                     "Unit tooltip must stay beside its unit"
                 );
             }
-            for other in ["Army morale", "Food demand", "Light Infantry", "Heavy Infantry"] {
+            for other in
+                ["Army strength", "Army morale", "Food demand", "Light Infantry", "Heavy Infantry"]
+            {
                 if other != tooltip {
                     assert!(
                         !hover.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -1032,7 +1287,8 @@ fn stationed_army_badges_and_units_fit_without_overlap() {
             .filter(|rect| rect.fill == egui::Color32::from_rgb(235, 226, 208))
             .map(|rect| rect.rect)
             .collect();
-        assert_eq!(badges.len(), 2);
+        assert!(card.height() >= 117. * scale);
+        assert_eq!(badges.len(), 3);
         assert!(badges.iter().all(|badge| card.contains_rect(*badge)));
         assert!(badges[0].bottom() < badges[1].top());
         assert!(badges[0].left() > card.center().x);
@@ -1049,7 +1305,7 @@ fn stationed_army_badges_and_units_fit_without_overlap() {
             .iter()
             .filter_map(|shape| match &shape.shape {
                 egui::Shape::Mesh(mesh)
-                    if (mesh.calc_bounds().width() - 30. * scale).abs() < 0.1 =>
+                    if (mesh.calc_bounds().width() - 44. * scale).abs() < 0.1 =>
                 {
                     Some(mesh.calc_bounds())
                 },
@@ -1066,25 +1322,80 @@ fn stationed_army_badges_and_units_fit_without_overlap() {
 }
 
 #[test]
-fn army_details_group_cohorts_and_show_training_without_unit_morale() {
+fn stationed_army_cohorts_enlarge_and_wrap_to_fit() {
+    let mut world = MilitaryWorld::new(1);
+    for kind in UnitType::ALL.into_iter().take(4) {
+        world.seed_unit(0, ForceOwner::Player(0), kind).unwrap();
+    }
+    let units = &world.provinces[0].forces[&ForceOwner::Player(0)];
+    for (width, icon_size, count_size, expected_rows) in [(548., 54., 20., 1), (380., 44., 17., 2)]
+    {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            *ui.style_mut() = super::super::campaign_widgets::map_style(1.);
+            ui.set_width(width);
+            stationed_army_row(
+                ui,
+                units,
+                &world.config,
+                "Player 1's army".into(),
+                super::super::PLAYER_COLORS[0],
+                true,
+                true,
+                1.,
+            );
+        });
+        output.textures_delta.clear();
+        let mut tops: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if (mesh.calc_bounds().width() - icon_size).abs() < 0.1 => {
+                    Some(mesh.calc_bounds().top())
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tops.len(), 4);
+        tops.sort_by(f32::total_cmp);
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.1);
+        assert_eq!(tops.len(), expected_rows);
+        let count_labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "1" => {
+                    Some(text.galley.job.sections[0].format.font_id.size)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(count_labels.len(), 4);
+        assert!(count_labels.iter().all(|size| (*size - count_size).abs() < 0.1));
+    }
+}
+
+#[test]
+fn army_details_group_cohorts_and_show_condition_in_the_unit_hover() {
     let (mut world, economy, graph) = military_fixture();
     world.seed_unit(0, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    world.provinces[0].forces.get_mut(&ForceOwner::Player(0)).unwrap()[0].current_manpower = 8.85;
     let ctx = egui::Context::default();
     let (output, _) = render_army(&ctx, &world, &economy, &graph, 0., vec![]);
     let card = output
         .shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            egui::Shape::Rect(rect) if (rect.rect.height() - 66.).abs() < 0.1 => Some(rect.rect),
+            egui::Shape::Rect(rect) if (rect.rect.height() - 86.).abs() < 0.1 => Some(rect.rect),
             _ => None,
         })
         .max_by(|a, b| a.top().total_cmp(&b.top()))
         .expect("Unit type card below deployment");
     assert!(card.top() > deployment_cells(&output).last().unwrap().bottom());
-    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text == "2000" && card.contains(text.pos))));
-    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text == "2" && card.contains(text.pos))));
+    let manpower = text_position(&output, "1,885");
+    let cohorts = text_position(&output, "2 cohorts");
+    assert!(card.contains(manpower) && card.contains(cohorts));
+    assert!(manpower.y < cohorts.y);
     assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Unit types")));
     render_army(
         &ctx,
@@ -1105,11 +1416,10 @@ fn army_details_group_cohorts_and_show_training_without_unit_morale() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(tooltip.contains("2,000 / 2,000"), "{tooltip}");
-    assert!(tooltip.contains("Cohorts\n2"));
-    let food = 2. * world.config.unit(UnitType::HeavyInfantry).food_per_month;
-    assert!(tooltip.contains(&format!("{food:.1}/mo")));
-    assert!(tooltip.contains("Training"));
+    assert!(tooltip.contains(unit_description(UnitType::HeavyInfantry)), "{tooltip}");
+    assert!(tooltip.contains("Statistics\nOffense"));
+    assert!(tooltip.contains("Training\n10%\nMorale\n100%"));
+    assert!(!tooltip.contains("1,885 / 2,000"));
     assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("M  "))));
 }
 
@@ -1199,13 +1509,13 @@ fn choosing_rear_line_selects_an_available_type_and_saves_the_plan() {
 }
 
 #[test]
-fn army_names_use_possessives_and_local_forces_use_province_names_in_gray() {
+fn army_rows_use_player_names_and_local_forces_use_province_names_in_gray() {
     let (mut world, economy, graph) = military_fixture();
     world.seed_unit(0, ForceOwner::Local(0), UnitType::LightInfantry).unwrap();
     let ctx = egui::Context::default();
     render_military(&ctx, &world, &economy, &graph, 0., vec![]);
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0.1, vec![]);
-    text_position(&output, "Player 1's army");
+    text_position(&output, "Player 1");
     let local = output
         .shapes
         .iter()
@@ -1238,11 +1548,14 @@ fn deployment_slots_and_cohort_cards_are_read_only() {
         .shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
-            egui::Shape::Rect(rect) if (rect.rect.height() - 66.).abs() < 0.1 => Some(rect.rect),
+            egui::Shape::Rect(rect) if (rect.rect.height() - 86.).abs() < 0.1 => Some(rect.rect),
             _ => None,
         })
         .max_by(|a, b| a.top().total_cmp(&b.top()))
         .unwrap();
+    text_position(&output, "1 cohort");
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.job.text == "1 cohorts")));
     let source = output
         .shapes
         .iter()
@@ -1301,7 +1614,7 @@ fn military_banner_badges_toggle_recruitment_and_keep_rank_read_only() {
         render_military(&ctx, &world, &economy, &graph, 0.2, click_events(rank, false));
     assert!(action.is_none());
     assert!(banner.contains(text_position(&output, "Recruit units")));
-    text_position(&output, "Cohorts");
+    text_position(&output, "Army strength");
     let badge_fill = |output: &egui::FullOutput| {
         output
             .shapes
@@ -1337,7 +1650,7 @@ fn military_banner_badges_toggle_recruitment_and_keep_rank_read_only() {
     let (output, action) =
         render_military(&ctx, &world, &economy, &graph, 0.7, click_events(stationed, false));
     assert!(action.is_none());
-    text_position(&output, "Cohorts");
+    text_position(&output, "Army strength");
     text_position(&output, "Recruit units");
 }
 #[test]
@@ -1345,9 +1658,9 @@ fn province_banner_uses_territorial_rank_and_closes_recruitment_after_ownership_
     let (mut world, mut economy, graph) = military_fixture();
     let own = ForceOwner::Player(0);
     let enemy = ForceOwner::Player(1);
-    world.renown.insert(own, 10_000.);
-    world.renown.insert(enemy, 400.);
-    world.renown.insert(ForceOwner::Local(0), 10_000.);
+    world.ranks.insert(own, MilitaryRank::Imperator);
+    world.ranks.insert(enemy, MilitaryRank::Legate);
+    world.ranks.insert(ForceOwner::Local(0), MilitaryRank::Imperator);
     world.seed_unit(0, enemy, UnitType::Archers).unwrap();
     world.seed_unit(0, ForceOwner::Local(0), UnitType::LightInfantry).unwrap();
     for province_owner in [Some(0), None, Some(1)] {
@@ -1439,21 +1752,20 @@ fn recruitment_tab_opens_the_roster_and_dispatches_a_paid_recruitment_intent() {
         })
         .expect("Recruitment hover must describe the cohort");
     assert!((title.x - description.x).abs() < 1.);
-    assert!(text_position(&hover, "Cohort capabilities").y > description.y);
-    for stat in ["Manpower", "Offense", "Defense", "Speed", "Maneuver"] {
+    let statistics = text_position(&hover, "Statistics");
+    assert!(statistics.y > description.y);
+    assert!(text_position(&hover, "Cohort capabilities").y > statistics.y);
+    assert!(
+        text_position(&hover, "Tactic capabilities").y
+            > text_position(&hover, "Cohort capabilities").y
+    );
+    for stat in ["Offense", "Defense", "Speed", "Maneuver"] {
         let position = text_position(&hover, stat);
         assert!(position.y > description.y);
+        assert!(position.y > statistics.y);
         assert!(position.y < text_position(&hover, "Cohort capabilities").y);
     }
-    assert!(text_position(&hover, "1000").y > description.y);
-    for effect in unit_definition_tip(UnitType::LightInfantry, &world.config)
-        .lines()
-        .filter(|line| line.starts_with("Against "))
-    {
-        assert!(text_position(&hover, effect).y > description.y);
-    }
-    assert!(hover.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text == "•")));
+    assert!(text_position(&hover, "Heavy Infantry").y > statistics.y);
     assert!(hover.shapes.iter().any(|shape| match &shape.shape {
         egui::Shape::Mesh(mesh) => {
             let bounds = mesh.calc_bounds();
@@ -1508,20 +1820,9 @@ fn recruitment_hover_colors_only_matchup_percentages_and_omits_damage_and_footer
         ] {
             assert!(!label.contains(removed), "Unwanted tooltip text: {label}");
         }
-        if label == "•" {
-            assert_eq!(text.galley.job.sections[0].format.color, egui::Color32::BLACK);
-        }
-        if label.starts_with("Against ") {
-            let sections = &text.galley.job.sections;
-            assert_eq!(sections.len(), 2);
-            assert_eq!(sections[0].format.color, egui::Color32::BLACK);
-            let split = label.find(": ").unwrap() + 2;
-            assert_eq!(sections[0].byte_range.start.0, 0);
-            assert_eq!(sections[0].byte_range.end.0, split);
-            assert_eq!(sections[1].byte_range.start.0, split);
-            assert_eq!(sections[1].byte_range.end.0, label.len());
-            let color = sections[1].format.color;
-            if label.contains(": +") {
+        if label.ends_with('%') && (label.starts_with('+') || label.starts_with('-')) {
+            let color = text.galley.job.sections[0].format.color;
+            if label.starts_with('+') {
                 positive += 1;
                 assert_eq!(color, egui::Color32::from_rgb(48, 112, 60));
             } else {
@@ -1534,21 +1835,43 @@ fn recruitment_hover_colors_only_matchup_percentages_and_omits_damage_and_footer
     assert!(!unit_definition_tip(UnitType::HeavyInfantry, &config).contains("damage"));
 }
 #[test]
+fn recruitment_hover_places_a_warning_badge_between_description_and_statistics() {
+    let config = MilitaryConfig::default();
+    let ctx = egui::Context::default();
+    let reason = "Requires the province's recruitment tradition";
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600., 1000.))),
+            ..Default::default()
+        },
+        |ui| recruitment_hover(ui, UnitType::HorseArchers, &config, 1., Some(reason), 1.),
+    );
+    output.textures_delta.clear();
+    let description = text_position(&output, unit_description(UnitType::HorseArchers));
+    let warning = text_position(&output, reason);
+    let statistics = text_position(&output, "Statistics");
+    assert!(description.y < warning.y && warning.y < statistics.y);
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgb(248, 223, 217)
+    )));
+}
+#[test]
 fn selecting_a_tactic_saves_the_stationary_army_plan() {
     let (world, economy, graph) = military_fixture();
     let ctx = egui::Context::default();
     let (output, _) = render_army(&ctx, &world, &economy, &graph, 0., vec![]);
-    let tactic = text_position(&output, "Balanced");
+    let tactic = text_position(&output, "Shock Action");
     render_army(&ctx, &world, &economy, &graph, 0.1, click_events(tactic, true));
     render_army(&ctx, &world, &economy, &graph, 0.2, click_events(tactic, false));
     let (output, _) = render_army(&ctx, &world, &economy, &graph, 0.3, vec![]);
-    let shock = text_position(&output, "Shock Action");
-    render_army(&ctx, &world, &economy, &graph, 0.4, click_events(shock, true));
-    let (_, action) = render_army(&ctx, &world, &economy, &graph, 0.5, click_events(shock, false));
+    let phalanx = text_position(&output, "Phalanx");
+    render_army(&ctx, &world, &economy, &graph, 0.4, click_events(phalanx, true));
+    let (_, action) =
+        render_army(&ctx, &world, &economy, &graph, 0.5, click_events(phalanx, false));
     assert!(matches!(
         action,
         Some(MilitaryUiAction::SavePlan(BattlePlan {
-            tactic: CombatTactic::ShockAction,
+            tactic: CombatTactic::Phalanx,
             ..
         }))
     ));
@@ -1598,12 +1921,12 @@ fn engaged_army_disables_tactic_changes_and_recruitment() {
     world.start_battle(0, &[owner], &[local], None, None, MilitaryTerrain::Plains, 0, 10).unwrap();
     let ctx = egui::Context::default();
     let (output, _) = render_army(&ctx, &world, &economy, &graph, 0., vec![]);
-    let tactic = text_position(&output, "Balanced");
+    let tactic = text_position(&output, "Shock Action");
     render_army(&ctx, &world, &economy, &graph, 0.1, click_events(tactic, true));
     let (output, action) =
         render_army(&ctx, &world, &economy, &graph, 0.2, click_events(tactic, false));
     assert!(action.is_none());
-    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Shock Action"))));
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Phalanx"))));
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0.25, vec![]);
     let tab = text_position(&output, "Recruit units");
     render_military(&ctx, &world, &economy, &graph, 0.3, click_events(tab, true));
@@ -1639,7 +1962,7 @@ fn foreign_army_and_battle_show_morale_but_hide_training_and_positions() {
             .collect::<Vec<_>>()
     };
     let labels = texts(&output);
-    assert!(labels.iter().any(|s| s == "Player 2's army"));
+    assert!(labels.iter().any(|s| s == "Player 2"));
     assert!(labels.iter().any(|s| s == "81%"));
     assert!(!labels.iter().any(|s| s.starts_with("T  ") || s.starts_with("M  ")));
     assert!(action.is_none());
@@ -1864,6 +2187,47 @@ fn recruitment_queue_right_click_dispatches_only_the_selected_waiting_order() {
     let (_, action) =
         render_military(&ctx, &world, &economy, &graph, 0.5, click_events(position, false));
     assert!(matches!(action, Some(MilitaryUiAction::CancelRecruitment)));
+}
+#[test]
+fn recruitment_queue_shows_all_thirteen_waiting_orders_without_scrolling() {
+    let (mut world, mut economy, _) = military_fixture();
+    economy.provinces[0].population[2] = 100_000.;
+    economy.players[0].resources[1] = 100_000.;
+    for _ in 0..=ProvinceMilitaryState::MAX_RECRUITMENT_QUEUE {
+        world
+            .recruit(
+                0,
+                0,
+                UnitType::LightInfantry,
+                true,
+                &[],
+                &mut economy.provinces[0].population,
+                &mut economy.players[0].resources[1],
+            )
+            .unwrap();
+    }
+    let ctx = egui::Context::default();
+    render_recruitment_roster(&ctx, &world, &economy, egui::vec2(380., 1000.), 0., vec![]);
+    let output =
+        render_recruitment_roster(&ctx, &world, &economy, egui::vec2(380., 1000.), 0.1, vec![]);
+    let queue_y = text_position(&output, "Queue").y;
+    let roster_y = text_position(&output, "Light Infantry").y;
+    let icons: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) => {
+                let bounds = mesh.calc_bounds();
+                ((bounds.width() - 28.).abs() < 0.1
+                    && bounds.center().y >= queue_y - 5.
+                    && bounds.center().y < roster_y)
+                    .then_some(bounds)
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(icons.len(), ProvinceMilitaryState::MAX_RECRUITMENT_QUEUE);
+    assert!(icons.iter().any(|icon| icon.center().y > queue_y + 28.));
 }
 fn render_recruitment_roster(
     ctx: &egui::Context,
@@ -2191,7 +2555,7 @@ fn unavailable_recruitment_cards_keep_the_default_cursor_and_do_not_recruit() {
             3 => {
                 economy.provinces[0].population[2] = 100_000.;
                 economy.players[0].resources[1] = 100_000.;
-                for _ in 0..ProvinceMilitaryState::MAX_RECRUITMENT_ORDERS {
+                for _ in 0..=ProvinceMilitaryState::MAX_RECRUITMENT_QUEUE {
                     world
                         .recruit(
                             0,

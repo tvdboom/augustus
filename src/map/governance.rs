@@ -12,6 +12,7 @@ pub(crate) enum EdictLevel {
 pub(crate) struct Governance {
     pub food_rations: EdictLevel,
     pub slave_labor: EdictLevel,
+    pub noble_wages: EdictLevel,
     pub army_wages: EdictLevel,
 }
 
@@ -58,6 +59,22 @@ impl Governance {
         }
     }
 
+    pub(crate) fn noble_wage_factor(self) -> f64 {
+        match self.noble_wages {
+            EdictLevel::Low => 0.75,
+            EdictLevel::Medium => 1.0,
+            EdictLevel::High => 1.25,
+        }
+    }
+
+    pub(crate) fn noble_wage_happiness(self) -> f64 {
+        match self.noble_wages {
+            EdictLevel::Low => -2.0,
+            EdictLevel::Medium => 0.0,
+            EdictLevel::High => 1.0,
+        }
+    }
+
     pub(crate) fn happiness_deltas(self) -> [f64; 4] {
         let ration = match self.food_rations {
             EdictLevel::Low => -1.0,
@@ -69,6 +86,6 @@ impl Governance {
             EdictLevel::Medium => 0.0,
             EdictLevel::High => -2.0,
         };
-        [ration, ration, ration, ration + slave_labor]
+        [ration + self.noble_wage_happiness(), ration, ration, ration + slave_labor]
     }
 }

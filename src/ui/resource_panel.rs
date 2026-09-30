@@ -1,7 +1,7 @@
 //! Province-level production card for food, metal, and stone.
 
 use super::{
-    format_hud_number, hud_delta_color, hud_resource_positions, ProvinceOwnership,
+    campaign, format_hud_number, hud_delta_color, hud_resource_positions, ProvinceOwnership,
     HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_NAMES, HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT,
 };
 use bevy_egui::egui;
@@ -11,6 +11,9 @@ const FOOD_PANEL_WIDTH: f32 = 350.0;
 const HEADER_HEIGHT: f32 = 78.0;
 const COLUMN_HEIGHT: f32 = 29.0;
 const ROW_HEIGHT: f32 = 31.0;
+const DETAIL_HEADER_HEIGHT: f32 = 29.0;
+const DETAIL_ROW_HEIGHT: f32 = 31.0;
+const DETAIL_HEIGHT: f32 = DETAIL_HEADER_HEIGHT + 2.0 * DETAIL_ROW_HEIGHT;
 const FOOTER_HEIGHT: f32 = 31.0;
 const RESOURCE_DESCRIPTIONS: [&str; 3] =
     ["Feeds your population.", "Used to buy military forces.", "Used to buy buildings."];
@@ -30,8 +33,10 @@ pub(in crate::app) fn show(
     date_left: f32,
     player: usize,
     ownership: &ProvinceOwnership,
+    campaign: Option<&campaign::Campaign>,
     icons: &[egui::TextureHandle; 7],
     open_resource: &mut Option<usize>,
+    open_food_row: &mut Option<usize>,
 ) {
     let pointer = context.input(|input| input.pointer.hover_pos());
     let positions = hud_resource_positions();
@@ -45,32 +50,93 @@ pub(in crate::app) fn show(
         .then_some(index)
     });
     let Some(resource) = hovered.or(*open_resource) else {
+        *open_food_row = None;
         return;
     };
+    if resource != 0 {
+        *open_food_row = None;
+    }
 
-    let mut sources = ownership.production_sources(player, resource);
-    sources.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let mut sources = if resource == 0 {
+        campaign.map_or_else(
+            || {
+                ownership
+                    .production_sources(player, resource)
+                    .into_iter()
+                    .map(|(name, produced, civilian)| (name, produced, civilian, 0.0))
+                    .collect()
+            },
+            |campaign| campaign.food_breakdown(player),
+        )
+    } else {
+        ownership
+            .production_sources(player, resource)
+            .into_iter()
+            .map(|(name, produced, consumed)| (name, produced, consumed, 0.0))
+            .collect()
+    };
+    sources.sort_unstable_by(|a, b| {
+        (a.0 == "Armies elsewhere").cmp(&(b.0 == "Armies elsewhere")).then_with(|| a.0.cmp(b.0))
+    });
+    if open_food_row.is_some_and(|row| row >= sources.len()) {
+        *open_food_row = None;
+    }
     let top = screen.top() + 45.0 * scale;
     let fixed_height = HEADER_HEIGHT + COLUMN_HEIGHT + FOOTER_HEIGHT;
     let available_body = (screen.bottom() - top - 12.0 * scale) / scale - fixed_height;
-    let body_height =
-        (sources.len().max(1) as f32 * ROW_HEIGHT).min(available_body.max(ROW_HEIGHT));
+    let detail_height = if resource == 0 && open_food_row.is_some() {
+        DETAIL_HEIGHT
+    } else {
+        0.0
+    };
+    let body_height = (sources.len().max(1) as f32 * ROW_HEIGHT)
+        .min((available_body - detail_height).max(ROW_HEIGHT));
     let width = panel_width(resource) * scale;
     let left = (screen.left() + hud_resource_positions()[resource] * scale)
         .max(screen.left() + 8.0 * scale)
         .min(screen.right() - width - 8.0 * scale);
     let rect = egui::Rect::from_min_size(
         egui::pos2(left, top),
-        egui::vec2(width, (fixed_height + body_height) * scale),
+        egui::vec2(width, (fixed_height + body_height + detail_height) * scale),
     );
 
     // Keeping the card open over its own surface lets players scroll a long
     // province list without requiring the pointer to remain on the HUD icon.
     if hovered == Some(resource) || pointer.is_some_and(|point| rect.contains(point)) {
         *open_resource = Some(resource);
-        paint(context, rect, scale, body_height, resource, icons, &sources);
+        let mut hovered_row = None;
+        paint(
+            context,
+            rect,
+            scale,
+            body_height,
+            resource,
+            icons,
+            &sources,
+            *open_food_row,
+            pointer,
+            &mut hovered_row,
+        );
+        let detail_top = top + (HEADER_HEIGHT + COLUMN_HEIGHT + body_height) * scale;
+        let over_detail = pointer.is_some_and(|point| {
+            detail_height > 0.0
+                && point.x >= left
+                && point.x < left + width
+                && point.y >= detail_top
+                && point.y < detail_top + detail_height * scale
+        });
+        let next_row = if resource == 0 {
+            hovered_row.or_else(|| over_detail.then_some(*open_food_row).flatten())
+        } else {
+            None
+        };
+        if *open_food_row != next_row {
+            *open_food_row = next_row;
+            context.request_repaint();
+        }
     } else {
         *open_resource = None;
+        *open_food_row = None;
     }
 }
 
@@ -81,22 +147,34 @@ fn paint(
     body_height: f32,
     resource: usize,
     icons: &[egui::TextureHandle; 7],
-    sources: &[(&str, f64, f64)],
+    sources: &[(&str, f64, f64, f64)],
+    open_food_row: Option<usize>,
+    pointer: Option<egui::Pos2>,
+    hovered_row: &mut Option<usize>,
 ) {
     let width = panel_width(resource);
     let ink = egui::Color32::from_rgb(51, 46, 39);
     let muted = egui::Color32::from_rgb(109, 97, 79);
     let rule = egui::Color32::from_rgb(188, 177, 155);
-    let total_produced: f64 = sources.iter().map(|(_, produced, _)| produced).sum();
-    let total_consumed: f64 = sources.iter().map(|(_, _, consumed)| consumed).sum();
+    let total_produced: f64 = sources.iter().map(|(_, produced, _, _)| produced).sum();
+    let total_consumed: f64 =
+        sources.iter().map(|(_, _, civilian, military)| civilian + military).sum();
     egui::Area::new(egui::Id::new("augustus_resource_sources"))
         .fixed_pos(panel_rect.min)
         .order(egui::Order::Tooltip)
+        .movable(false)
+        .sense(egui::Sense::hover())
         .show(context, |ui| {
             let (rect, _) = ui.allocate_exact_size(panel_rect.size(), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * scale;
-            let footer_top = HEADER_HEIGHT + COLUMN_HEIGHT + body_height;
+            let detail_top = HEADER_HEIGHT + COLUMN_HEIGHT + body_height;
+            let detail_height = if resource == 0 && open_food_row.is_some() {
+                DETAIL_HEIGHT
+            } else {
+                0.0
+            };
+            let footer_top = detail_top + detail_height;
 
             // Match the top strip's pale stone palette and etched border.
             painter.rect_filled(
@@ -216,17 +294,32 @@ fn paint(
                             muted,
                         );
                     }
-                    for (index, (name, produced, consumed)) in sources.iter().enumerate() {
+                    for (index, (name, produced, civilian, military)) in sources.iter().enumerate()
+                    {
                         let (row, _) = list.allocate_exact_size(
                             egui::vec2(list.available_width(), ROW_HEIGHT * scale),
                             egui::Sense::hover(),
                         );
                         let row_painter = list.painter_at(row);
+                        if resource == 0
+                            && pointer.is_some_and(|point| {
+                                body_rect.contains(point) && row.contains(point)
+                            })
+                        {
+                            *hovered_row = Some(index);
+                        }
                         if index % 2 == 0 {
                             row_painter.rect_filled(
                                 row,
                                 0.0,
                                 egui::Color32::from_rgb(244, 239, 225),
+                            );
+                        }
+                        if resource == 0 && open_food_row == Some(index) {
+                            row_painter.rect_filled(
+                                row,
+                                0.0,
+                                egui::Color32::from_rgba_unmultiplied(226, 212, 184, 100),
                             );
                         }
                         row_painter.line_segment(
@@ -251,13 +344,21 @@ fn paint(
                             row_painter.text(
                                 egui::pos2(rect.right() - 19.0 * scale, row.center().y),
                                 egui::Align2::RIGHT_CENTER,
-                                format_hud_number(*consumed),
+                                format_hud_number(civilian + military),
                                 egui::FontId::proportional(13.0 * scale),
-                                hud_delta_color(-*consumed),
+                                hud_delta_color(-(civilian + military)),
                             );
                         }
                     }
                 });
+
+            if let Some(index) = open_food_row.filter(|_| resource == 0) {
+                if let Some((_, produced, civilian, military)) = sources.get(index) {
+                    paint_food_detail(
+                        &painter, rect, scale, detail_top, *produced, *civilian, *military,
+                    );
+                }
+            }
 
             let footer = egui::Rect::from_min_max(
                 p(4.0, footer_top),
@@ -292,4 +393,124 @@ fn paint(
                 );
             }
         });
+}
+
+fn paint_food_detail(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    scale: f32,
+    top: f32,
+    produced: f64,
+    civilian: f64,
+    military: f64,
+) {
+    let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * scale;
+    let ink = egui::Color32::from_rgb(51, 46, 39);
+    let muted = egui::Color32::from_rgb(109, 97, 79);
+    let rule = egui::Color32::from_rgb(188, 177, 155);
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            p(13.0, top),
+            p(FOOD_PANEL_WIDTH - 13.0, top + DETAIL_HEADER_HEIGHT),
+        ),
+        0.0,
+        egui::Color32::from_rgb(222, 211, 188),
+    );
+    for (label, x, align) in [
+        ("FOOD BREAKDOWN", 18.0, egui::Align2::LEFT_CENTER),
+        ("PRODUCED", FOOD_PANEL_WIDTH - 94.0, egui::Align2::RIGHT_CENTER),
+        ("CONSUMED", FOOD_PANEL_WIDTH - 19.0, egui::Align2::RIGHT_CENTER),
+    ] {
+        painter.text(
+            p(x, top + 15.0),
+            align,
+            label,
+            egui::FontId::proportional(10.0 * scale),
+            muted,
+        );
+    }
+    for (index, (label, output, demand)) in
+        [("Civilians", produced, civilian), ("Military", 0.0, military)].into_iter().enumerate()
+    {
+        let y = top + DETAIL_HEADER_HEIGHT + index as f32 * DETAIL_ROW_HEIGHT;
+        let row =
+            egui::Rect::from_min_max(p(13.0, y), p(FOOD_PANEL_WIDTH - 13.0, y + DETAIL_ROW_HEIGHT));
+        if index == 0 {
+            painter.rect_filled(row, 0.0, egui::Color32::from_rgb(244, 239, 225));
+        }
+        painter.line_segment(
+            [row.left_bottom(), row.right_bottom()],
+            egui::Stroke::new(0.6 * scale, rule),
+        );
+        painter.text(
+            p(18.0, y + DETAIL_ROW_HEIGHT / 2.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(13.0 * scale),
+            ink,
+        );
+        painter.text(
+            p(FOOD_PANEL_WIDTH - 94.0, y + DETAIL_ROW_HEIGHT / 2.0),
+            egui::Align2::RIGHT_CENTER,
+            format_hud_number(output),
+            egui::FontId::proportional(13.0 * scale),
+            hud_delta_color(output),
+        );
+        painter.text(
+            p(FOOD_PANEL_WIDTH - 19.0, y + DETAIL_ROW_HEIGHT / 2.0),
+            egui::Align2::RIGHT_CENTER,
+            format_hud_number(demand),
+            egui::FontId::proportional(13.0 * scale),
+            hud_delta_color(-demand),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_card_uses_default_cursor_over_its_read_only_content() {
+        let ctx = egui::Context::default();
+        super::super::campaign_widgets::configure_cursor(&ctx);
+        let icons = std::array::from_fn(|index| {
+            ctx.load_texture(
+                format!("resource-card-cursor-{index}"),
+                egui::ColorImage::from_rgba_unmultiplied([1, 1], &[255, 255, 255, 255]),
+                egui::TextureOptions::LINEAR,
+            )
+        });
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(350.0, 169.0));
+        for pointer in [egui::pos2(200.0, 150.0), egui::pos2(200.0, 220.0)] {
+            for _ in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800.0, 600.0),
+                        )),
+                        events: vec![egui::Event::PointerMoved(pointer)],
+                        ..Default::default()
+                    },
+                    |root| {
+                        paint(
+                            root.ctx(),
+                            rect,
+                            1.0,
+                            ROW_HEIGHT,
+                            0,
+                            &icons,
+                            &[("Aegyptus", 311.0, 264.0, 0.0)],
+                            None,
+                            Some(pointer),
+                            &mut None,
+                        );
+                    },
+                );
+                assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Default);
+                output.textures_delta.clear();
+            }
+        }
+    }
 }

@@ -117,29 +117,103 @@ pub(in crate::app) fn paint_map_edge_frame(
         }
     }
 
-    // Each player color has its own transparent image of the entire standard
-    // and rail. Menu glyphs are painted over the cloth afterward.
+    // Keep the flag (and its SPQR mark) above panels and confirmation modals.
+    // The rail and menu glyphs stay below modals, which still block input.
     let height = map_standard_height(screen, scale);
-    let mut mesh = egui::Mesh::with_texture(standard.id());
+    let mut flag = egui::Mesh::with_texture(standard.id());
+    let mut rail = egui::Mesh::with_texture(standard.id());
     let rows = [
         (20.0, MAP_STANDARD_WIDTH),
         (300.0, MAP_STANDARD_WIDTH),
         (440.0, MAP_STANDARD_RAIL_IMAGE_WIDTH),
         (1684.0, MAP_STANDARD_RAIL_IMAGE_WIDTH),
     ];
-    for (source_y, width) in rows {
+    for (row, (source_y, width)) in rows.into_iter().enumerate() {
         let y = (source_y - 20.0) / (1684.0 - 20.0) * height;
-        for (x, u) in [(0.0, 7.0 / 220.0), (width, 1.0)] {
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos: p(x, y),
-                uv: egui::pos2(u, source_y / 1684.0),
-                color: egui::Color32::WHITE,
-            });
+        let vertices = [(0.0, 7.0 / 220.0), (width, 1.0)].map(|(x, u)| egui::epaint::Vertex {
+            pos: p(x, y),
+            uv: egui::pos2(u, source_y / 1684.0),
+            color: egui::Color32::WHITE,
+        });
+        if row <= 1 {
+            flag.vertices.extend_from_slice(&vertices);
+        }
+        if row >= 1 {
+            rail.vertices.extend_from_slice(&vertices);
         }
     }
-    for row in 0..3 {
+    flag.indices.extend_from_slice(&[0, 1, 2, 1, 3, 2]);
+    for row in 0..2 {
         let top = row * 2;
-        mesh.indices.extend_from_slice(&[top, top + 1, top + 2, top + 1, top + 3, top + 2]);
+        rail.indices.extend_from_slice(&[top, top + 1, top + 2, top + 1, top + 3, top + 2]);
     }
-    painter.add(egui::Shape::Mesh(mesh.into()));
+    ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("augustus_map_standard_rail"),
+    ))
+    .add(egui::Shape::Mesh(rail.into()));
+    // This paint-only layer must remain above Foreground modals and Tooltip panels.
+    ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Debug,
+        egui::Id::new("augustus_map_standard_flag"),
+    ))
+    .add(egui::Shape::Mesh(flag.into()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_flag_stays_above_confirmation_backdrop() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        });
+        let standard = ctx.load_texture(
+            "test-standard",
+            egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+            egui::TextureOptions::LINEAR,
+        );
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        for time in [0.1, 0.2] {
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                ..Default::default()
+            });
+            paint_map_edge_frame(
+                &ctx,
+                1.0,
+                &standard,
+                &GameClock::default(),
+                false,
+                [(false, false); 2],
+            );
+            let modal = egui::Modal::new(egui::Id::new("test-confirmation")).show(&ctx, |ui| {
+                ui.label("Confirm");
+            });
+            ctx.move_to_top(modal.response.layer_id);
+            output = ctx.end_pass();
+            output.textures_delta.clear();
+        }
+        let standard_shapes: Vec<_> = output
+            .shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clipped)| match &clipped.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == standard.id() => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(standard_shapes.len(), 2);
+        assert!(
+            standard_shapes[1] > standard_shapes[0] + 1,
+            "modal shapes should paint after the rail and before the flag"
+        );
+        assert_eq!(standard_shapes[1], output.shapes.len() - 1);
+    }
 }

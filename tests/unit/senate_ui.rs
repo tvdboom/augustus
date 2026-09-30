@@ -97,6 +97,52 @@ fn chamber_shows_one_hundred_separate_larger_seats_in_the_actual_player_colors()
 }
 
 #[test]
+fn faction_names_follow_the_rim_without_covering_seats() {
+    let senate = SenateState::new(1);
+    for width in [380.0, 590.0] {
+        let ctx = egui::Context::default();
+        let (output, bounds) = render(&ctx, &senate, width, 0.0, None);
+        let seats: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle) if circle.fill != egui::Color32::TRANSPARENT => {
+                    Some(circle)
+                },
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if Bloc::ALL.iter().any(|bloc| text.galley.job.text == bloc.label()) =>
+                {
+                    Some(text)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels.len(), Bloc::ALL.len());
+        for (index, label) in labels.iter().enumerate() {
+            let expected_angle = (index as f32 - 2.0) * std::f32::consts::PI / 5.0;
+            assert!((label.angle - expected_angle).abs() < 0.001);
+            assert!(bounds.contains_rect(label.visual_bounding_rect()));
+            let label_center = label.visual_bounding_rect().center();
+            let tangent = egui::vec2(label.angle.cos(), label.angle.sin());
+            let normal = egui::vec2(-tangent.y, tangent.x);
+            for seat in &seats {
+                let offset = seat.center - label_center;
+                let dx = (offset.dot(tangent).abs() - label.galley.rect.width() / 2.0).max(0.0);
+                let dy = (offset.dot(normal).abs() - label.galley.rect.height() / 2.0).max(0.0);
+                assert!(dx * dx + dy * dy >= seat.radius * seat.radius);
+            }
+        }
+    }
+}
+
+#[test]
 fn hovering_between_senators_explains_the_faction_and_its_live_influences() {
     let senate = SenateState::new(1);
     let ctx = egui::Context::default();

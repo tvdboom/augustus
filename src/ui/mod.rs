@@ -9,6 +9,8 @@ pub(super) mod audio_controls;
 pub(super) mod campaign_confirmation;
 #[path = "campaign_economy.rs"]
 pub(super) mod campaign_economy;
+#[path = "campaign_events.rs"]
+pub(super) mod campaign_events;
 #[path = "campaign_military.rs"]
 pub(super) mod campaign_military;
 #[path = "campaign_notices.rs"]
@@ -23,6 +25,8 @@ pub(super) mod campaign_politics;
 pub(super) mod campaign_trade;
 #[path = "campaign_widgets.rs"]
 pub(super) mod campaign_widgets;
+#[path = "celebration.rs"]
+pub(super) mod celebration;
 #[path = "city_panel.rs"]
 pub(super) mod city_panel;
 #[path = "coin_panel.rs"]
@@ -53,5 +57,7 @@ pub(super) mod rank_hud;
 pub(super) mod resource_hud;
 #[path = "resource_panel.rs"]
 pub(super) mod resource_panel;
+#[path = "spectator.rs"]
+pub(super) mod spectator;
 #[path = "toasts.rs"]
 pub(super) mod toasts;

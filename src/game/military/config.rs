@@ -7,7 +7,7 @@ use super::*;
 pub struct UnitDefinition {
     /// Index into Nobles, Citizens, Plebeians, Slaves; only 1 or 2 is used.
     pub manpower_class: usize,
-    /// Nominal cohort strength in hundred-person blocks.
+    /// Nominal cohort strength in hundred-person blocks (always 10).
     pub manpower: f64,
     /// Economy population units removed from the source province on recruitment.
     pub population_cost: f64,
@@ -49,16 +49,14 @@ pub struct MilitaryConfig {
     pub units: [UnitDefinition; 11],
     /// Asymmetric attack multipliers, including siege weapons.
     pub matchups: [[f64; 11]; 11],
-    /// Fit for Balanced, Shock, Bottleneck, Envelopment, Skirmishing, Deception.
+    /// Suitability for Shock, Envelopment, Skirmishing, Deception, Bottleneck, Phalanx.
     pub tactic_fit: [[f64; 6]; 11],
-    /// Counter target of each tactic, or None for Balanced.
-    pub counters: [Option<CombatTactic>; 6],
-    /// Maximum bonus when countering with perfect composition.
-    pub tactic_bonus: f64,
+    /// Two counter targets for each tactic, in `CombatTactic::ALL` order.
+    pub counters: [[CombatTactic; 2]; 6],
+    /// Maximum bonus when countering with perfect composition, by tactic.
+    pub tactic_bonus: [f64; 6],
     /// Damage multiplier when countered.
     pub countered_multiplier: f64,
-    /// Both sides' casualty intensity from each selected tactic.
-    pub casualty_intensity: [f64; 6],
     /// Front/support width by terrain.
     pub combat_widths: [usize; 7],
     /// Fallback center deployment, highest priority first.
@@ -111,8 +109,8 @@ pub struct MilitaryConfig {
     pub training_supply_threshold: f64,
     /// Morale baseline before rank/training effects.
     pub base_morale: f64,
-    /// Maximum recovery toward baseline per peaceful month.
-    pub morale_recovery: f64,
+    /// Morale points and percentage of nominal manpower restored per month by rank.
+    pub rank_recovery: [f64; 4],
     /// Morale lost for a fully unsupplied month.
     pub shortage_morale_penalty: f64,
     /// Participation experience gain after battle.
@@ -121,8 +119,6 @@ pub struct MilitaryConfig {
     pub victory_training: f64,
     /// Maximum post-battle experience gain.
     pub maximum_battle_training: f64,
-    /// Winner morale recovery after battle.
-    pub victory_morale: f64,
     /// Draft penalty proportionality constant.
     pub draft_happiness_scale: f64,
     /// Flat local happiness cost of raising one cohort.
@@ -183,8 +179,8 @@ impl Default for MilitaryConfig {
     fn default() -> Self {
         use RecruitmentTag as Tag;
         use UnitType::*;
-        let manpower = [10., 10., 8., 5., 4., 5., 3., 4., 2., 3., 3.];
-        let population_cost = [1.; 11];
+        let manpower = [10.; 11];
+        let population_cost = [crate::map::POPULATION_SCALE; 11];
         let metal = [12., 40., 16., 28., 48., 40., 24., 36., 100., 60., 80.];
         let months = [2., 3., 2., 3., 4., 3., 3., 3., 5., 4., 5.];
         // Aggregate population scale: infantry < cavalry < elephants.
@@ -296,30 +292,29 @@ impl Default for MilitaryConfig {
             matchups,
             terrain_attack,
             tactic_fit: [
-                [1., 0.50, 0.80, 0.30, 0.80, 0.60],
-                [1., 1., 1., 0.20, 0.20, 0.60],
-                [1., 0.20, 0.80, 0.30, 1., 0.70],
-                [1., 0.50, 0.20, 1., 0.70, 0.90],
-                [1., 1., 0.30, 0.90, 0.30, 0.70],
-                [1., 0.25, 0.20, 1., 1., 1.],
-                [1., 0.75, 0.30, 0.80, 0.50, 1.],
-                [1., 0.50, 0.20, 1., 0.60, 0.90],
-                [1., 1., 0.75, 0.10, 0.10, 0.30],
-                [1., 0., 0.50, 0., 0.50, 0.20],
-                [1., 0., 0.50, 0., 0.40, 0.20],
+                [0.50, 0.30, 0.80, 0.60, 0.80, 0.50],
+                [1.00, 0.20, 0.20, 0.60, 1.00, 1.00],
+                [0.20, 0.30, 1.00, 0.70, 0.80, 0.00],
+                [0.50, 1.00, 0.70, 0.90, 0.20, 0.75],
+                [1.00, 0.90, 0.30, 0.70, 0.30, 0.15],
+                [0.25, 1.00, 1.00, 1.00, 0.20, 0.00],
+                [0.75, 0.80, 0.50, 1.00, 0.30, 0.00],
+                [0.50, 1.00, 0.60, 0.90, 0.20, 0.00],
+                [1.00, 0.10, 0.10, 0.30, 0.75, 1.00],
+                [0.00, 0.00, 0.50, 0.20, 0.50, 0.50],
+                [0.00, 0.00, 0.40, 0.20, 0.50, 0.50],
             ],
             counters: [
-                None,
-                Some(CombatTactic::Deception),
-                Some(CombatTactic::ShockAction),
-                Some(CombatTactic::Bottleneck),
-                Some(CombatTactic::Envelopment),
-                Some(CombatTactic::Skirmishing),
+                [CombatTactic::Envelopment, CombatTactic::Skirmishing],
+                [CombatTactic::Deception, CombatTactic::Phalanx],
+                [CombatTactic::Bottleneck, CombatTactic::Envelopment],
+                [CombatTactic::Skirmishing, CombatTactic::Bottleneck],
+                [CombatTactic::ShockAction, CombatTactic::Phalanx],
+                [CombatTactic::ShockAction, CombatTactic::Deception],
             ],
-            tactic_bonus: 0.20,
+            tactic_bonus: [0.20, 0.20, 0.20, 0.20, 0.20, 0.25],
             countered_multiplier: 0.90,
-            casualty_intensity: [1., 1.10, 1., 1., 0.90, 1.],
-            combat_widths: [16, 16, 12, 12, 10, 16, 10],
+            combat_widths: [16, 16, 10, 12, 8, 14, 8],
             center_priority: [
                 WarElephants,
                 HeavyInfantry,
@@ -367,13 +362,12 @@ impl Default for MilitaryConfig {
             starting_training: 10.,
             passive_training: 1.,
             training_supply_threshold: 0.95,
-            base_morale: 50.,
-            morale_recovery: 5.,
+            base_morale: 100.,
+            rank_recovery: [1., 2., 3.5, 5.],
             shortage_morale_penalty: 25.,
             participation_training: 2.,
             victory_training: 1.,
             maximum_battle_training: 6.,
-            victory_morale: 10.,
             draft_happiness_scale: 100.,
             base_draft_penalty: 2.,
             maximum_draft_penalty: 20.,
@@ -384,12 +378,12 @@ impl Default for MilitaryConfig {
             rank_morale: [0., 5., 10., 15.],
             rank_control: [1., 1.10, 1.20, 1.30],
             rank_senate: [0., 8., 16., 25.],
-            maximum_garrison_control: 4.,
+            maximum_garrison_control: 5.,
             garrison_half_saturation: 20.,
             occupation_relation_loss: 2.,
             terrain_movement: [0.90, 1., 1.20, 1.25, 1.60, 1.30, 1.50],
-            road_speed_bonus: 0.15,
-            minimum_road_cost: 0.50,
+            road_speed_bonus: 0.20,
+            minimum_road_cost: 0.0,
             reference_speed: 2.5,
             movement_scale: 1.,
             sprite_zoom_threshold: 2.3,

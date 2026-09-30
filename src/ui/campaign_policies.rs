@@ -99,6 +99,12 @@ pub(in crate::app) fn province(
         .max_height(ui.available_height())
         .show(ui, |ui| {
         let scale = scale(ui);
+        super::campaign_widgets::portrait(
+            ui,
+            super::campaign_widgets::ProvinceLandscape::Policies,
+            76.0 * scale,
+        );
+        ui.add_space(8.0 * scale);
         ui.add_enabled_ui(p.owner == Some(player), |ui| {
         policy_widgets::section(ui, scale, "ECONOMY & WORKS");
         let weights = config.focus_weights[p.policies.focus as usize];
@@ -122,7 +128,7 @@ pub(in crate::app) fn province(
         let civic_budget = p.civic_spending_cost(config);
         let descriptions: Vec<_> = (0..3).map(|i| format!(
             "Budget {} sestertii per free resident; Happiness {} for free classes",
-            compact_decimal(config.civic_coin_per_free_resident[i]), signed_decimal(config.civic_happiness[i]),
+            policy_widgets::coin_decimal(config.civic_coin_per_free_resident[i]), signed_decimal(config.civic_happiness[i]),
         )).collect();
         card(ui, "Civic Spending", &mut p.policies.civic_spending,
             &[(CivicSpending::Frugal, "Frugal"), (CivicSpending::Normal, "Normal"), (CivicSpending::Generous, "Generous")],
@@ -146,13 +152,16 @@ pub(in crate::app) fn province(
 
         policy_widgets::section(ui, scale, "MILITARY");
         let effort = p.policies.recruitment as usize;
+        let monthly_cost = |level: usize| {
+            policy_widgets::coin_decimal(config.recruitment_coin_per_project[level])
+        };
         let descriptions: Vec<_> = (0..3).map(|i| format!(
-            "Recruitment speed ×{}; Recruitment cost: {} sestertii per recruit; Citizen and plebeian happiness: {}",
-            speed_multiplier(config.recruitment_speed[i]), compact_decimal(config.recruitment_coin_per_recruit[i]), signed_decimal(config.recruitment_happiness[i]),
+            "Recruitment speed ×{}; Recruitment cost: {} sestertii per month per active cohort; Citizen and plebeian happiness: {}",
+            speed_multiplier(config.recruitment_speed[i]), monthly_cost(i), signed_decimal(config.recruitment_happiness[i]),
         )).collect();
         card(ui, "Recruitment Effort", &mut p.policies.recruitment,
             &[(RecruitmentEffort::Low, "Low"), (RecruitmentEffort::Normal, "Normal"), (RecruitmentEffort::High, "High")],
-            &[(Icon::Attack, format!("×{}", speed_multiplier(config.recruitment_speed[effort]))), (Icon::Coin, compact_decimal(config.recruitment_coin_per_recruit[effort])), (Icon::Happiness, signed_decimal(config.recruitment_happiness[effort]))],
+            &[(Icon::Attack, format!("×{}", speed_multiplier(config.recruitment_speed[effort]))), (Icon::Coin, monthly_cost(effort)), (Icon::Happiness, signed_decimal(config.recruitment_happiness[effort]))],
             &descriptions, scale);
         });
     if p.owner != Some(player) {

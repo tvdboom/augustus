@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::campaign_notifications::NoticeKind;
 use crate::game::economy::{BuildingType, EconomicProvince, EconomyWorld, Terrain};
 use crate::game::military::{ForceOwner, MilitaryWorld, UnitType};
 
@@ -67,6 +68,7 @@ fn province_acquisition_waits_for_yes_and_revalidates_the_target() {
         campaign.politics[0].state = PoliticalState::Owned {
             owner: 1,
         };
+        campaign.politics[0].owned_shares = vec![0.0, 100.0];
         assert!(!pending.apply(&ctx, &mut campaign).contains("Province integrated"));
         assert_eq!(
             campaign.politics[0].state,
@@ -141,6 +143,44 @@ fn click(
                     modifiers: egui::Modifiers::NONE,
                 },
             ],
+        );
+    }
+}
+
+#[test]
+fn confirmation_stays_above_foreground_panels() {
+    let ctx = egui::Context::default();
+    let mut campaign = fixture();
+    let mut view = CampaignUi::default();
+    campaign.military.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
+    view.confirmation = PendingConfirmation::new(&campaign, 0, 0, ConfirmationAction::DisbandArmy);
+    for _ in 0..2 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let panel = egui::Area::new(egui::Id::new("overlapping-army-panel"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(egui::pos2(500.0, 350.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(400.0, 400.0));
+                    });
+                ui.ctx().move_to_top(panel.response.layer_id);
+                show(ui.ctx(), &mut view, &mut campaign);
+            },
+        );
+        output.textures_delta.clear();
+        assert_eq!(
+            ctx.memory(|memory| memory.areas().top_layer_id(egui::Order::Foreground)),
+            Some(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("augustus_action_confirmation"),
+            )),
         );
     }
 }
@@ -290,6 +330,12 @@ fn yes_is_required_for_active_queued_recruitment_and_army_disbanding() {
         }
         click(&ctx, &mut campaign, &mut view, text_rect(&output, "No").center());
         assert!(!view.confirmation_open());
+        if operation == 3 {
+            assert!(!campaign
+                .notifications
+                .history_for(0)
+                .any(|notice| notice.kind == NoticeKind::ArmyDisbanded));
+        }
         assert_eq!(campaign.economy.provinces[0].population, population);
         assert_eq!(campaign.economy.players[0].resources, resources);
         assert_eq!(
@@ -331,6 +377,15 @@ fn yes_is_required_for_active_queued_recruitment_and_army_disbanding() {
                     }
                 );
                 assert_eq!(campaign.economy.players[0].resources, resources);
+                if operation == 3 {
+                    let notice = campaign
+                        .notifications
+                        .history_for(0)
+                        .find(|notice| notice.kind == NoticeKind::ArmyDisbanded)
+                        .expect("confirmed army disband creates a notification");
+                    assert_eq!(notice.title, "Army disbanded");
+                    assert_eq!(notice.province, Some(0));
+                }
             },
         }
         let after = campaign.economy.provinces[0].population;

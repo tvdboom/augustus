@@ -1,12 +1,13 @@
-//! Lazy close-zoom military sprites, with sixteen-frame relaxed standing animations.
+//! Lazy close-zoom military sprites with continuous, 48-frame motion cycles.
 //!
-//! The original atlas supplies icons / movement / combat; idle uses a four-by-four sheet.
+//! Every motion atlas uses one fixed character and an eight-by-six frame grid.
 //! Owner badges fade together with troops, whose anchors stay inside their province.
 
 use super::*;
-use crate::game::military::{
-    BattlePlan, ForceOwner, MilitaryConfig, MilitaryWorld, Unit, UnitType,
-};
+use crate::game::military::{ForceOwner, MilitaryWorld, Unit, UnitType};
+
+#[path = "military_frames.rs"]
+mod frames;
 
 /// Geographic anchors survive zoom, panning, clipping and changes to nearby artwork.
 #[derive(Default)]
@@ -81,11 +82,114 @@ const IDLE_SHEETS: [&[u8]; 11] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/animations/military/idle/catapult.png")),
 ];
 
+macro_rules! motion_sheets {
+    ($motion:literal) => {
+        [
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/light-infantry.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/heavy-infantry.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/archers.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/light-cavalry.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/heavy-cavalry.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/horse-archers.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/war-chariots.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/war-camels.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/war-elephants.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/ballista.png"
+            )) as &[u8],
+            include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/animations/military/",
+                $motion,
+                "/catapult.png"
+            )) as &[u8],
+        ]
+    };
+}
+
+const MOVEMENT_SHEETS: [&[u8]; 11] = motion_sheets!("movement");
+const COMBAT_SHEETS: [&[u8]; 11] = motion_sheets!("combat");
+
+#[derive(Clone, Copy)]
+enum Animation {
+    Idle,
+    Movement,
+    Combat,
+}
+
+impl Animation {
+    fn seconds(self) -> f32 {
+        match self {
+            Self::Idle => 4.0,
+            Self::Movement => 1.6,
+            Self::Combat => 2.4,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Movement => "movement",
+            Self::Combat => "combat",
+        }
+    }
+}
+
 /// Session cache loads no sprite texture until its type is visible at close zoom.
 #[derive(Clone)]
 struct Textures {
     original: [Option<egui::TextureHandle>; 11],
     idle: [Option<egui::TextureHandle>; 11],
+    movement: [Option<egui::TextureHandle>; 11],
+    combat: [Option<egui::TextureHandle>; 11],
 }
 
 impl Default for Textures {
@@ -93,6 +197,8 @@ impl Default for Textures {
         Self {
             original: std::array::from_fn(|_| None),
             idle: std::array::from_fn(|_| None),
+            movement: std::array::from_fn(|_| None),
+            combat: std::array::from_fn(|_| None),
         }
     }
 }
@@ -151,26 +257,41 @@ pub(super) fn paint(
         }
         let owners: Vec<_> = state.forces.iter().filter(|(_, units)| !units.is_empty()).collect();
         for (cluster, (&owner, units)) in owners.iter().enumerate() {
-            let plan = state.plans.get(&owner).copied().unwrap_or_default();
-            let types = map_representatives(units, plan, &world.config);
+            let types = map_representatives(units);
+            // Latium is narrow and shares its northern edge with Etruria. Keep
+            // Rome's figures compact and grounded farther south of that edge.
+            let army_size = if map_province.name == "Latium" {
+                (size * 0.5).min(projection.scale * 0.11)
+            } else {
+                size
+            };
             // Leave the centered province name and its resources room first.
             // This is a placement preference, never a reason to move an existing army.
             let label_center = labels
                 .get(province)
                 .and_then(Option::as_ref)
                 .map_or(anchor, |label| projection.point(label.center));
-            let offset = egui::vec2(0., -size * 1.25) + cluster_offset(cluster, owners.len(), size);
+            let offset = if map_province.name == "Latium" {
+                egui::vec2(0., 0.)
+            } else {
+                egui::vec2(0., -army_size * 1.25)
+            } + cluster_offset(cluster, owners.len(), army_size);
+            let preferred_center = if map_province.name == "Latium" {
+                projection.point([13.27, 41.55])
+            } else {
+                label_center
+            };
             let Some(center) = anchors.get_or_place((province, owner, 0), projection, || {
                 let place = |obstacles: &[egui::Rect]| {
                     province_anchor(
-                        label_center + offset,
-                        size,
+                        preferred_center + offset,
+                        army_size,
                         viewport,
                         obstacles,
                         &occupied,
                         map_province,
                         projection,
-                        types.len(),
+                        &types,
                     )
                 };
                 // Labels keep their own center. Only a newly placed army tries
@@ -195,7 +316,7 @@ pub(super) fn paint(
                 units,
                 &types,
                 center,
-                size,
+                army_size,
                 1,
                 clock,
                 alpha,
@@ -207,7 +328,7 @@ pub(super) fn paint(
         }
     }
     for movement in &world.movements {
-        let types = map_representatives(&movement.units, movement.plan, &world.config);
+        let types = map_representatives(&movement.units);
         let (Some(origin), Some(destination)) = (
             atlas.provinces.get(movement.origin),
             movement.destination().and_then(|p| atlas.provinces.get(p)),
@@ -269,8 +390,7 @@ pub(super) fn paint(
                     .filter(|u| u.owner == *owner && u.current_manpower > 0.)
                     .cloned()
                     .collect();
-                let plan = side.plans.get(owner).copied().unwrap_or_default();
-                let types = map_representatives(&active, plan, &world.config);
+                let types = map_representatives(&active);
                 let Some(center) =
                     anchors.get_or_place((battle.province, *owner, key), projection, || {
                         province_anchor(
@@ -282,7 +402,7 @@ pub(super) fn paint(
                             &occupied,
                             map_province,
                             projection,
-                            types.len(),
+                            &types,
                         )
                     })
                 else {
@@ -318,7 +438,7 @@ pub(super) fn paint(
     }
     painter.ctx().data_mut(|data| data.insert_temp(cache_id, textures));
     if !occupied.is_empty() {
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(80));
+        painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     }
     painter
         .ctx()
@@ -334,12 +454,15 @@ fn troop_size(zoom: f32) -> f32 {
     8. * zoom
 }
 
-fn cluster_bounds(anchor: egui::Pos2, size: f32, count: usize) -> egui::Rect {
-    let width = (size * (2. + count.saturating_sub(1) as f32 * 0.52)).max(27.);
-    egui::Rect::from_min_max(
-        anchor - egui::vec2(width * 0.5, size * 1.5),
-        anchor + egui::vec2(width * 0.5, size * 0.5 + 13.),
-    )
+fn cluster_bounds(anchor: egui::Pos2, size: f32, types: &[UnitType]) -> egui::Rect {
+    let mut bounds = egui::Rect::NOTHING;
+    for (index, &kind) in types.iter().enumerate() {
+        bounds = bounds.union(troop_rect(anchor, size, index, types.len(), kind));
+    }
+    bounds.union(egui::Rect::from_center_size(
+        anchor + egui::vec2(0., size * 0.5 + 7.),
+        egui::vec2(27., 12.),
+    ))
 }
 
 /// Keep unit feet and their badge inside their own province. Upright artwork can
@@ -353,15 +476,19 @@ fn province_anchor(
     troops: &[egui::Rect],
     province: &Province,
     projection: &Projection,
-    count: usize,
+    types: &[UnitType],
 ) -> Option<egui::Pos2> {
     let province_bounds = projection.bounds_rect(province.bounds);
     let valid = |point: egui::Pos2| {
-        let bounds = cluster_bounds(point, size, count);
-        province_bounds.contains_rect(ground_footprint(point, size, count))
+        let bounds = cluster_bounds(point, size, types);
+        province_bounds.contains_rect(ground_footprint(point, size, types.len()))
             && !landmarks.iter().chain(troops).any(|other| bounds.intersects(*other))
             && province.contains(projection.inverse(point))
-            && footprint_in_province(ground_footprint(point, size, count), province, projection)
+            && footprint_in_province(
+                ground_footprint(point, size, types.len()),
+                province,
+                projection,
+            )
     };
     for ring in 0..=7 {
         for direction in 0..16 {
@@ -420,42 +547,117 @@ fn cluster_offset(index: usize, count: usize, size: f32) -> egui::Vec2 {
     )
 }
 
-/// Show the force's selected formation roles in their map order. A missing
-/// preferred type is replaced by a surviving type suited to that role.
-fn map_representatives(units: &[Unit], plan: BattlePlan, config: &MilitaryConfig) -> Vec<UnitType> {
-    let mut available = [false; 11];
+/// Show public army composition without exposing its private deployment plan.
+/// Prefer infantry, ranged, cavalry, and special types, then fill any vacant
+/// places with other surviving types. A fourth figure can show a light flank.
+fn map_representatives(units: &[Unit]) -> Vec<UnitType> {
+    use UnitType::*;
+    let mut counts = [0_usize; 11];
     for unit in units.iter().filter(|unit| unit.current_manpower > 0.) {
-        available[unit.unit_type as usize] = true;
+        counts[unit.unit_type as usize] += 1;
     }
-    let preferred = [plan.primary_unit_type, plan.secondary_unit_type, plan.flank_unit_type];
-    let mut roles = [None; 3];
-    // Reserve every present preference before choosing fallbacks so a fallback
-    // for one role cannot steal another role's selected type.
-    for (role, kind) in preferred.into_iter().enumerate() {
-        if available[kind as usize] && !roles.contains(&Some(kind)) {
-            roles[role] = Some(kind);
+    let infantry = [HeavyInfantry, LightInfantry];
+    let ranged = [Archers, HorseArchers];
+    let cavalry = [HeavyCavalry, LightCavalry];
+    let special = [WarElephants, WarCamels, WarChariots, Catapult, Ballista];
+    let mut selected = Vec::with_capacity(4);
+    for category in [&infantry[..], &ranged[..], &cavalry[..], &special[..]] {
+        if let Some(&kind) = category.iter().find(|&&kind| counts[kind as usize] > 0) {
+            selected.push(kind);
         }
     }
-    for (role, candidates) in [
-        [&config.center_priority[..], &[][..]],
-        [&config.support_priority[..], &config.center_priority[..]],
-        [&config.flank_priority[..], &[][..]],
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if roles[role].is_none() {
-            roles[role] = candidates
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|kind| available[*kind as usize] && !roles.contains(&Some(*kind)));
+    // Fill spare slots with distinct types, including light cavalry when the
+    // heavy cavalry already represents the main mounted force.
+    for kind in [
+        WarElephants,
+        HeavyCavalry,
+        HeavyInfantry,
+        HorseArchers,
+        WarCamels,
+        WarChariots,
+        Archers,
+        LightCavalry,
+        LightInfantry,
+        Catapult,
+        Ballista,
+    ] {
+        if selected.len() == 4 {
+            break;
+        }
+        if counts[kind as usize] > 0 && !selected.contains(&kind) {
+            selected.push(kind);
         }
     }
-    roles.into_iter().flatten().take(3).collect()
+    // When fewer than four distinct types exist, use other live cohorts of
+    // the strongest type rather than leaving an army of many cohorts half empty.
+    for kind in [
+        WarElephants,
+        HeavyCavalry,
+        HeavyInfantry,
+        HorseArchers,
+        WarCamels,
+        WarChariots,
+        Archers,
+        LightCavalry,
+        LightInfantry,
+        Catapult,
+        Ballista,
+    ] {
+        while selected.len() < 4
+            && selected.iter().filter(|&&shown| shown == kind).count() < counts[kind as usize]
+        {
+            selected.push(kind);
+        }
+    }
+    // A stable per-army shuffle makes the icons a composition sample rather
+    // than a left-to-right hint about frontline, rear line, or flanks.
+    let mut seed =
+        units.iter().fold(0_u64, |seed, unit| seed ^ unit.id.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    for index in (1..selected.len()).rev() {
+        seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = seed;
+        value ^= value >> 30;
+        value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value ^= value >> 27;
+        value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+        let other = (value ^ (value >> 31)) as usize % (index + 1);
+        selected.swap(index, other);
+    }
+    selected
 }
 
-/// Draw up to three meaningful troop types, never one sprite per actual cohort.
+fn troop_scale(kind: UnitType) -> f32 {
+    use UnitType::*;
+    match kind {
+        WarElephants => 2.15,
+        WarCamels => 1.75,
+        WarChariots => 1.80,
+        HeavyCavalry | LightCavalry | HorseArchers => 1.55,
+        HeavyInfantry | LightInfantry | Archers => 1.15,
+        Ballista | Catapult => 1.35,
+    }
+}
+
+fn troop_rect(
+    anchor: egui::Pos2,
+    size: f32,
+    index: usize,
+    count: usize,
+    kind: UnitType,
+) -> egui::Rect {
+    let center = anchor + egui::vec2((index as f32 - (count as f32 - 1.) * 0.5) * size * 0.52, 0.);
+    let extent = size * troop_scale(kind);
+    let width = extent * 2.;
+    // Align the painted ground anchor, not the transparent bottom of the tile.
+    // Otherwise the larger mounts appear to float above the infantry's feet.
+    let ground_inset = width * (1. - frames::BASELINE as f32 / frames::SIZE as f32);
+    egui::Rect::from_center_size(
+        center + egui::vec2(0., size * 0.5 - extent + ground_inset),
+        egui::vec2(width, extent * 2.),
+    )
+}
+
+/// Draw up to four meaningful troop types, never one sprite per actual cohort.
 fn draw_cluster(
     painter: &egui::Painter,
     textures: &mut Textures,
@@ -479,32 +681,21 @@ fn draw_cluster(
     }
     let owner_color = owner_color(owner, ownership);
     for (index, kind) in types.iter().enumerate() {
-        let center =
-            anchor + egui::vec2((index as f32 - (types.len() as f32 - 1.) * 0.5) * size * 0.52, 0.);
-        // Enlarge the artwork upward, keeping its feet and owner badge at the
-        // existing ground anchor so armies still fit in narrow provinces.
-        let rect = egui::Rect::from_center_size(
-            center - egui::vec2(0., size * 0.5),
-            egui::Vec2::splat(size * 2.),
-        );
-        let (texture, uv) = if row == 1 {
-            let seed = units
-                .first()
-                .map_or(0, |unit| unit.id)
-                .wrapping_mul(37)
-                .wrapping_add(*kind as u64 * 11);
-            let frame = idle_frame(clock, seed);
-            (idle_texture(painter.ctx(), textures, *kind), idle_uv(frame))
-        } else {
-            let frame = ((clock * 5.) as usize + index) % 4;
-            (
-                texture(painter.ctx(), textures, *kind),
-                egui::Rect::from_min_max(
-                    egui::pos2(frame as f32 / 4., row as f32 / 4.),
-                    egui::pos2((frame + 1) as f32 / 4., (row + 1) as f32 / 4.),
-                ),
-            )
+        let rect = troop_rect(anchor, size, index, types.len(), *kind);
+        let animation = match row {
+            2 => Animation::Movement,
+            3 => Animation::Combat,
+            _ => Animation::Idle,
         };
+        let seed = units
+            .first()
+            .map_or(0, |unit| unit.id)
+            .wrapping_mul(37)
+            .wrapping_add(*kind as u64 * 11)
+            .wrapping_add(index as u64 * 13);
+        let frame = animation_frame(clock, seed, animation);
+        let texture = motion_texture(painter.ctx(), textures, *kind, animation);
+        let uv = animation_uv(frame);
         painter.image(texture, rect, uv, egui::Color32::from_white_alpha(alpha));
         occupied.push(rect);
         army_hits.push(ArmyHit {
@@ -540,7 +731,7 @@ fn draw_cluster(
     });
 }
 
-/// Decode at most one modest 768px sheet per type; source art stays full resolution.
+/// Panel icons retain the original four-by-four source atlas.
 fn texture(context: &egui::Context, cache: &mut Textures, kind: UnitType) -> egui::TextureId {
     cache.original[kind as usize]
         .get_or_insert_with(|| {
@@ -556,43 +747,47 @@ fn texture(context: &egui::Context, cache: &mut Textures, kind: UnitType) -> egu
         .id()
 }
 
-fn idle_uv(frame: usize) -> egui::Rect {
-    let column = frame % 4;
-    let row = frame / 4;
+fn animation_uv(frame: usize) -> egui::Rect {
+    let column = frame as u32 % frames::COLUMNS;
+    let row = frame as u32 / frames::COLUMNS;
     egui::Rect::from_min_max(
-        egui::pos2(column as f32 / 4., row as f32 / 4.),
-        egui::pos2((column + 1) as f32 / 4., (row + 1) as f32 / 4.),
+        egui::pos2(column as f32 / frames::COLUMNS as f32, row as f32 / frames::ROWS as f32),
+        egui::pos2(
+            (column + 1) as f32 / frames::COLUMNS as f32,
+            (row + 1) as f32 / frames::ROWS as f32,
+        ),
     )
 }
 
-// Hold settled poses, then play short glances and posture adjustments. Different
-// soldiers have different phase and pace, including armies of the same unit type.
-const IDLE_DURATIONS: [f32; 16] =
-    [1.6, 0.18, 0.18, 0.18, 0.7, 0.18, 0.18, 0.18, 1.4, 0.18, 0.18, 0.18, 0.8, 0.18, 0.18, 0.18];
-
-fn idle_frame(clock: f32, seed: u64) -> usize {
-    let duration: f32 = IDLE_DURATIONS.iter().sum();
-    let pace = 0.85 + (seed % 17) as f32 * 0.018;
-    let phase = (seed % 997) as f32 / 997. * duration;
-    let mut time = (clock * pace + phase).rem_euclid(duration);
-    for (frame, &hold) in IDLE_DURATIONS.iter().enumerate() {
-        if time < hold {
-            return frame;
-        }
-        time -= hold;
-    }
-    0
+/// Uniform samples of a closed cycle: no duplicate endpoint or special pause.
+fn animation_frame(clock: f32, seed: u64, animation: Animation) -> usize {
+    let phase = (seed % frames::COUNT as u64) as f64;
+    let frame = f64::from(clock) / f64::from(animation.seconds()) * frames::COUNT as f64 + phase;
+    frame.floor().rem_euclid(frames::COUNT as f64) as usize
 }
 
-fn idle_texture(context: &egui::Context, cache: &mut Textures, kind: UnitType) -> egui::TextureId {
-    cache.idle[kind as usize]
+fn motion_texture(
+    context: &egui::Context,
+    cache: &mut Textures,
+    kind: UnitType,
+    animation: Animation,
+) -> egui::TextureId {
+    let (sheets, handles) = match animation {
+        Animation::Idle => (&IDLE_SHEETS, &mut cache.idle),
+        Animation::Movement => (&MOVEMENT_SHEETS, &mut cache.movement),
+        Animation::Combat => (&COMBAT_SHEETS, &mut cache.combat),
+    };
+    handles[kind as usize]
         .get_or_insert_with(|| {
-            let decoded = image::load_from_memory(IDLE_SHEETS[kind as usize])
-                .expect("military idle sheet must decode")
+            let decoded = image::load_from_memory(sheets[kind as usize])
+                .expect("military motion sheet must decode")
                 .to_rgba8();
             context.load_texture(
-                format!("military-idle-{}", kind.abbreviation()),
-                egui::ColorImage::from_rgba_unmultiplied([768, 768], decoded.as_raw()),
+                format!("military-{}-{}", animation.name(), kind.abbreviation()),
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [frames::WIDTH as usize, frames::HEIGHT as usize],
+                    decoded.as_raw(),
+                ),
                 egui::TextureOptions::LINEAR,
             )
         })

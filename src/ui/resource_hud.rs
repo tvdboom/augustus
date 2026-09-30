@@ -2,6 +2,8 @@
 
 use super::*;
 
+const POPULATION_HUD_ICON_SIZE: f32 = 26.0;
+
 pub(in crate::app) fn load_hud_resource_icon(
     ctx: &egui::Context,
     index: usize,
@@ -131,18 +133,15 @@ pub(in crate::app) fn paint_hud_resources(
         if x + HUD_RESOURCE_WIDTH > date_left - HUD_RESOURCE_GROUP_PADDING {
             break;
         }
-        let amount = if index == 5 {
-            format_population(resource.amount)
-        } else {
-            format_hud_number(resource.amount)
-        };
-        let delta = if index == 5 {
-            format_population_delta(resource.monthly_delta)
-        } else {
-            format_hud_delta(resource.monthly_delta)
-        };
+        let amount = format_hud_number(resource.amount);
+        let delta = format_hud_delta(resource.monthly_delta);
         let gap = 4.0 * scale;
-        let max_text_width = (HUD_RESOURCE_WIDTH - 16.0 - 4.0 - 20.0) * scale;
+        let min_icon_size = if index == 5 {
+            POPULATION_HUD_ICON_SIZE
+        } else {
+            20.0
+        };
+        let max_text_width = (HUD_RESOURCE_WIDTH - 16.0 - 4.0 - min_icon_size) * scale;
         let fit = |label: String, size: f32, color: egui::Color32| {
             let mut font_size = size * scale;
             loop {
@@ -158,12 +157,20 @@ pub(in crate::app) fn paint_hud_resources(
             }
         };
         let amount_color = egui::Color32::from_rgb(35, 35, 32);
-        let delta_color = hud_delta_color(resource.monthly_delta);
+        let delta_color = hud_delta_color(if index == 5 {
+            resource.monthly_delta.floor()
+        } else {
+            resource.monthly_delta
+        });
         let amount_galley = fit(amount, 19.0, amount_color);
         let delta_galley = fit(delta, 14.5, delta_color);
         let text_width = delta_galley.size().x.max(amount_galley.size().x);
-        let icon_size = ((HUD_RESOURCE_WIDTH - 16.0) * scale - gap - text_width)
-            .clamp(20.0 * scale, 38.0 * scale);
+        let icon_size = if index == 5 {
+            POPULATION_HUD_ICON_SIZE * scale
+        } else {
+            ((HUD_RESOURCE_WIDTH - 16.0) * scale - gap - text_width)
+                .clamp(20.0 * scale, 38.0 * scale)
+        };
         let icon_left =
             p(x + HUD_RESOURCE_WIDTH * 0.5, 0.0).x - (icon_size + gap + text_width) * 0.5;
         let text_right = icon_left + icon_size + gap + text_width;
@@ -220,6 +227,7 @@ pub(in crate::app) fn hud_resource_positions() -> [f32; 6] {
 #[derive(Default)]
 pub(in crate::app) struct HudHoverState {
     pub resource: Option<usize>,
+    pub food_row: Option<usize>,
     pub coin: bool,
     pub influence: bool,
     pub population: bool,
@@ -236,7 +244,11 @@ pub(in crate::app) fn draw_map_resources(
     practice: Res<LocalPractice>,
     ownership: Res<ProvinceOwnership>,
     campaign: Res<campaign::Campaign>,
+    terminal: Res<TerminalPresentation>,
 ) {
+    if terminal.spectating {
+        return;
+    }
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
@@ -318,8 +330,10 @@ pub(in crate::app) fn show_hud_hover_cards(
         date_left,
         player,
         ownership,
+        campaign,
         icons,
         &mut hover.resource,
+        &mut hover.food_row,
     );
     coin_panel::show(
         context,

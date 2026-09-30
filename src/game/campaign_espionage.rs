@@ -9,6 +9,30 @@ use crate::game::politics::espionage::{
 };
 
 impl Campaign {
+    pub fn flee_spy(&mut self, player: usize, province: usize) -> Result<bool, String> {
+        let target = self.economy.provinces.get(province).ok_or("Unknown province")?;
+        let snapshot = SpyProvince {
+            owner: target.owner,
+            noble_happiness: target.happiness[0],
+            conditions: Vec::new(),
+        };
+        let events = self
+            .espionage
+            .flee(
+                player,
+                province,
+                &snapshot,
+                &mut self.politics,
+                self.economy.month,
+                &self.espionage_config,
+            )
+            .map_err(|error| format!("{error:?}"))?;
+        let detected = events.iter().any(|event| matches!(event, EspionageEvent::Detected(..)));
+        self.report_espionage_events(events);
+        self.reconcile_provinces();
+        Ok(detected)
+    }
+
     /// Monthly coin obligation for all of this player's currently deployed spies.
     pub fn spy_upkeep(&self, player: usize) -> f64 {
         self.espionage
@@ -27,15 +51,14 @@ impl Campaign {
         if self.espionage.last_resolution_month().is_some_and(|last| self.economy.month <= last) {
             return;
         }
-        let routes: Vec<_> = self
+        let distances: Vec<_> = self
             .espionage
             .missions
             .iter()
             .map(|mission| self.distance(mission.owner, mission.province))
             .collect();
-        for (mission, route) in self.espionage.missions.iter_mut().zip(routes) {
-            mission.reachable = route.is_some();
-            if let Some(distance) = route {
+        for (mission, distance) in self.espionage.missions.iter_mut().zip(distances) {
+            if let Some(distance) = distance {
                 mission.distance = distance;
             }
         }
@@ -118,6 +141,10 @@ impl Campaign {
             &mut self.politics,
             &self.espionage_config,
         );
+        self.report_espionage_events(events);
+    }
+
+    fn report_espionage_events(&mut self, events: Vec<EspionageEvent>) {
         for event in events {
             match event {
                 EspionageEvent::PopulationUndermined(player, province, class, points) => {
@@ -138,9 +165,12 @@ impl Campaign {
                     }
                 },
                 EspionageEvent::Withdrawn(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyWithdrawn,
-                    format!("Spy withdrawn from {}", self.economy.provinces[province].name), "The network could not pay maintenance, lost its political route, or the province was no longer a foreign target."),
+                    format!("Spy withdrawn from {}", self.economy.provinces[province].name), "The network could not pay maintenance or the province was no longer a foreign target."),
+                EspionageEvent::Recalled(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Info, NoticeKind::SpyWithdrawn,
+                    format!("Spy returned from {}", self.economy.provinces[province].name), "The six-month recall is complete. No additional consequences."),
                 EspionageEvent::Detected(player, province) => {
-                    let consequence = provinces[province].owner.map_or_else(|| format!("Relation toward us decreased by {:.0}.", self.espionage_config.npc_detection_relation_loss), |victim| format!("Player {} gained an espionage scandal against us.", victim + 1));
+                    let owner = self.economy.provinces[province].owner;
+                    let consequence = owner.map_or_else(|| format!("Relation toward us decreased by {:.0}.", self.espionage_config.npc_detection_relation_loss), |victim| format!("Player {} gained an espionage scandal against us.", victim + 1));
                     self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyDetected,
                         format!("Spy uncovered in {}", self.economy.provinces[province].name), consequence);
                 },

@@ -1,11 +1,10 @@
 //! Parchment governance card opened from the map's laws icon.
 
+use super::campaign_widgets::{icon as tab_icon, Icon};
 use super::policy_widgets::{self, section};
 use crate::map::{EdictLevel, Governance};
 use bevy_egui::egui;
 
-const WIDTH: f32 = 500.0;
-const HEIGHT: f32 = 570.0;
 const HEADER_HEIGHT: f32 = 61.0;
 
 const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
@@ -20,13 +19,13 @@ const FOOD_TINTABLE: usize = 5;
 const MORALE: usize = 6;
 pub(in crate::app) const EFFECT_ICON_COUNT: usize = 7;
 const EFFECT_ICON_ASSETS: [(&str, &[u8]); EFFECT_ICON_COUNT] = [
-    ("food", include_bytes!("../../assets/images/icons/food.png")),
-    ("happiness", include_bytes!("../../assets/images/icons/happiness.png")),
-    ("slaves", include_bytes!("../../assets/images/icons/slaves.png")),
-    ("sestertius", include_bytes!("../../assets/images/icons/sestertius.png")),
-    ("population", include_bytes!("../../assets/images/icons/manpower.png")),
-    ("food_tintable", include_bytes!("../../assets/images/icons/food.png")),
-    ("morale", include_bytes!("../../assets/images/icons/morale.png")),
+    ("food", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/food.png"))),
+    ("happiness", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/happiness.png"))),
+    ("slaves", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/slaves.png"))),
+    ("sestertius", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/coin.png"))),
+    ("population", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/population.png"))),
+    ("food_tintable", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/food.png"))),
+    ("morale", include_bytes!(concat!(env!("OUT_DIR"), "/panel-icons/morale.png"))),
 ];
 
 #[derive(Clone, Copy)]
@@ -62,9 +61,9 @@ pub(in crate::app) fn load_effect_icons(
     std::array::from_fn(|index| {
         let (name, bytes) = EFFECT_ICON_ASSETS[index];
         let mut image = image::load_from_memory(bytes)
-            .expect("governance effect icon must be valid")
-            .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+            .expect("prepared governance effect icon must be valid")
             .to_rgba8();
+        debug_assert_eq!((image.width(), image.height()), (64, 64));
         if index == FOOD_TINTABLE {
             for pixel in image.pixels_mut() {
                 let gray = (0.2126 * f32::from(pixel[0])
@@ -84,6 +83,7 @@ pub(in crate::app) fn load_effect_icons(
     })
 }
 
+#[cfg(test)]
 pub(in crate::app) fn show(
     context: &egui::Context,
     scale: f32,
@@ -93,13 +93,66 @@ pub(in crate::app) fn show(
     governance: &mut Governance,
     closing: bool,
 ) -> (bool, bool) {
+    let (changed, closed, _) = show_impl(
+        context,
+        scale,
+        icon,
+        effect_icons,
+        banner_color,
+        governance,
+        closing,
+        None,
+        |_, _| None,
+    );
+    (changed, closed)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::app) fn show_overview(
+    context: &egui::Context,
+    scale: f32,
+    icon: &egui::TextureHandle,
+    effect_icons: &[egui::TextureHandle; EFFECT_ICON_COUNT],
+    banner_color: egui::Color32,
+    governance: &mut Governance,
+    closing: bool,
+    selected: &mut usize,
+    content: impl FnMut(&mut egui::Ui, usize) -> Option<usize>,
+) -> (bool, bool, Option<usize>) {
+    show_impl(
+        context,
+        scale,
+        icon,
+        effect_icons,
+        banner_color,
+        governance,
+        closing,
+        Some(selected),
+        content,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_impl(
+    context: &egui::Context,
+    scale: f32,
+    icon: &egui::TextureHandle,
+    effect_icons: &[egui::TextureHandle; EFFECT_ICON_COUNT],
+    banner_color: egui::Color32,
+    governance: &mut Governance,
+    closing: bool,
+    mut selected: Option<&mut usize>,
+    mut content: impl FnMut(&mut egui::Ui, usize) -> Option<usize>,
+) -> (bool, bool, Option<usize>) {
     let screen = context.content_rect();
-    let left = screen.left() + 60.0 * scale;
-    let width = (WIDTH * scale).min((screen.right() - left - 12.0 * scale).max(1.0));
-    let height = (HEIGHT * scale).min((screen.height() - 78.0 * scale).max(1.0));
+    let width = (super::campaign_panel::PANEL_WIDTH * scale)
+        .min((screen.width() - 80.0 * scale).max(120.0));
+    let height = (super::campaign_panel::PANEL_HEIGHT * scale)
+        .min((screen.height() - 90.0 * scale).max(140.0));
     let rect = super::map_corner_panel_rect(screen, scale, egui::vec2(width, height));
     let mut changed = false;
     let mut close_clicked = false;
+    let mut target = None;
     let header_color = banner_color;
     egui::Area::new(egui::Id::new("augustus_governance_panel"))
         .fixed_pos(rect.min)
@@ -142,16 +195,20 @@ pub(in crate::app) fn show(
             painter.image(
                 icon.id(),
                 egui::Rect::from_min_size(
-                    panel.min + egui::vec2(13.0, 8.0) * scale,
+                    panel.min + egui::vec2(8.0, 8.0) * scale,
                     egui::vec2(34.0, 34.0) * scale,
                 ),
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
             painter.text(
-                panel.min + egui::vec2(56.0, 25.0) * scale,
-                egui::Align2::LEFT_CENTER,
-                "Governance",
+                panel.center_top() + egui::vec2(0.0, 25.0 * scale),
+                egui::Align2::CENTER_CENTER,
+                if selected.is_some() {
+                    "Overview"
+                } else {
+                    "Governance"
+                },
                 egui::FontId::proportional(25.0 * scale),
                 egui::Color32::from_rgb(255, 238, 198),
             );
@@ -215,19 +272,11 @@ pub(in crate::app) fn show(
                 cross_stroke,
             );
             close_response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close governance")
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close overview")
             });
             if close_response.clicked() {
                 close_clicked = true;
             }
-            painter.line_segment(
-                [
-                    panel.min + egui::vec2(13.0, HEADER_HEIGHT - 4.0) * scale,
-                    panel.right_top() + egui::vec2(-13.0, HEADER_HEIGHT - 4.0) * scale,
-                ],
-                egui::Stroke::new(scale, RULE),
-            );
-
             let body_rect = egui::Rect::from_min_max(
                 panel.min + egui::vec2(12.0, HEADER_HEIGHT) * scale,
                 panel.max - egui::vec2(12.0, 12.0) * scale,
@@ -236,10 +285,108 @@ pub(in crate::app) fn show(
                 ui.new_child(egui::UiBuilder::new().id_salt("edicts").max_rect(body_rect));
             body.spacing_mut().item_spacing.y = 5.0 * scale;
             body.spacing_mut().scroll.bar_width = 5.0 * scale;
+            if let Some(selected) = selected.as_deref_mut() {
+                let tabs = [
+                    (Icon::Policies, "Governance"),
+                    (Icon::Events, "Events"),
+                    (Icon::Province, "Provinces"),
+                    (Icon::Spy, "Spies"),
+                    (Icon::Notifications, "Notifications"),
+                ];
+                let gap = body.spacing().item_spacing.x;
+                let width = ((body.available_width() - (tabs.len() - 1) as f32 * gap)
+                    / tabs.len() as f32)
+                    .max(1.0);
+                body.horizontal(|ui| {
+                    for (index, (symbol, label)) in tabs.into_iter().enumerate() {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(width, 47.0 * scale),
+                            egui::Sense::click(),
+                        );
+                        let active = *selected == index;
+                        let pressed = response.is_pointer_button_down_on();
+                        if active || response.hovered() || pressed {
+                            let fill = if pressed {
+                                egui::Color32::from_rgb(199, 163, 111)
+                            } else if active && response.hovered() {
+                                egui::Color32::from_rgb(211, 185, 145)
+                            } else if active {
+                                egui::Color32::from_rgb(219, 200, 168)
+                            } else {
+                                egui::Color32::from_rgb(231, 213, 181)
+                            };
+                            ui.painter().rect_filled(rect, 3.0 * scale, fill);
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0 * scale,
+                                egui::Stroke::new(
+                                    scale,
+                                    if active {
+                                        header_color
+                                    } else {
+                                        RULE
+                                    },
+                                ),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(rect)
+                                .layout(egui::Layout::top_down(egui::Align::Center)),
+                            |ui| {
+                                tab_icon(ui, symbol, 26.0 * scale);
+                                ui.add_sized(
+                                    [width, 16.0 * scale],
+                                    egui::Label::new(egui::RichText::new(label).size(11.0 * scale))
+                                        .truncate()
+                                        .show_tooltip_when_elided(false),
+                                );
+                            },
+                        );
+                        if active {
+                            ui.painter().hline(
+                                rect.x_range(),
+                                rect.bottom(),
+                                egui::Stroke::new(3.0 * scale, header_color),
+                            );
+                        }
+                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            *selected = index;
+                        }
+                    }
+                });
+                body.separator();
+            }
+            let current_section = selected.as_deref().copied().unwrap_or(0);
             egui::ScrollArea::vertical()
-                .max_height(body_rect.height())
+                .id_salt(("overview_body", current_section))
+                .max_height(body.available_height())
                 .auto_shrink([false, false])
                 .show(&mut body, |list| {
+                    if current_section != 0 {
+                        if current_section != 4 {
+                            super::campaign_widgets::portrait(
+                                list,
+                                if current_section == 1 {
+                                    super::campaign_widgets::ProvinceLandscape::RomeEvents
+                                } else if current_section == 2 {
+                                    super::campaign_widgets::ProvinceLandscape::RomeProvinces
+                                } else {
+                                    super::campaign_widgets::ProvinceLandscape::RomeSpies
+                                },
+                                76.0 * scale,
+                            );
+                        }
+                        target = content(list, current_section);
+                        return;
+                    }
+                    super::campaign_widgets::portrait(
+                        list,
+                        super::campaign_widgets::ProvinceLandscape::Policies,
+                        76.0 * scale,
+                    );
+                    list.add_space(8.0 * scale);
                     section(list, scale, "LABOR & AGRARIAN");
                     changed |= edict_row(
                         list,
@@ -251,17 +398,17 @@ pub(in crate::app) fn show(
                         header_color,
                         [
                             &[
-                                "Food: 0.8 per person",
+                                "Food: 0.08 per resident",
                                 "All classes: -1 happiness",
                                 "Population growth: -0.5%",
                             ],
                             &[
-                                "Food: 1 per person",
+                                "Food: 0.10 per resident",
                                 "All classes: +0 happiness",
                                 "Population growth: +0%",
                             ],
                             &[
-                                "Food: 1.2 per person",
+                                "Food: 0.12 per resident",
                                 "All classes: +1 happiness",
                                 "Population growth: +0.5%",
                             ],
@@ -345,6 +492,25 @@ pub(in crate::app) fn show(
                     changed |= edict_row(
                         list,
                         scale,
+                        "noble_wages",
+                        "Noble Wages",
+                        &mut governance.noble_wages,
+                        effect_icons,
+                        header_color,
+                        [
+                            &["Noble wage costs: -25%", "Nobles: -2 happiness"],
+                            &["Noble wage costs: +0%", "Nobles: +0 happiness"],
+                            &["Noble wage costs: +25%", "Nobles: +1 happiness"],
+                        ],
+                        [
+                            [badge(SESTERTIUS, "-25%"), badge(HAPPINESS, "-2"), None, None],
+                            [badge(SESTERTIUS, "0%"), badge(HAPPINESS, "0"), None, None],
+                            [badge(SESTERTIUS, "+25%"), badge(HAPPINESS, "+1"), None, None],
+                        ],
+                    );
+                    changed |= edict_row(
+                        list,
+                        scale,
                         "army_wages",
                         "Army Wages",
                         &mut governance.army_wages,
@@ -363,7 +529,7 @@ pub(in crate::app) fn show(
                     );
                 });
         });
-    (changed, close_clicked)
+    (changed, close_clicked, target)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -44,8 +44,8 @@ pub(crate) fn for_province(name: &str) -> TerrainType {
         | "Venetia"
         | "Africa Proconsularis"
         | "Asia" => Farmland,
-        "Britannia" | "Belgica" | "Germania Inferior" | "Germania Superior" | "Lugdunensis"
-        | "Aquitania" | "Dacia" => Forest,
+        "Britannia" | "Belgica" | "Germania Superior" | "Lugdunensis" | "Aquitania"
+        | "Dacia" => Forest,
         "Alpes Graiae"
         | "Alpes Cottiae"
         | "Alpes Maritimae"
@@ -53,7 +53,7 @@ pub(crate) fn for_province(name: &str) -> TerrainType {
         | "Noricum"
         | "Armenia Mesopotamia" => Mountains,
         "Sardinia" | "Creta" | "Cyprus" | "Iudaea" | "Moesia Inferior" => Plains,
-        "Pannonia Inferior" => Marsh,
+        "Germania Inferior" | "Pannonia Inferior" => Marsh,
         "Liguria" | "Narbonensis" | "Tarraconensis" | "Lusitania" | "Etruria" | "Umbria"
         | "Samnium" | "Picenum" | "Lucania" | "Pannonia Superior" | "Dalmatia"
         | "Moesia Superior" | "Thracia" | "Macedonia" | "Achaia" | "Bithynia" | "Cilicia"

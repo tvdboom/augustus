@@ -212,6 +212,7 @@ pub(in crate::app) fn set_menu_background_visibility(
             | AppState::Map
             | AppState::GameMenu
             | AppState::GameSettings
+            | AppState::EndGame
             | AppState::EmptyScreen
     ) {
         Visibility::Hidden
@@ -260,7 +261,11 @@ pub(in crate::app) fn audio_controls_visible(
     !revealing_map(*state.get(), &loading)
         && !matches!(
             *state.get(),
-            AppState::Map | AppState::EmptyScreen | AppState::GameMenu | AppState::GameSettings
+            AppState::Map
+                | AppState::EmptyScreen
+                | AppState::GameMenu
+                | AppState::GameSettings
+                | AppState::EndGame
         )
 }
 
@@ -271,7 +276,7 @@ pub(in crate::app) fn map_visible(
 ) -> bool {
     *state.get() == AppState::Map
         || revealing_map(*state.get(), &loading)
-        || (matches!(*state.get(), AppState::GameMenu | AppState::GameSettings)
+        || (matches!(*state.get(), AppState::GameMenu | AppState::GameSettings | AppState::EndGame)
             && *game == ActiveGame::LocalPractice)
 }
 

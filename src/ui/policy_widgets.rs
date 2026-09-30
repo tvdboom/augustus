@@ -16,6 +16,30 @@ pub(super) fn compact_decimal(value: f64) -> String {
     }
 }
 
+/// Keep the cents in per-resident and per-recruit sestertius rates.
+pub(super) fn coin_decimal(value: f64) -> String {
+    let number = format!("{value:.2}");
+    let number = number.trim_end_matches('0').trim_end_matches('.');
+    if number == "-0" {
+        "0".into()
+    } else {
+        number.into()
+    }
+}
+
+#[cfg(test)]
+mod coin_format_tests {
+    use super::coin_decimal;
+
+    #[test]
+    fn small_policy_costs_keep_their_cents() {
+        assert_eq!(coin_decimal(0.0), "0");
+        assert_eq!(coin_decimal(0.01), "0.01");
+        assert_eq!(coin_decimal(0.02), "0.02");
+        assert_eq!(coin_decimal(0.6), "0.6");
+    }
+}
+
 pub(super) fn signed_decimal(value: f64) -> String {
     let number = compact_decimal(value);
     if value > 0.0 && number != "0" {

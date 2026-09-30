@@ -92,9 +92,9 @@ pub enum ConstructionPace {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CivicSpending {
     /// No spending, with lower free-class happiness.
-    #[default]
     Frugal,
     /// Modest spending, maintaining neutral free-class happiness.
+    #[default]
     Normal,
     /// Greater spending, raising free-class happiness.
     Generous,
@@ -211,6 +211,10 @@ pub struct EconomicProvince {
     pub population: [f64; 4],
     /// Happiness per class, clamped to 0..100 every month.
     pub happiness: [f64; 4],
+    /// Persistent happiness lost to consecutive overcrowded months.
+    pub overcrowding_unhappiness: f64,
+    /// Persistent happiness lost to consecutive food shortages.
+    pub shortage_unhappiness: f64,
     /// Food, Metal, Stone geographic potential from existing map data.
     pub potential: [f64; 3],
     /// Monthly local decisions.
@@ -229,10 +233,14 @@ pub struct EconomicProvince {
     pub happiness_modifiers: [f64; 4],
     /// Happiness support actually funded in the latest economic month.
     pub civic_happiness: f64,
+    /// Non-accumulating noble wage policy happiness for the latest month.
+    pub noble_wage_happiness: f64,
     /// Non-accumulating recruitment-effort effect for the current month.
     pub recruitment_happiness: f64,
     /// Additional per-class happiness effect that decays monthly.
     pub temporary_happiness: [f64; 4],
+    /// Cumulative noble unhappiness while the owner's treasury cannot cover outflow.
+    pub insolvency_unhappiness: f64,
     /// Local market with persistent NPC coin treasury.
     pub market: NpcTradeEconomy,
 }
@@ -268,6 +276,8 @@ impl EconomicProvince {
             trade_ratio_by_player: vec![1.0; player_count],
             population: population.map(|value| value.max(0.0)),
             happiness: [50.0; 4],
+            overcrowding_unhappiness: 0.0,
+            shortage_unhappiness: 0.0,
             potential: potential.map(|value| value.max(0.0)),
             policies: ProvincePolicies::default(),
             buildings: [0; BuildingType::COUNT],
@@ -277,8 +287,10 @@ impl EconomicProvince {
             completed_wonder: None,
             happiness_modifiers: [0.0; 4],
             civic_happiness: 0.0,
+            noble_wage_happiness: 0.0,
             recruitment_happiness: 0.0,
             temporary_happiness: [0.0; 4],
+            insolvency_unhappiness: 0.0,
             market: NpcTradeEconomy::default(),
         }
     }
@@ -314,7 +326,9 @@ impl EconomicProvince {
         if self.owner != owner || self.overlord != overlord {
             self.construction_queue.clear();
             self.civic_happiness = 0.0;
+            self.noble_wage_happiness = 0.0;
             self.recruitment_happiness = 0.0;
+            self.insolvency_unhappiness = 0.0;
             if let Some(ConstructionProject::Wonder(project)) = &mut self.construction {
                 project.assigned_slaves = 0.0;
             }
@@ -389,6 +403,10 @@ pub struct ProvinceMonth {
     pub famine_deaths: [f64; 4],
     /// Change in class happiness from before this month's demographic calculation.
     pub happiness_delta: [f64; 4],
+    /// Happiness lost to overcrowding this month, before recovery or the happiness floor.
+    pub overcrowding_penalty: f64,
+    /// Happiness lost to food shortage this month, before recovery or the happiness floor.
+    pub shortage_penalty: f64,
     /// Net immigrants minus emigrants by class.
     pub migration: [f64; 4],
     /// Enslaved residents who left this province in a revolt after demographics.

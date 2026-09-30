@@ -2,6 +2,9 @@
 
 use super::{BuildingDefinition, BuildingType, WonderDefinition};
 
+/// Default monthly wage per noble at medium nationwide wages.
+pub const NOBLE_WAGE_PER_NOBLE: f64 = 0.1 / crate::map::POPULATION_SCALE;
+
 /// Policy modifiers, in consumption/happiness/birth/death order.
 #[derive(Clone, Copy, Debug)]
 pub struct FoodModifiers {
@@ -45,21 +48,23 @@ pub struct EconomyConfig {
     pub food_policy: [FoodModifiers; 3],
     /// Light, Normal, Harsh slave labor.
     pub slave_policy: [LaborModifiers; 3],
-    /// Overcrowding percentage converted into happiness points.
+    /// Overcrowding fraction converted into monthly happiness loss.
     pub overcrowding_scale: f64,
-    /// Upper bound on overcrowding penalty.
+    /// Upper bound on monthly overcrowding loss and recovery.
     pub overcrowding_cap: f64,
     /// Capacity ratio above which space independently suppresses births. This
     /// prevents unlimited happiness-building bonuses defeating natural equilibrium.
     pub crowding_birth_threshold: f64,
     /// Deaths per resident at completely missing food supply.
     pub max_famine_death_rate: f64,
-    /// Happiness penalty at completely missing food supply.
+    /// Maximum monthly happiness loss from food shortage.
     pub shortage_happiness_penalty: f64,
     /// Fraction of a temporary event/recruitment happiness modifier retained each month.
     pub temporary_happiness_decay: f64,
     /// Mobile class emigration rates; slaves must remain zero.
     pub migration_rates: [f64; 4],
+    /// Fraction of ordinary migration pressure present even at neutral happiness.
+    pub baseline_migration_pressure: f64,
     /// Additional emigration pressure from excess capacity.
     pub overpopulation_migration_scale: f64,
     /// Encourage, Normal, Discourage, Closed inbound multipliers.
@@ -86,12 +91,14 @@ pub struct EconomyConfig {
     pub construction_labor: [f64; 3],
     /// Frugal, Normal, Generous monthly Coin per free resident, excluding slaves.
     pub civic_coin_per_free_resident: [f64; 3],
+    /// Monthly sestertii paid per noble at medium nationwide wages.
+    pub noble_wage_per_noble: f64,
     /// Free-class happiness at full civic funding, recomposed every month.
     pub civic_happiness: [f64; 3],
     /// Low, Normal, High recruitment progress per month at full funding.
     pub recruitment_speed: [f64; 3],
-    /// Monthly Coin per recruit, charged only for active projects.
-    pub recruitment_coin_per_recruit: [f64; 3],
+    /// Monthly Coin per active cohort project, independent of unit type or population cost.
+    pub recruitment_coin_per_project: [f64; 3],
     /// Citizen and plebeian happiness effect while recruitment is active.
     pub recruitment_happiness: [f64; 3],
     /// Enslave, Normal, Free monthly rates: negative enslaves plebeians, positive frees slaves.
@@ -129,8 +136,6 @@ pub struct TradeConfig {
     pub loss_per_step: f64,
     /// Lowest possible non-blocked route efficiency.
     pub minimum_efficiency: f64,
-    /// Added efficiency per Road level along a route.
-    pub road_efficiency: f64,
     /// Minimum relation required for transit and NPC trade.
     pub minimum_relation: f64,
     /// Coin-equivalent base value of Food, Metal, Stone.
@@ -143,9 +148,11 @@ pub struct TradeConfig {
     pub required_value_ratios: [f64; 5],
     /// Additional one-time transaction margin.
     pub one_time_margin: f64,
-    /// Relation lost when an accepted NPC route is ended without notice.
+    /// Relation lost with the partner when an accepted route ends without notice.
     pub cancellation_relation_penalty: f64,
-    /// Monthly deliveries retained after giving notice to an NPC.
+    /// Influence lost when an active route is broken immediately.
+    pub cancellation_influence_penalty: f64,
+    /// Monthly deliveries retained after giving notice to either partner.
     pub cancellation_notice_months: u32,
     /// Open-market spread above/below base resource values.
     pub open_market_spread: f64,
@@ -198,17 +205,18 @@ pub struct TradeConfig {
 }
 
 impl Default for EconomyConfig {
-    /// Defaults target the existing map's aggregate population units, not persons.
+    /// Population is displayed at ten times the old aggregate scale; all
+    /// per-resident costs and output use the inverse scale.
     fn default() -> Self {
+        let population_scale = crate::map::POPULATION_SCALE;
         Self {
             terrain_capacity: [1.5, 1.0, 0.75, 0.7, 0.35, 0.2, 0.6],
-            area_to_capacity_scale: 2.0,
-            // Urban starts can receive population compensation; house it before
-            // overcrowding suppresses all labor and triggers an idle revolt.
-            city_capacity: 90.0,
+            area_to_capacity_scale: 4.0,
+            // Opening provinces need room to grow even after urban start bonuses.
+            city_capacity: 180.0 * population_scale,
             birth_rates: [0.0035, 0.004, 0.0045, 0.004],
             death_rates: [0.002; 4],
-            food_per_class: [1.0; 4],
+            food_per_class: [1.0 / population_scale; 4],
             food_policy: [
                 FoodModifiers {
                     consumption: 0.8,
@@ -246,14 +254,15 @@ impl Default for EconomyConfig {
                     deaths: 1.2,
                 },
             ],
-            overcrowding_scale: 100.0,
-            overcrowding_cap: 50.0,
+            overcrowding_scale: 20.0,
+            overcrowding_cap: 3.0,
             crowding_birth_threshold: 1.5,
-            max_famine_death_rate: 0.08,
-            shortage_happiness_penalty: 50.0,
+            max_famine_death_rate: 0.16,
+            shortage_happiness_penalty: 3.0,
             temporary_happiness_decay: 0.85,
             migration_rates: [0.002, 0.01, 0.015, 0.0],
-            overpopulation_migration_scale: 2.0,
+            baseline_migration_pressure: 0.1,
+            overpopulation_migration_scale: 15.0,
             migration_in: [1.5, 1.0, 0.5, 0.1],
             migration_out: [1.0, 1.0, 0.7, 0.1],
             migration_happiness: [0.0, 0.0, -1.0, -2.0],
@@ -261,32 +270,37 @@ impl Default for EconomyConfig {
             class_change_rates: [0.0008, 0.00025],
             productivity: [1.0, 1.5],
             // Only plebs/slaves produce; Food supports all four classes.
-            production_scale: [3.3, 0.9, 1.2],
+            production_scale: [
+                3.3 / population_scale,
+                0.9 / population_scale,
+                1.2 / population_scale,
+            ],
             food_output_saturation: 400.0,
             focus_weights: [[1.0; 3], [3.0, 1.0, 1.0], [1.0, 3.0, 1.0], [1.0, 1.0, 3.0]],
             construction_speed: [0.75, 1.0, 1.25],
             construction_labor: [0.05, 0.10, 0.20],
-            civic_coin_per_free_resident: [0.0, 0.1, 0.2],
+            civic_coin_per_free_resident: [0.0, 0.1 / population_scale, 0.2 / population_scale],
+            noble_wage_per_noble: NOBLE_WAGE_PER_NOBLE,
             civic_happiness: [-1.0, 0.0, 1.0],
             recruitment_speed: [0.75, 1.0, 1.25],
-            recruitment_coin_per_recruit: [0.1, 0.2, 0.3],
+            recruitment_coin_per_project: [0.0, 0.0, 10.0],
             recruitment_happiness: [1.0, 0.0, -1.0],
             manumission_rates: [-0.002, 0.0, 0.002],
             manumission_happiness: [[0.0, 0.0, -1.0, 0.0], [0.0; 4], [-1.0, 0.0, 0.0, 0.0]],
             base_storage: [2400.0, 1600.0, 4000.0],
             starting_stock: [450.0, 120.0, 200.0],
-            tax_rates: [0.0, 0.5, 0.2, 0.0],
-            influence_per_noble: 0.25,
+            tax_rates: [0.0, 0.5 / population_scale, 0.2 / population_scale, 0.0],
+            influence_per_noble: 0.25 / population_scale,
             max_unhappiness_output_loss: 0.5,
             slave_revolt_chance: [0.10, 0.50],
             buildings: BuildingType::ALL.into_iter().map(BuildingDefinition::for_type).collect(),
             wonders: (0..crate::map::WONDER_COUNT).map(WonderDefinition::for_site).collect(),
             wonder_slave_speeds: vec![
                 (0.0, 1.0),
-                (25.0, 1.25),
-                (50.0, 1.5),
-                (100.0, 1.75),
-                (200.0, 2.0),
+                (25.0 * population_scale, 1.25),
+                (50.0 * population_scale, 1.5),
+                (100.0 * population_scale, 1.75),
+                (200.0 * population_scale, 2.0),
             ],
             trade: TradeConfig::default(),
         }
@@ -300,7 +314,6 @@ impl Default for TradeConfig {
             allow_influence: false,
             loss_per_step: 0.05,
             minimum_efficiency: 0.5,
-            road_efficiency: 0.005,
             minimum_relation: 20.0,
             base_value: [1.0, 2.5, 1.5],
             scarcity_multipliers: [1.75, 1.35, 1.0, 0.85, 0.7],
@@ -308,6 +321,7 @@ impl Default for TradeConfig {
             required_value_ratios: [1.5, 1.25, 1.1, 1.05, 1.0],
             one_time_margin: 1.1,
             cancellation_relation_penalty: 10.0,
+            cancellation_influence_penalty: 10.0,
             cancellation_notice_months: 6,
             open_market_spread: 0.1,
             open_market_depth: [1000.0, 400.0, 600.0],

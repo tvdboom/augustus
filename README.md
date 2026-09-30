@@ -11,8 +11,6 @@
 
 ## Gameplay
 
-The campaign advances monthly. Hover values and actions for detailed effects, prerequisites, and costs.
-
 ### Provinces and geography
 
 The map contains **54 provinces**, including eight cities with unique building options. Area and
@@ -171,64 +169,3 @@ Plans lock when battle begins; deployment uses available cohorts, terrain width,
 Unit matchups, tactic counters and composition, flanking, support protection, terrain, forts,
 Training, and Morale determine simultaneous combat rounds. Reserves replace routed troops.
 Pre-battle assessments show known hostile forces but keep enemy tactics hidden.
-
-## Implementation status
-
-The canonical [design](docs/AUGUSTUS-game-design.md) and
-[numbered implementation audit](docs/implementation-audit.md) record scope, later overrides,
-verification, and honest limits. The [README feature audit](docs/README-feature-audit.md) traces
-each gameplay claim to its player controls, application code and tests. Detailed audits are available for
-[economy/construction](docs/implementation-economy.md),
-[politics/espionage/notifications](docs/implementation-politics.md), and
-[military/combat](docs/implementation-military.md).
-
-The campaign has one authoritative in-process state. Online campaign synchronization, server validation
-of hidden bids, save/load, and autonomous strategic AI for rival player empires are not implemented.
-NPCs choose economic focus, evaluate trade, provide espionage opportunities, and defend their own
-territory with configured troops, as requested. They do not launch offensive wars. Numerical invariant
-tests and combat smoke simulations do not establish long-term multiplayer balance.
-
-## Development
-
-Rust, Cargo, and `just` are required. KTX-Software 4.x is needed for the external texture pipeline.
-Keep public Supabase configuration in `src/platform/config.rs`; never ship a service-role key.
-
-```text
-just run               # cargo run --package augustus --bin augustus
-just assets            # regenerate runtime assets after source asset changes
-just check
-just test              # cargo test --package augustus --all-targets
-just lint
-just fmt-check
-just assets-check
-just check-wasm
-just packaging-check
-just package-native
-just package-web
-```
-
-`AUGUSTUS_JOBS` and `AUGUSTUS_ASSET_JOBS` override the bounded worker defaults. Keep package scripts
-and path-safety checks aligned when output paths change. Source art/audio/fonts live in `assets/`;
-generated disk-loaded assets live in `assets-runtime/`. Embedded map artwork follows the established
-source-asset embedding and lazy normalization path.
-
-| Folder | Responsibility |
-| --- | --- |
-| `src/app.rs` | States, shared resources, system registration |
-| `src/menu/` | Reference menu, forms, wallpaper, audio |
-| `src/ui/` | HUD, parchment panels, tooltips, notifications, circular audio |
-| `tests/unit/` | Rust tests grouped into one file per topic, including private-state unit regressions |
-| `tests/scripts/` | Packaging and output-path checks |
-| `src/game/economy/` | Population, resources, construction, markets, trade |
-| `src/game/politics/` | Relations, control, espionage, ranks, Senate |
-| `src/game/military/` | Recruitment, units, movement, formations, combat |
-| `src/game/campaign*.rs` | Monthly cross-system integration and campaign events |
-| `src/map/` | Canonical geography, crossings, cities, wonders, rendering |
-| `src/multiplayer/` | Offline lobby and future Supabase boundary |
-| `supabase/schema.sql` | Initial lobby/player-card schema |
-
-[AGENTS.md](AGENTS.md) retains contributor instructions. Preserve the reference menu's dimensions,
-placement, font, form-card structure, footer, and circular audio controls when adding features.
-
-All Rust test bodies are outside `src`; see [test organization](tests/README.md).
-`just ci` runs formatting, Clippy, tests, asset checks, wasm compilation and packaging checks.
