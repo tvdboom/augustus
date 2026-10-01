@@ -96,7 +96,6 @@ fn tenfold_residents_preserve_monthly_economy_and_enlarge_demographic_flows() {
 #[test]
 fn class_unhappiness_scales_only_its_own_output() {
     let mut w = world(1, 1);
-    w.config.food_output_saturation = 0.0;
     let p = &mut w.provinces[0];
     p.population = [10.0, 20.0, 30.0, 40.0];
     p.potential = [1.0; 3];
@@ -117,7 +116,6 @@ fn class_unhappiness_scales_only_its_own_output() {
 #[test]
 fn only_citizens_and_plebeians_fund_monthly_taxes() {
     let mut w = world(1, 1);
-    w.config.food_output_saturation = 0.0;
     w.config.food_per_class = [0.0; 4];
     w.config.overcrowding_scale = 0.0;
     w.config.birth_rates = [0.0; 4];
@@ -724,23 +722,48 @@ fn workers_are_allocated_once_and_absent_resources_receive_no_labor() {
 }
 
 #[test]
-fn food_output_has_diminishing_returns_without_creating_food_on_barren_land() {
+fn food_output_requires_workers_and_fertile_land() {
     let world = world(1, 1);
     let mut province = world.provinces[0].clone();
-    let mut unlimited = world.config.clone();
-    unlimited.food_output_saturation = 0.0;
     province.potential = [2.0, 1.0, 1.0];
-    let ordinary_raw = province.production(&unlimited).1[0];
     let ordinary = province.production(&world.config).1[0];
     province.potential = [5.0, 0.0, 3.0];
-    let abundant_raw = province.production(&unlimited).1[0];
-    let abundant = province.production(&world.config).1[0];
-    assert!(abundant_raw > ordinary_raw);
-    assert!(abundant > ordinary);
-    assert!(abundant / abundant_raw < ordinary / ordinary_raw);
-    assert!(abundant < world.config.food_output_saturation);
+    assert!(province.production(&world.config).1[0] > ordinary);
+    province.population[2] = 0.0;
+    province.population[3] = 0.0;
+    assert_eq!(province.production(&world.config).1[0], 0.0);
+    province.population[2] = 100.0;
     province.potential[0] = 0.0;
     assert_eq!(province.production(&world.config).1[0], 0.0);
+}
+
+#[test]
+fn food_production_scales_with_workers_even_at_millions_of_residents() {
+    let config = EconomyConfig::default();
+    // Reproduce a boosted province after losing its slaves: plebeians still farm.
+    let mut province = EconomicProvince::new(
+        "Africa Proconsularis",
+        400.0,
+        Terrain::Farmland,
+        true,
+        [5.0, 0.0, 3.0],
+        [487.866, 475.36, 455.017, 0.0],
+        1,
+    );
+    let starting_population = province.population;
+    let starting_output = province.production(&config).1;
+    for factor in [10.0, 1_000.0, 10_000.0] {
+        province.population = starting_population.map(|count| count * factor);
+        let output = province.production(&config).1;
+        for resource in 0..3 {
+            assert!(
+                (output[resource] - starting_output[resource] * factor).abs()
+                    <= output[resource].max(1.0) * 1e-12,
+                "resource {resource} did not scale with {factor} times the workers: {output:?}"
+            );
+        }
+    }
+    assert!(province.production(&config).1[0] > 400.0);
 }
 
 #[test]
@@ -1722,7 +1745,7 @@ fn wonders_share_the_construction_queue_and_refund_only_while_waiting() {
 }
 
 #[test]
-fn agricultural_province_supports_civilians_and_a_small_army_without_free_resources() {
+fn agricultural_province_supports_civilians_and_a_small_army() {
     let config = EconomyConfig::default();
     let province = EconomicProvince::new(
         "Italia",
@@ -1735,7 +1758,6 @@ fn agricultural_province_supports_civilians_and_a_small_army_without_free_resour
     );
     let output = province.production(&config).1;
     let civilians = province.food_request(&config);
-    assert!(output[0] < civilians * 2.0);
     let units = crate::game::military::MilitaryConfig::default();
     let army_food = units.unit(crate::game::military::UnitType::HeavyInfantry).food_per_month * 4.
         + units.unit(crate::game::military::UnitType::LightCavalry).food_per_month * 2.;

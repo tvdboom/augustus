@@ -30,6 +30,7 @@ pub(in crate::app) enum ToastLevel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum ToastAction {
     OpenGovernance,
+    OpenMilitary,
     OpenProvince(usize),
     FocusWonder(usize),
     /// Navigate to a province's evidence controls or the global Senate inventory.
@@ -94,8 +95,42 @@ impl Toast {
         mut self,
         notice: super::campaign_notifications::CampaignNotice,
     ) -> Self {
+        if notice.kind == NoticeKind::SlaveRevolt {
+            self.seconds_left = 12.0;
+        }
         self.notice = Some(notice);
         self
+    }
+
+    pub(in crate::app) fn from_notice(
+        notice: super::campaign_notifications::CampaignNotice,
+    ) -> Self {
+        use super::campaign_notifications::NoticeAction;
+        let text = format!("{} {}", notice.title, notice.body);
+        let toast = if notice.kind == NoticeKind::SlaveRevolt {
+            Self::error(text)
+        } else {
+            match notice.severity {
+                NoticeSeverity::Info => Self::info(text),
+                NoticeSeverity::Warning => Self::warning(text),
+            }
+        };
+        let toast = if notice.kind == NoticeKind::MilitaryRankIncreased {
+            toast.without_sound()
+        } else {
+            toast
+        };
+        let action = match notice.action {
+            NoticeAction::OpenSenate => ToastAction::OpenEvidence(None),
+            NoticeAction::OpenMilitary => ToastAction::OpenMilitary,
+            NoticeAction::OpenProvince(id) => ToastAction::OpenProvince(id),
+            NoticeAction::FocusWonder(id) => ToastAction::FocusWonder(id),
+            NoticeAction::OpenScandal {
+                province,
+                ..
+            } => ToastAction::OpenEvidence(province),
+        };
+        toast.with_action(action).with_notice(notice)
     }
 
     fn message(&self, month: u32) -> super::campaign_notices::Message<'_> {
@@ -119,15 +154,23 @@ impl Toast {
             body: &self.text,
             month,
             warning: self.level != ToastLevel::Info,
+            critical: self.level == ToastLevel::Error,
             actionable: self.action.is_some(),
         }
     }
 }
 
 #[derive(Resource, Default)]
-pub(in crate::app) struct ToastQueue(VecDeque<Toast>, [bool; 3]);
+pub(in crate::app) struct ToastQueue(VecDeque<Toast>, [bool; 3], Option<usize>);
 
 impl ToastQueue {
+    /// Clear the previous viewer's toasts before delivering the new viewer's notices.
+    pub(in crate::app) fn set_player(&mut self, player: usize) {
+        if self.2 != Some(player) {
+            self.clear();
+            self.2 = Some(player);
+        }
+    }
     pub(in crate::app) fn push(&mut self, toast: Toast) {
         // Domain notification IDs and WarningWatch own deduplication. Text alone
         // cannot distinguish a fresh relapse after recovery from the old warning.
@@ -136,13 +179,18 @@ impl ToastQueue {
         }
         self.0.push_back(toast);
         while self.0.len() > MAX_TOASTS {
-            self.0.pop_front();
+            // Keep urgent revolt alerts visible when the same month also
+            // produces a batch of routine resource and population notices.
+            let oldest =
+                self.0.iter().position(|toast| toast.level != ToastLevel::Error).unwrap_or(0);
+            self.0.remove(oldest);
         }
     }
 
     pub(in crate::app) fn clear(&mut self) {
         self.0.clear();
         self.1 = [false; 3];
+        self.2 = None;
     }
 }
 
@@ -186,7 +234,7 @@ impl WarningWatch {
         toasts: &mut ToastQueue,
     ) {
         if self.player != Some(player) {
-            toasts.clear();
+            toasts.set_player(player);
             self.player = Some(player);
             self.active = [false; 6];
         }
@@ -379,6 +427,11 @@ pub(in crate::app) fn draw(
                 ToastAction::OpenGovernance => {
                     governance_open.0 = true;
                     campaign_ui.open = None;
+                    province_open.0 = None;
+                },
+                ToastAction::OpenMilitary => {
+                    governance_open.0 = false;
+                    campaign_ui.open = Some(super::campaign_panel::CampaignTab::Military);
                     province_open.0 = None;
                 },
                 ToastAction::OpenProvince(id) => {

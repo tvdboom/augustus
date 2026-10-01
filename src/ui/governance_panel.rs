@@ -287,10 +287,11 @@ fn show_impl(
             body.spacing_mut().scroll.bar_width = 5.0 * scale;
             if let Some(selected) = selected.as_deref_mut() {
                 let tabs = [
-                    (Icon::Policies, "Governance"),
+                    (Icon::Policies, "Policies"),
                     (Icon::Events, "Events"),
                     (Icon::Province, "Provinces"),
                     (Icon::Spy, "Spies"),
+                    (Icon::SpyUncoverScandals, "Scandals"),
                     (Icon::Notifications, "Notifications"),
                 ];
                 let gap = body.spacing().item_spacing.x;
@@ -359,25 +360,28 @@ fn show_impl(
                 body.separator();
             }
             let current_section = selected.as_deref().copied().unwrap_or(0);
+            if matches!(current_section, 4 | 5) {
+                // Notifications and scandals keep filters fixed above their scrolling lists.
+                target = content(&mut body, current_section);
+                return;
+            }
             egui::ScrollArea::vertical()
                 .id_salt(("overview_body", current_section))
                 .max_height(body.available_height())
                 .auto_shrink([false, false])
                 .show(&mut body, |list| {
                     if current_section != 0 {
-                        if current_section != 4 {
-                            super::campaign_widgets::portrait(
-                                list,
-                                if current_section == 1 {
-                                    super::campaign_widgets::ProvinceLandscape::RomeEvents
-                                } else if current_section == 2 {
-                                    super::campaign_widgets::ProvinceLandscape::RomeProvinces
-                                } else {
-                                    super::campaign_widgets::ProvinceLandscape::RomeSpies
-                                },
-                                76.0 * scale,
-                            );
-                        }
+                        super::campaign_widgets::portrait(
+                            list,
+                            if current_section == 1 {
+                                super::campaign_widgets::ProvinceLandscape::RomeEvents
+                            } else if current_section == 2 {
+                                super::campaign_widgets::ProvinceLandscape::RomeProvinces
+                            } else {
+                                super::campaign_widgets::ProvinceLandscape::RomeSpies
+                            },
+                            76.0 * scale,
+                        );
                         target = content(list, current_section);
                         return;
                     }

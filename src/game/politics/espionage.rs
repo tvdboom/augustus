@@ -107,6 +107,12 @@ pub enum ScandalKind {
     Espionage,
     /// Actual coin spending on Senate bribery.
     PoliticalBribery,
+    /// Threats directed at a member of the Senate.
+    SenatorCoercion,
+    /// Murder of a member of the Senate.
+    SenatorMurder,
+    /// A fabricated attack on a rival's political reputation.
+    PoliticalSmear,
     /// Secret payments to a province's nobles to purchase political control.
     NobleBribery,
     /// NPC corruption.
@@ -142,6 +148,9 @@ impl ScandalKind {
             Self::FriendlyAttack => "Attack Without Casus Belli",
             Self::Espionage => "Detected Espionage",
             Self::PoliticalBribery => "Political Bribery",
+            Self::SenatorCoercion => "Coercion of a Senator",
+            Self::SenatorMurder => "Murder of a Senator",
+            Self::PoliticalSmear => "Political Smear",
             Self::NobleBribery => "Bribed Nobles",
             Self::CorruptGovernor => "Corrupt Governor",
             Self::SecretPayments => "Secret Payments",
@@ -166,7 +175,42 @@ impl ScandalKind {
         }
     }
 
-    /// Probability penalties for Aristocrats, Merchants, Provincials, Populares, Military.
+    /// Immediate confidence losses, scoped to the one or two relevant factions.
+    pub fn senate_losses(self, severity: Severity) -> [f64; 5] {
+        let amount = match severity {
+            Severity::Minor => 10.0,
+            Severity::Medium => 30.0,
+            Severity::Major => 60.0,
+        };
+        let mut losses = [0.0; 5];
+        let (primary, secondary) = match self {
+            Self::LowFood
+            | Self::Famine
+            | Self::MassStarvation
+            | Self::HarshLabor
+            | Self::CitizenAbuse
+            | Self::UnhappyCitizens
+            | Self::UnhappyPlebeians => (3, Some(2)),
+            Self::HighTribute | Self::HostileOccupation => (2, Some(3)),
+            Self::PoliticalBribery
+            | Self::NobleBribery
+            | Self::CorruptGovernor
+            | Self::SecretPayments => (0, Some(1)),
+            Self::SenatorCoercion | Self::PoliticalSmear => (0, Some(3)),
+            Self::SenatorMurder => (0, Some(4)),
+            Self::Espionage | Self::TreatyViolation | Self::FriendlyAttack => (2, Some(1)),
+            Self::MilitaryIncompetence => (4, None),
+            Self::HighTaxes | Self::IllegalTaxes | Self::Smuggling => (1, Some(3)),
+            Self::EliteFeud => (0, None),
+        };
+        losses[primary] = amount;
+        if let Some(index) = secondary {
+            losses[index] = amount;
+        }
+        losses
+    }
+
+    /// Legacy normalized effects for espionage consumers.
     pub fn bloc_penalties(self, severity: Severity) -> [f64; 5] {
         let base = match self {
             Self::LowFood | Self::Famine | Self::MassStarvation => [0.02, 0.03, 0.08, 0.14, 0.03],
@@ -176,6 +220,8 @@ impl ScandalKind {
             | Self::NobleBribery
             | Self::CorruptGovernor
             | Self::SecretPayments => [0.12, 0.10, 0.03, 0.04, 0.02],
+            Self::SenatorCoercion | Self::PoliticalSmear => [0.12, 0.0, 0.0, 0.12, 0.0],
+            Self::SenatorMurder => [0.15, 0.0, 0.0, 0.0, 0.15],
             Self::Espionage | Self::TreatyViolation | Self::FriendlyAttack => {
                 [0.07, 0.07, 0.08, 0.07, 0.05]
             },
@@ -202,6 +248,14 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Three public severity levels shared by evidence and Senate action explanations.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Minor => "Severity I · minor",
+            Self::Medium => "Severity II · serious",
+            Self::Major => "Severity III · grave",
+        }
+    }
     /// Shared severity multiplier for discovery and Senate support effects.
     pub fn multiplier(self) -> f64 {
         match self {

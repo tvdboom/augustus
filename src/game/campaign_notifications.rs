@@ -2,9 +2,12 @@
 
 use super::campaign::Campaign;
 use crate::game::economy::{BuildingType, ConstructionProject};
-use crate::game::military::{BattleResult, ForceOwner, MilitaryAccess, MilitaryEvent};
+use crate::game::military::{
+    BattleResult, ForceOwner, MilitaryAccess, MilitaryEvent, MilitaryRank,
+};
 use crate::game::politics::diplomacy::PoliticalState;
 use crate::game::politics::senate::SenateEvent;
+use crate::game::politics::PoliticalRank;
 
 /// How prominently a campaign event should be displayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +23,8 @@ pub(crate) enum NoticeSeverity {
 pub(crate) enum NoticeKind {
     /// A player paid Influence with sufficient loyal senators to gain an office.
     SenateOfficeAppointed,
+    /// All political promotion requirements are currently satisfied.
+    PoliticalPromotionAvailable,
     /// An active Consul's term expired.
     ConsulTermExpired,
     /// Loss of Senate confidence forced an incumbent to resign.
@@ -52,8 +57,10 @@ pub(crate) enum NoticeKind {
     MilitaryMovementStopped,
     /// A vassal lost a material part of its military Control support.
     GarrisonWeakened,
-    /// Renown raised the player's separate military rank.
+    /// A player earned and paid for a separate military rank.
     MilitaryRankIncreased,
+    /// All military promotion requirements are currently satisfied.
+    MilitaryPromotionAvailable,
     /// A directly owned ordinary building completed.
     BuildingCompleted,
     /// Civilian and military demand exceeded the owner's global Food supply.
@@ -99,6 +106,8 @@ pub(crate) enum NoticeKind {
 pub(crate) enum NoticeAction {
     /// Open the persistent Senate chamber and current office requirements.
     OpenSenate,
+    /// Open the national military career and its promotion controls.
+    OpenMilitary,
     /// Select the province and open its existing contextual panel.
     OpenProvince(usize),
     /// Focus and zoom to the canonical WONDERS site index.
@@ -150,6 +159,8 @@ pub(crate) struct CampaignNotifications {
     foreign_happiness: Vec<(usize, usize, usize, f64)>,
     last_final: Option<NotificationSnapshot>,
     food_shortage_active: Vec<bool>,
+    political_opportunities: Vec<Option<PoliticalRank>>,
+    military_opportunities: Vec<Option<MilitaryRank>>,
     /// Material total loss across affected classes required for an unrest warning.
     pub happiness_warning_threshold: f64,
     /// Minimum loss of monthly military Control before reporting weakened garrisons.
@@ -168,6 +179,8 @@ impl Default for CampaignNotifications {
             foreign_happiness: Vec::new(),
             last_final: None,
             food_shortage_active: Vec::new(),
+            political_opportunities: Vec::new(),
+            military_opportunities: Vec::new(),
             happiness_warning_threshold: 5.0,
             garrison_warning_minimum: 0.5,
             garrison_warning_fraction: 0.25,
@@ -227,6 +240,9 @@ impl CampaignNotifications {
                     | NoticeKind::MilitaryAccessRevoked
                     | NoticeKind::ArmyDisbanded
                     | NoticeKind::MilitaryRankIncreased
+                    | NoticeKind::SenateOfficeAppointed
+                    | NoticeKind::PoliticalPromotionAvailable
+                    | NoticeKind::MilitaryPromotionAvailable
             ) && old.recipient == notice.recipient
                 && old.kind == notice.kind
                 && old.province == notice.province
@@ -292,11 +308,97 @@ pub(crate) struct NotificationSnapshot {
 }
 
 impl Campaign {
+    /// Announce each newly available promotion privately, rearming after eligibility is lost.
+    pub fn notify_rank_opportunities(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.pull_wallets();
+        let count = self.actors.len();
+        self.notifications.political_opportunities.resize(count, None);
+        self.notifications.military_opportunities.resize(count, None);
+        for player in 0..count {
+            let playing = self.senate.winner.is_none()
+                && !self.defeated.get(player).copied().unwrap_or(false);
+            let political = playing
+                .then(|| {
+                    self.senate
+                        .promotion_eligibility(player, &self.actors, &self.senate_config)
+                        .ok()
+                })
+                .flatten();
+            let military = if playing {
+                [MilitaryRank::MilitaryTribune, MilitaryRank::Legate, MilitaryRank::Imperator]
+                    .into_iter()
+                    .find_map(|rank| {
+                        self.military
+                            .promotion_eligibility(
+                                ForceOwner::Player(player),
+                                rank,
+                                self.economy.players[player].influence,
+                            )
+                            .ok()
+                            .map(|requirements| (rank, requirements))
+                    })
+            } else {
+                None
+            };
+            let next_political = political.map(|requirements| requirements.rank);
+            let next_military = military.map(|(rank, _)| rank);
+            if next_political != self.notifications.political_opportunities[player] {
+                self.notifications.pending.retain(|notice| {
+                    notice.recipient != player
+                        || notice.kind != NoticeKind::PoliticalPromotionAvailable
+                });
+                if let Some(requirements) = political {
+                    self.notifications.push(CampaignNotice {
+                        id: 0,
+                        recipient: player,
+                        severity: NoticeSeverity::Info,
+                        title: format!("You can become {}", requirements.rank.label()),
+                        body: String::new(),
+                        kind: NoticeKind::PoliticalPromotionAvailable,
+                        province: None,
+                        building: None,
+                        wonder: None,
+                        scandal: None,
+                        month: self.economy.month,
+                        action: NoticeAction::OpenSenate,
+                    });
+                }
+                self.notifications.political_opportunities[player] = next_political;
+            }
+            if next_military != self.notifications.military_opportunities[player] {
+                self.notifications.pending.retain(|notice| {
+                    notice.recipient != player
+                        || notice.kind != NoticeKind::MilitaryPromotionAvailable
+                });
+                if let Some((rank, _)) = military {
+                    self.notifications.push(CampaignNotice {
+                        id: 0,
+                        recipient: player,
+                        severity: NoticeSeverity::Info,
+                        title: format!("You can become {}", rank.name()),
+                        body: String::new(),
+                        kind: NoticeKind::MilitaryPromotionAvailable,
+                        province: None,
+                        building: None,
+                        wonder: None,
+                        scandal: None,
+                        month: self.economy.month,
+                        action: NoticeAction::OpenMilitary,
+                    });
+                }
+                self.notifications.military_opportunities[player] = next_military;
+            }
+        }
+    }
+
     /// Senate events target the chamber explicitly rather than an unrelated province.
     pub fn record_senate_event(&mut self, event: &SenateEvent) {
         let (kind, title, body) = match event {
             SenateEvent::Victory(player) => (NoticeKind::AugustusVictory, "Augustus proclaimed".to_owned(), format!("Player {} has won the campaign.", player + 1)),
-            SenateEvent::RankAdvanced(player, rank) => (NoticeKind::SenateOfficeAppointed, "Office appointed".to_owned(), format!("Player {} became {} by paying Influence with sufficient loyal senators.", player + 1, rank.label())),
+            SenateEvent::RankAdvanced(player, rank) => (NoticeKind::SenateOfficeAppointed, format!("Player {} became {}.", player + 1, rank.label()), String::new()),
             SenateEvent::ConsulExpired(player) => (NoticeKind::ConsulTermExpired, "Consular term expired".to_owned(), format!("Player {} is now a Proconsul. They may seek a Consul seat again after 12 months.", player + 1)),
             SenateEvent::ConsulRemoved(player) => (NoticeKind::ConsulRemoved, "Consul forced to resign".to_owned(), format!("Player {} lost Senate confidence and became Proconsul. They must wait 12 months to seek office again.", player + 1)),
         };
@@ -414,15 +516,21 @@ impl Campaign {
                 owner: ForceOwner::Player(player),
                 rank,
             } => {
-                if let Some(province) = self
-                    .economy
-                    .provinces
-                    .iter()
-                    .position(|p| p.owner == Some(player))
-                    .or_else(|| (!self.economy.provinces.is_empty()).then_some(0))
-                {
-                    self.notifications.province_notice(player,province,month,NoticeSeverity::Info,NoticeKind::MilitaryRankIncreased,
-                        format!("Congratulations — promoted to {}",rank.name()),format!("Your armies now gain +{:.0} combat Morale, {:.1}% monthly manpower recovery, and stronger garrison Control. Your military rank also improves Military bloc Senate support.",self.military.config.rank_morale[rank as usize],self.military.config.rank_recovery[rank as usize]));
+                for recipient in 0..self.actors.len() {
+                    self.notifications.push(CampaignNotice {
+                        id: 0,
+                        recipient,
+                        severity: NoticeSeverity::Info,
+                        title: format!("Player {} became {}.", player + 1, rank.name()),
+                        body: String::new(),
+                        kind: NoticeKind::MilitaryRankIncreased,
+                        province: None,
+                        building: None,
+                        wonder: None,
+                        scandal: None,
+                        month,
+                        action: NoticeAction::OpenMilitary,
+                    });
                 }
             },
             MilitaryEvent::BattleEnded {

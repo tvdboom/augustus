@@ -82,6 +82,27 @@ pub enum BattleResult {
     MutualRout,
 }
 
+/// Resolved, authoritative dice and damage factors for one simultaneous round.
+#[derive(Clone, Debug)]
+pub struct BattleRound {
+    /// Completed round number, starting at one.
+    pub number: usize,
+    /// One six-sided die per coalition; every cohort shares its side's roll.
+    pub dice: [u8; 2],
+    /// Damage multipliers corresponding to the dice, attacker first.
+    pub dice_multipliers: [f64; 2],
+    /// Actual manpower-weighted tactic multipliers against engaged targets.
+    pub tactics: [BTreeMap<ForceOwner, f64>; 2],
+    /// Whole people lost by each side, attacker first.
+    pub casualties: [u64; 2],
+}
+
+/// Map a d6 roll to the configured damage range; equal bounds disable luck in tests.
+pub fn dice_multiplier(roll: u8, config: &MilitaryConfig) -> f64 {
+    let fraction = f64::from(roll.clamp(1, 6) - 1) / 5.;
+    config.random_range[0] + (config.random_range[1] - config.random_range[0]) * fraction
+}
+
 /// Active province battle; tactics are locked until the record is resolved.
 #[derive(Clone, Debug)]
 pub struct Battle {
@@ -105,6 +126,8 @@ pub struct Battle {
     pub round: usize,
     /// Number of completed monthly battle phases.
     pub months: usize,
+    /// Completed rounds retained for the battle panel and outcome inspection.
+    pub rounds: Vec<BattleRound>,
     /// Result, assigned only once.
     pub result: Option<BattleResult>,
     /// Pending retreat at the next round boundary (true means attacker).
@@ -141,6 +164,7 @@ impl Battle {
             defenders,
             round: 0,
             months: 0,
+            rounds: Vec::new(),
             result: None,
             retreat_requested: None,
             trapped: BTreeSet::new(),
@@ -205,6 +229,20 @@ impl Battle {
                 break;
             }
         }
+        self.complete_month(config);
+    }
+    /// Advance one visible round on the game clock, completing a month every
+    /// configured number of rounds. Pausing the clock pauses these rounds too.
+    pub fn advance_timed_round(&mut self, config: &MilitaryConfig) {
+        if self.result.is_some() {
+            return;
+        }
+        self.advance_round(config);
+        if self.result.is_some() || self.round.is_multiple_of(config.rounds_per_month.max(1)) {
+            self.complete_month(config);
+        }
+    }
+    fn complete_month(&mut self, config: &MilitaryConfig) {
         self.months += 1;
         if self.result.is_none()
             && !self.rome_defense
@@ -270,22 +308,28 @@ impl Battle {
             self.result = Some(result);
             return;
         }
-        let defender_losses = attacks(
+        let dice = [roll_die(&mut self.random_state), roll_die(&mut self.random_state)];
+        let dice_multipliers = dice.map(|roll| dice_multiplier(roll, config));
+        let before = [
+            self.attackers.units.iter().map(Unit::people).sum::<u64>(),
+            self.defenders.units.iter().map(Unit::people).sum::<u64>(),
+        ];
+        let (defender_losses, attacker_tactics) = attacks(
             &self.attackers,
             &self.defenders,
             self.terrain,
             self.fortification_level,
             true,
-            &mut self.random_state,
+            dice_multipliers[0],
             config,
         );
-        let attacker_losses = attacks(
+        let (attacker_losses, defender_tactics) = attacks(
             &self.defenders,
             &self.attackers,
             self.terrain,
             0,
             false,
-            &mut self.random_state,
+            dice_multipliers[1],
             config,
         );
         mark_participating(&mut self.attackers);
@@ -294,6 +338,29 @@ impl Battle {
         apply_losses(&mut self.defenders, defender_losses, &self.trapped);
         self.restore_rome_morale();
         self.round += 1;
+        self.rounds.push(BattleRound {
+            number: self.round,
+            dice,
+            dice_multipliers,
+            tactics: [attacker_tactics, defender_tactics],
+            casualties: [
+                before[0].saturating_sub(self.attackers.units.iter().map(Unit::people).sum()),
+                before[1].saturating_sub(self.defenders.units.iter().map(Unit::people).sum()),
+            ],
+        });
+        // Remove destroyed and routed icons immediately, preserving living positions.
+        for side in [&mut self.attackers, &mut self.defenders] {
+            for slot in side.formation.front.iter_mut().chain(&mut side.formation.support) {
+                if slot.is_some_and(|id| {
+                    side.routed.contains(&id) || !side.units.iter().any(|unit| unit.id == id)
+                }) {
+                    *slot = None;
+                }
+            }
+            side.formation.reserves.retain(|id| {
+                !side.routed.contains(id) && side.units.iter().any(|unit| unit.id == *id)
+            });
+        }
         self.result = broken_result(&self.attackers, &self.defenders);
     }
     /// Apply experience/morale rewards once when consuming a finished battle.
@@ -333,6 +400,8 @@ impl Battle {
             renown,
             rounds: self.round,
             months: self.months,
+            round_history: self.rounds,
+            terrain: self.terrain,
         })
     }
 }
@@ -360,6 +429,10 @@ pub struct BattleOutcome {
     pub rounds: usize,
     /// Monthly battle phases elapsed.
     pub months: usize,
+    /// Dice, bonuses and casualties for each completed round.
+    pub round_history: Vec<BattleRound>,
+    /// Original battlefield landscape for the result panel.
+    pub terrain: MilitaryTerrain,
 }
 
 impl BattleOutcome {
@@ -508,10 +581,11 @@ fn attacks(
     terrain: MilitaryTerrain,
     fortification: u32,
     attacking: bool,
-    random_state: &mut u64,
+    dice: f64,
     config: &MilitaryConfig,
-) -> BTreeMap<UnitId, (f64, f64)> {
+) -> (BTreeMap<UnitId, (f64, f64)>, BTreeMap<ForceOwner, f64>) {
     let mut losses = BTreeMap::new();
+    let mut tactics = BTreeMap::<ForceOwner, (f64, f64)>::new();
     let by_id: BTreeMap<_, _> = source.units.iter().map(|u| (u.id, u)).collect();
     let enemy: BTreeMap<_, _> = target.units.iter().map(|u| (u.id, u)).collect();
     let siege: f64 = source
@@ -555,6 +629,9 @@ fn attacks(
                 1.
             };
             let rank = source.ranks.get(&unit.owner).copied().unwrap_or_default();
+            let entry = tactics.entry(unit.owner).or_default();
+            entry.0 += tactic_multiplier * unit.current_manpower;
+            entry.1 += unit.current_manpower;
             let morale = (unit.morale + config.rank_morale[rank as usize]).clamp(0., 100.);
             let protected =
                 support && source.formation.front.get(slot).is_some_and(Option::is_some);
@@ -565,7 +642,7 @@ fn attacks(
                 * (1. + config.training_attack * unit.training / 100.)
                 * (config.strength_morale_base + config.strength_morale_scale * morale / 100.)
                 * config.terrain_attack[terrain as usize][unit.unit_type as usize]
-                * random_multiplier(random_state, config)
+                * dice
                 * if protected {
                     config.support_effectiveness
                 } else {
@@ -593,7 +670,13 @@ fn attacks(
             entry.1 += morale_loss;
         }
     }
-    losses
+    (
+        losses,
+        tactics
+            .into_iter()
+            .map(|(owner, (sum, weight))| (owner, sum / weight.max(0.001)))
+            .collect(),
+    )
 }
 
 /// Nearest reachable front target, then uncovered support; aligned slots win ties.
@@ -617,12 +700,11 @@ fn find_target(slot: usize, maneuver: usize, formation: &Formation) -> Option<(U
 }
 
 /// Advance a small stable server-owned PRNG; no thread-local client randomness is used.
-fn random_multiplier(state: &mut u64, config: &MilitaryConfig) -> f64 {
+fn roll_die(state: &mut u64) -> u8 {
     *state ^= *state << 13;
     *state ^= *state >> 7;
     *state ^= *state << 17;
-    let fraction = (*state >> 11) as f64 / ((1u64 << 53) - 1) as f64;
-    config.random_range[0] + (config.random_range[1] - config.random_range[0]) * fraction
+    (*state % 6 + 1) as u8
 }
 
 /// Commit summed losses simultaneously and remove only destroyed units.

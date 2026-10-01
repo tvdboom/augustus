@@ -41,6 +41,21 @@ pub(crate) fn take_army_click(ctx: &egui::Context) -> Option<ArmyHit> {
     })
 }
 
+/// Right-clicked province and the cursor position where its orders menu opens.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProvinceOrderHit {
+    pub province: usize,
+    pub position: egui::Pos2,
+}
+
+pub(crate) fn take_province_order_click(ctx: &egui::Context) -> Option<ProvinceOrderHit> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new("map-province-order-click")))
+}
+
+pub(crate) fn take_battle_click(ctx: &egui::Context) -> Option<u64> {
+    ctx.data_mut(|data| data.remove_temp(egui::Id::new("map-battle-click")))
+}
+
 /// Reuse the generated military sheets in province-panel icon cells.
 pub(crate) fn military_unit_icon(
     context: &egui::Context,
@@ -1685,7 +1700,7 @@ fn paint_map(
         .input(|input| input.pointer.hover_pos())
         .and_then(|point| painter.ctx().layer_id_at(point))
         .is_some_and(|layer| layer.order > egui::Order::Background);
-    let clicked_detail = (interactions_enabled
+    let mut clicked_detail = (interactions_enabled
         && !pointer_over_menu
         && !drag_started_on_menu
         && !foreground_control
@@ -1791,22 +1806,7 @@ fn paint_map(
     paint_dead_sea(painter, view, &projection, sea_color);
     paint_rivers(painter, |point| projection.point(point), view.zoom, sea_color);
 
-    paint_wildlife(painter, &view.wildlife, &view.environment_textures, &projection);
-
-    if let Some(clouds) = view.environment_textures.get(CLOUD_TEXTURE) {
-        let opacity = (45.0 + close * 63.0) as u8;
-        paint_scrolling_texture(
-            painter,
-            rect,
-            &projection,
-            clouds,
-            [84.0, 32.0],
-            view.cloud_offset,
-            egui::Color32::from_white_alpha(opacity),
-        );
-    }
-
-    // Draw ownership boundaries above clouds and every neutral border. The
+    // Draw ownership boundaries above every neutral border. The
     // dark casing keeps all player colors legible over both grass and desert.
     for (index, province) in atlas.provinces.iter().enumerate() {
         let Some(color) = ownership.map_color(index) else {
@@ -2059,6 +2059,80 @@ fn paint_map(
             &label_areas,
             &mut view.military_anchors,
         );
+        let army_hits = painter
+            .ctx()
+            .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+            .unwrap_or_default();
+        let mut battle_hits = Vec::new();
+        for battle in &world.battles {
+            let Some(province) = atlas.provinces.get(battle.province) else {
+                continue;
+            };
+            let anchor = projection.point(province.visual_center);
+            let badge = egui::Rect::from_center_size(
+                anchor + egui::vec2(0., -8. * view.zoom * 0.65),
+                egui::vec2(62., 22.),
+            );
+            if rect.intersects(badge) {
+                painter.rect_filled(badge, 3., egui::Color32::from_rgb(105, 37, 28));
+                let pulse = 0.5 + 0.5 * (view.animation_clock * 5.).sin();
+                let gold = egui::Color32::from_rgb(250, 225, 181);
+                painter.rect_stroke(
+                    badge,
+                    3.,
+                    egui::Stroke::new(1. + pulse, gold),
+                    egui::StrokeKind::Inside,
+                );
+                let clash = badge.left_center() + egui::vec2(9., 0.);
+                for (a, b) in [
+                    (egui::vec2(-4., 5.), egui::vec2(4., -5.)),
+                    (egui::vec2(4., 5.), egui::vec2(-4., -5.)),
+                ] {
+                    painter.line_segment([clash + a, clash + b], egui::Stroke::new(1.5, gold));
+                }
+                painter.circle_filled(clash, 1. + pulse * 1.5, gold);
+                painter.text(
+                    badge.center() + egui::vec2(6., 0.),
+                    egui::Align2::CENTER_CENTER,
+                    "BATTLE",
+                    egui::FontId::proportional(11.),
+                    egui::Color32::from_rgb(250, 225, 181),
+                );
+                battle_hits.push((badge, battle.id));
+            }
+            for hit in &army_hits {
+                if hit.province == battle.province
+                    && hit.movement.is_none()
+                    && battle
+                        .attackers
+                        .units
+                        .iter()
+                        .chain(&battle.defenders.units)
+                        .any(|u| u.owner == hit.owner)
+                {
+                    battle_hits.push((hit.rect, battle.id));
+                }
+            }
+        }
+        if interactions_enabled
+            && !pointer_over_menu
+            && !foreground_control
+            && response.clicked_by(egui::PointerButton::Secondary)
+        {
+            if let (Some(province), Some(position)) =
+                (view.hovered, response.interact_pointer_pos())
+            {
+                painter.ctx().data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new("map-province-order-click"),
+                        ProvinceOrderHit {
+                            province,
+                            position,
+                        },
+                    )
+                });
+            }
+        }
         if interactions_enabled && !pointer_over_menu && !foreground_control {
             if let Some(position) = painter.ctx().input(|input| input.pointer.hover_pos()) {
                 let hovered = painter
@@ -2069,7 +2143,9 @@ fn paint_map(
                     .unwrap_or_default()
                     .iter()
                     .any(|hit| hit.rect.contains(position));
-                if hovered && !response.dragged() {
+                if (hovered || battle_hits.iter().any(|(rect, _)| rect.contains(position)))
+                    && !response.dragged()
+                {
                     painter.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
             }
@@ -2081,24 +2157,50 @@ fn paint_map(
             && response.clicked_by(egui::PointerButton::Primary)
         {
             if let Some(position) = response.interact_pointer_pos() {
-                let hit = painter
-                    .ctx()
-                    .data(|data| {
-                        data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets"))
-                    })
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev()
-                    .find(|hit| hit.rect.contains(position));
-                if let Some(hit) = hit {
-                    painter
+                if let Some((_, battle)) =
+                    battle_hits.iter().rev().find(|(rect, _)| rect.contains(position))
+                {
+                    painter.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new("map-battle-click"), *battle)
+                    });
+                    clicked_detail = None;
+                } else {
+                    let hit = painter
                         .ctx()
-                        .data_mut(|data| data.insert_temp(egui::Id::new("map-army-click"), hit));
-                    return None;
+                        .data(|data| {
+                            data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets"))
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
+                        .rev()
+                        .find(|hit| hit.rect.contains(position));
+                    if let Some(hit) = hit {
+                        painter.ctx().data_mut(|data| {
+                            data.insert_temp(egui::Id::new("map-army-click"), hit)
+                        });
+                        clicked_detail = None;
+                    }
                 }
             }
         }
     }
+
+    // Clouds and wildlife sit above all map artwork, including crossing
+    // terminals, labels, and troops. Birds also fly above the clouds.
+    if let Some(clouds) = view.environment_textures.get(CLOUD_TEXTURE) {
+        let opacity = (45.0 + close * 63.0) as u8;
+        paint_scrolling_texture(
+            painter,
+            rect,
+            &projection,
+            clouds,
+            [84.0, 32.0],
+            view.cloud_offset,
+            egui::Color32::from_white_alpha(opacity),
+        );
+    }
+    paint_wildlife(painter, &view.wildlife, &view.environment_textures, &projection);
+
     clicked_detail
 }
 

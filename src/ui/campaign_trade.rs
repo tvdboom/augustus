@@ -348,7 +348,7 @@ fn routes(
                     icon(ui, Icon::Trade, 25.0 * scale);
                     let label_width = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
                     ui.add_sized([label_width, 30.0 * scale], egui::Label::new(egui::RichText::new(party_name(&campaign.economy, partner)).strong()).truncate());
-                    let tip = format!("Stop now. Relation with this partner −{:.0}, Influence −up to {:.0}, and Merchant Senate support falls for six months.", campaign.economy.config.trade.cancellation_relation_penalty, campaign.economy.config.trade.cancellation_influence_penalty);
+                    let tip = format!("Stop now. Relation with this partner −{:.0}, Influence −up to {:.0}, and Merchant Senate confidence drops immediately.", campaign.economy.config.trade.cancellation_relation_penalty, campaign.economy.config.trade.cancellation_influence_penalty);
                     if action(ui, Icon::Cancel, "Cancel immediately", &tip, true, scale) { result = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|e| e)); }
                     let tip = if let Some(due) = trade.cancellation_month { format!("Notice already given. This route ends after {} more months without a relation penalty.", due.saturating_sub(campaign.economy.month)) }
                         else { "Give six months' notice. Trading continues during notice, then ends without penalties.".into() };

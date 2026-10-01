@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn promotion_toasts_open_the_correct_global_panel_from_an_open_province() {
+    use super::super::campaign_notifications::{CampaignNotice, NoticeKind, NoticeSeverity};
+    for (action, kind, tab) in [
+        (NoticeAction::OpenMilitary, NoticeKind::MilitaryPromotionAvailable, CampaignTab::Military),
+        (NoticeAction::OpenSenate, NoticeKind::PoliticalPromotionAvailable, CampaignTab::Senate),
+    ] {
+        let campaign = Campaign::default();
+        let notice = CampaignNotice {
+            id: 1,
+            recipient: 0,
+            severity: NoticeSeverity::Info,
+            title: "Promotion available".into(),
+            body: "You qualify for the next rank.".into(),
+            kind,
+            province: None,
+            building: None,
+            wonder: None,
+            scandal: None,
+            month: 0,
+            action,
+        };
+        let mut view = CampaignUi::default();
+        view.open_province_section(1, 4);
+        let mut detail = ProvincePanelOpen(Some(MapDetail::Province(1)));
+        let mut map = MapView::default();
+        open_notification(&mut view, &notice, &campaign, &mut detail, &mut map);
+        assert_eq!(view.open, Some(tab));
+        assert!(detail.0.is_none());
+        assert!(view.last_detail.is_none());
+    }
+}
+
+#[test]
 fn unhappy_population_notice_opens_its_province_overview() {
     use super::super::campaign_notifications::{NoticeKind, NoticeSeverity};
 
@@ -52,6 +85,40 @@ fn food_shortage_notice_opens_its_province_overview() {
     assert_eq!(view.province, Some(1));
     assert_eq!(view.section, 0);
     assert_eq!(detail.0, Some(MapDetail::Province(1)));
+}
+
+#[test]
+fn scandal_overview_cards_open_the_target_context_and_keep_province_selection_in_sync() {
+    use crate::game::politics::espionage::{Scandal, ScandalKind, ScandalTarget, Severity};
+    let mut campaign = Campaign::default();
+    let mut view = CampaignUi::default();
+    let mut detail = ProvincePanelOpen::default();
+    let mut map = MapView::default();
+    campaign.espionage.scandals.push(Scandal {
+        id: 1,
+        holder: 0,
+        target: ScandalTarget::Player(1),
+        kind: ScandalKind::Espionage,
+        severity: Severity::Medium,
+        province: Some(2),
+        source_id: 1,
+        acquired: 0,
+        expires: 24,
+        reserved_for_motion: false,
+    });
+    open_scandal(&mut view, 1, None, &campaign, &mut detail, &mut map);
+    assert_eq!(view.open, Some(CampaignTab::Senate));
+    assert_eq!(view.highlight_scandal, Some(1));
+    assert!(detail.0.is_none());
+    assert!(view.last_detail.is_none());
+    campaign.espionage.scandals[0].target = ScandalTarget::Province(2);
+    open_scandal(&mut view, 1, None, &campaign, &mut detail, &mut map);
+    assert_eq!(view.open, Some(CampaignTab::Province));
+    assert_eq!(view.province, Some(2));
+    assert_eq!(view.section, 4);
+    assert_eq!(detail.0, Some(MapDetail::Province(2)));
+    assert_eq!(view.last_detail, detail.0);
+    assert!(view.highlight_scandal.is_none());
 }
 
 #[test]

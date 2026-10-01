@@ -81,8 +81,6 @@ pub struct EconomyConfig {
     pub productivity: [f64; 2],
     /// Food, Metal, Stone output per allocated labor/potential.
     pub production_scale: [f64; 3],
-    /// Diminishing-return level for provincial Food output; zero disables it.
-    pub food_output_saturation: f64,
     /// Resource focus weights, ordered Balanced, Food, Metal, Stone.
     pub focus_weights: [[f64; 3]; 4],
     /// Slow, Normal, Urgent construction speed multipliers.
@@ -275,7 +273,6 @@ impl Default for EconomyConfig {
                 0.9 / population_scale,
                 1.2 / population_scale,
             ],
-            food_output_saturation: 400.0,
             focus_weights: [[1.0; 3], [3.0, 1.0, 1.0], [1.0, 3.0, 1.0], [1.0, 1.0, 3.0]],
             construction_speed: [0.75, 1.0, 1.25],
             construction_labor: [0.05, 0.10, 0.20],

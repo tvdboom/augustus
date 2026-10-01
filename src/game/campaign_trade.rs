@@ -64,7 +64,9 @@ impl Campaign {
                     .min(self.economy.config.trade.cancellation_influence_penalty);
                 self.actors[player].influence -= influence_loss;
                 self.senate.record_trade_breach(player);
-                consequence.push_str(&format!("Influence −{influence_loss:.0}; Merchant Senate support reduced for six months."));
+                consequence.push_str(&format!(
+                    "Influence −{influence_loss:.0}; Merchant confidence drops immediately."
+                ));
                 self.push_wallets();
                 self.reconcile_provinces();
                 Ok(format!("Route #{id} stopped immediately. {consequence}"))

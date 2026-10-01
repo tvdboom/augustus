@@ -135,6 +135,49 @@ impl MilitaryWorld {
         self.provinces[province].plans.entry(owner).or_default();
         Ok(id)
     }
+    /// Raise full and partial cohorts from a population using the roster's draft cost.
+    /// The caller removes those residents from the economic population.
+    pub fn seed_population_force(
+        &mut self,
+        province: ProvinceId,
+        owner: ForceOwner,
+        unit_type: UnitType,
+        population: f64,
+    ) -> Result<usize, MilitaryError> {
+        if province >= self.provinces.len() {
+            return Err(MilitaryError::UnknownProvince);
+        }
+        let definition = self.config.unit(unit_type);
+        let equivalents = population / definition.population_cost;
+        if !population.is_finite()
+            || population <= 0.0
+            || !definition.population_cost.is_finite()
+            || definition.population_cost <= 0.0
+            || !equivalents.is_finite()
+            || equivalents.ceil() >= usize::MAX as f64
+        {
+            return Err(MilitaryError::InvalidUnits);
+        }
+        let manpower = definition.manpower;
+        let units: Vec<_> = (0..equivalents.ceil() as usize)
+            .map(|index| {
+                let mut unit = self.make_unit(owner, unit_type, manpower);
+                let fraction = (equivalents - index as f64).clamp(0.0, 1.0);
+                unit.current_manpower =
+                    (manpower * fraction * PEOPLE_PER_POPULATION).round() / PEOPLE_PER_POPULATION;
+                unit
+            })
+            .filter(|unit| unit.current_manpower > 0.0)
+            .collect();
+        let cohorts = units.len();
+        if cohorts == 0 {
+            return Err(MilitaryError::InvalidUnits);
+        }
+        // Insert the whole force once so large practice populations do not repeatedly
+        // scan every previously raised cohort to update the manpower peak.
+        self.insert_units(province, units);
+        Ok(cohorts)
+    }
     /// Populate the initial local defenders from explicit province setup data.
     pub fn seed_local_defenders(
         &mut self,
@@ -149,6 +192,32 @@ impl MilitaryWorld {
     /// Current explicitly earned military rank.
     pub fn rank(&self, owner: ForceOwner) -> MilitaryRank {
         self.ranks.get(&owner).copied().unwrap_or_default()
+    }
+    /// The same career requirements drive purchases, buttons, and opportunity notices.
+    pub fn promotion_eligibility(
+        &self,
+        owner: ForceOwner,
+        target: MilitaryRank,
+        influence: f64,
+    ) -> Result<MilitaryPromotionRequirements, String> {
+        let requirements = target
+            .promotion_requirements()
+            .ok_or_else(|| "Centurion is the starting rank.".to_owned())?;
+        if self.rank(owner) != requirements.previous {
+            return Err(format!("Become {} first.", requirements.previous.name()));
+        }
+        let peak =
+            self.peak_manpower.get(&owner).copied().unwrap_or(0.0).max(self.total_manpower(owner));
+        if peak < requirements.peak_manpower {
+            return Err("The army strength milestone has not been reached.".into());
+        }
+        if self.victories.get(&owner).copied().unwrap_or(0) < requirements.victories {
+            return Err("More battle victories are required.".into());
+        }
+        if !influence.is_finite() || influence + 1e-9 < requirements.influence {
+            return Err("Not enough Influence for this promotion.".into());
+        }
+        Ok(requirements)
     }
     /// Current combined manpower across stationed, traveling, and fighting forces.
     pub fn total_manpower(&self, owner: ForceOwner) -> f64 {
@@ -900,6 +969,22 @@ impl MilitaryWorld {
         graph: &[MilitaryProvince],
         access: impl Fn(ForceOwner, ProvinceId) -> MilitaryAccess,
     ) -> Vec<MilitaryEvent> {
+        self.resolve_battles(graph, access, Battle::advance_month)
+    }
+    /// Resolve one round per active battle for the running game clock.
+    pub fn advance_battle_rounds(
+        &mut self,
+        graph: &[MilitaryProvince],
+        access: impl Fn(ForceOwner, ProvinceId) -> MilitaryAccess,
+    ) -> Vec<MilitaryEvent> {
+        self.resolve_battles(graph, access, Battle::advance_timed_round)
+    }
+    fn resolve_battles(
+        &mut self,
+        graph: &[MilitaryProvince],
+        access: impl Fn(ForceOwner, ProvinceId) -> MilitaryAccess,
+        advance: impl Fn(&mut Battle, &MilitaryConfig),
+    ) -> Vec<MilitaryEvent> {
         let mut events = vec![];
         let mut active = vec![];
         for mut battle in std::mem::take(&mut self.battles) {
@@ -923,7 +1008,7 @@ impl MilitaryWorld {
             for unit in battle.attackers.units.iter().chain(&battle.defenders.units) {
                 *original_counts.entry(unit.owner).or_default() += 1;
             }
-            battle.advance_month(&self.config);
+            advance(&mut battle, &self.config);
             if battle.result.is_none() {
                 let mut survivors = BTreeMap::<ForceOwner, usize>::new();
                 for unit in battle.attackers.units.iter().chain(&battle.defenders.units) {

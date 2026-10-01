@@ -1,6 +1,128 @@
 use super::*;
 use crate::game::military::BattlePlan;
 
+#[path = "egui_capture.rs"]
+mod revolt_capture;
+
+#[test]
+fn revolt_infantry_remains_visible_at_wide_zoom_and_under_landmarks() {
+    let context = egui::Context::default();
+    let province = atlas().provinces.iter().position(|p| p.name == "Africa Proconsularis").unwrap();
+    let mut world = MilitaryWorld::new(atlas().provinces.len());
+    let owner = ForceOwner::Local(province);
+    world.seed_population_force(province, owner, UnitType::LightInfantry, 120.0).unwrap();
+    world.provinces[province].slave_rebellion = true;
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let mut capture = revolt_capture::Capture::default();
+    for zoom in [MIN_ZOOM, 2.4, 4.0] {
+        let projection = Projection {
+            origin: viewport.center(),
+            scale: 18. * zoom,
+            center: atlas().provinces[province].visual_center,
+        };
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        let painter = context.layer_painter(egui::LayerId::background());
+        let markers = paint(
+            &painter,
+            &world,
+            &ProvinceOwnership::default(),
+            &projection,
+            zoom,
+            0.,
+            viewport,
+            &[viewport],
+            &[],
+            &[],
+            &mut Anchors::default(),
+        );
+        assert!(markers.len() >= 2, "rebel infantry and its banner disappeared at zoom {zoom}");
+        let hits = context
+            .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+            .unwrap();
+        assert!(hits.iter().all(|hit| hit.province == province && hit.owner == owner));
+        let cache = context
+            .data(|data| data.get_temp::<Textures>(egui::Id::new("military-sprite-sheet-cache")))
+            .unwrap();
+        assert!(cache.idle[UnitType::LightInfantry as usize].is_some());
+        let mut output = context.end_pass();
+        capture.frame(&context, &output, &format!("revolt-infantry-{}", (zoom * 10.) as u32));
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Revolt")));
+        assert!(output.shapes.iter().any(|shape|
+            matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_rgb(176, 45, 35))));
+    }
+}
+
+#[test]
+fn a_revolt_battle_shows_both_armies_and_combat_art_at_wide_zoom() {
+    let context = egui::Context::default();
+    let province = atlas().provinces.iter().position(|p| p.name == "Africa Proconsularis").unwrap();
+    let mut world = MilitaryWorld::new(atlas().provinces.len());
+    let rebel = ForceOwner::Local(province);
+    let player = ForceOwner::Player(0);
+    world.seed_unit(province, rebel, UnitType::LightInfantry).unwrap();
+    world.seed_unit(province, player, UnitType::HeavyInfantry).unwrap();
+    world.provinces[province].slave_rebellion = true;
+    world
+        .start_battle(
+            province,
+            &[rebel],
+            &[player],
+            Some(0),
+            None,
+            crate::game::military::MilitaryTerrain::Farmland,
+            0,
+            1,
+        )
+        .unwrap();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let projection = Projection {
+        origin: viewport.center(),
+        scale: 18. * MIN_ZOOM,
+        center: atlas().provinces[province].visual_center,
+    };
+    context.begin_pass(egui::RawInput {
+        screen_rect: Some(viewport),
+        ..Default::default()
+    });
+    let painter = context.layer_painter(egui::LayerId::background());
+    let markers = paint(
+        &painter,
+        &world,
+        &ProvinceOwnership::default(),
+        &projection,
+        MIN_ZOOM,
+        0.,
+        viewport,
+        &[viewport],
+        &[],
+        &[],
+        &mut Anchors::default(),
+    );
+    assert_eq!(markers.len(), 4, "both armies and their banners must appear immediately");
+    let hits = context
+        .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+        .unwrap();
+    assert!(hits.iter().any(|hit| hit.owner == rebel));
+    assert!(hits.iter().any(|hit| hit.owner == player));
+    let banners: Vec<_> = hits.iter().filter(|hit| hit.rect.height() == 12.).collect();
+    assert_eq!(banners.len(), 2);
+    assert!(!banners[0].rect.intersects(banners[1].rect), "opposing owner labels overlap");
+    let cache = context
+        .data(|data| data.get_temp::<Textures>(egui::Id::new("military-sprite-sheet-cache")))
+        .unwrap();
+    for kind in [UnitType::LightInfantry, UnitType::HeavyInfantry] {
+        assert!(cache.combat[kind as usize].is_some());
+    }
+    let mut output = context.end_pass();
+    revolt_capture::Capture::default().frame(&context, &output, "revolt-combat");
+    output.textures_delta.clear();
+}
+
 #[test]
 fn map_shows_strongest_types_from_each_category_independent_of_deployment() {
     let mut world = MilitaryWorld::new(1);
@@ -131,7 +253,7 @@ fn rome_starts_with_light_cavalry_and_shows_all_four_army_types() {
 }
 
 #[test]
-fn rome_figures_stay_clear_of_neighboring_provinces() {
+fn rome_keeps_four_full_size_figures_with_their_ground_anchors_in_latium() {
     let context = egui::Context::default();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
     let province = atlas().provinces.iter().position(|p| p.name == "Latium").unwrap();
@@ -139,50 +261,99 @@ fn rome_figures_stay_clear_of_neighboring_provinces() {
     for kind in crate::game::military::initial_defenders("Latium") {
         world.seed_unit(province, ForceOwner::Local(province), kind).unwrap();
     }
-    let zoom = 4.;
-    let projection = Projection {
-        origin: viewport.center(),
-        scale: 18. * zoom,
-        center: atlas().provinces[province].visual_center,
-    };
-    context.begin_pass(egui::RawInput::default());
-    let painter = context.layer_painter(egui::LayerId::background());
-    let markers = paint(
-        &painter,
-        &world,
-        &ProvinceOwnership::default(),
-        &projection,
-        zoom,
-        0.,
-        viewport,
-        &[],
-        &[],
-        &[],
-        &mut Anchors::default(),
-    );
-    assert_eq!(markers.len(), 5, "Rome's four types and badge should be visible");
-    for sprite in &markers[..4] {
-        for row in 0..=4 {
-            for column in 0..=4 {
-                let point = sprite.min
-                    + egui::vec2(
-                        sprite.width() * column as f32 / 4.,
-                        sprite.height() * row as f32 / 4.,
-                    );
-                let map_point = projection.inverse(point);
-                assert!(
-                    atlas()
-                        .provinces
-                        .iter()
-                        .enumerate()
-                        .all(|(index, other)| index == province || !other.contains(map_point)),
-                    "Rome artwork spills into a neighboring province at {map_point:?}"
-                );
-            }
+    let types =
+        map_representatives(&world.provinces[province].forces[&ForceOwner::Local(province)]);
+    for zoom in [3., 4., 6., 8.] {
+        let projection = Projection {
+            origin: viewport.center(),
+            scale: 18. * zoom,
+            center: atlas().provinces[province].visual_center,
+        };
+        let landmarks: Vec<_> =
+            layout_cities(&projection, viewport, zoom).iter().map(|city| city.bounds).collect();
+        context.begin_pass(egui::RawInput::default());
+        let painter = context.layer_painter(egui::LayerId::background());
+        let markers = paint(
+            &painter,
+            &world,
+            &ProvinceOwnership::default(),
+            &projection,
+            zoom,
+            0.,
+            viewport,
+            &landmarks,
+            &[],
+            &[],
+            &mut Anchors::default(),
+        );
+        assert_eq!(
+            markers.len(),
+            5,
+            "Rome's four types and badge should be visible at zoom {zoom}"
+        );
+        for (&kind, sprite) in types.iter().zip(&markers[..4]) {
+            let expected = troop_size(zoom) * troop_scale(kind) * 2.;
+            assert!(
+                (sprite.width() - expected).abs() < 0.001,
+                "Rome must use the common unit size"
+            );
+            let feet = egui::pos2(
+                sprite.center().x,
+                sprite.min.y + sprite.height() * frames::BASELINE as f32 / frames::SIZE as f32,
+            );
+            assert!(
+                atlas().provinces[province].contains(projection.inverse(feet)),
+                "Rome's {kind:?} ground anchor leaves Latium at zoom {zoom}"
+            );
         }
+        assert!(atlas().provinces[province].contains(projection.inverse(markers[4].center())));
+        let mut output = context.end_pass();
+        output.textures_delta.clear();
     }
-    let mut output = context.end_pass();
-    output.textures_delta.clear();
+}
+
+#[test]
+fn the_same_unit_is_the_same_size_in_rome_and_samnium() {
+    let context = egui::Context::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    for zoom in [3., 4., 6., 8.] {
+        let mut sizes = Vec::new();
+        for name in ["Latium", "Samnium"] {
+            let province = atlas().provinces.iter().position(|p| p.name == name).unwrap();
+            let mut world = MilitaryWorld::new(atlas().provinces.len());
+            world
+                .seed_unit(province, ForceOwner::Local(province), UnitType::HeavyInfantry)
+                .unwrap();
+            let projection = Projection {
+                origin: viewport.center(),
+                scale: 18. * zoom,
+                center: atlas().provinces[province].visual_center,
+            };
+            context.begin_pass(egui::RawInput::default());
+            let painter = context.layer_painter(egui::LayerId::background());
+            let markers = paint(
+                &painter,
+                &world,
+                &ProvinceOwnership::default(),
+                &projection,
+                zoom,
+                0.,
+                viewport,
+                &[],
+                &[],
+                &[],
+                &mut Anchors::default(),
+            );
+            assert_eq!(markers.len(), 2, "{name}'s army must be visible at zoom {zoom}");
+            sizes.push(markers[0].size());
+            let mut output = context.end_pass();
+            output.textures_delta.clear();
+        }
+        assert!(
+            (sizes[0] - sizes[1]).length() < 0.001,
+            "Province changed unit size at zoom {zoom}"
+        );
+    }
 }
 
 #[test]
@@ -386,7 +557,14 @@ fn stationary_armies_stay_inside_their_province_when_avoiding_cities() {
                         2
                     },
                 );
-                assert!(footprint_in_province(ground, province, &projection), "{name} zoom {zoom}");
+                if name == "Latium" {
+                    assert!(ground_anchors_in_province(point, size, 1, province, &projection));
+                } else {
+                    assert!(
+                        footprint_in_province(ground, province, &projection),
+                        "{name} zoom {zoom}"
+                    );
+                }
                 assert!(!landmarks.iter().any(|landmark| landmark.intersects(bounds)));
             } else {
                 assert!(zoom < 8., "{name} army should fit at close zoom");
@@ -480,6 +658,81 @@ fn infantry_idle_silhouettes_have_similar_map_dimensions() {
             assert!((soldier.0 / archer.0 - 1.).abs() < 0.16, "{kind:?} frame {frame} width");
             assert!((soldier.1 / archer.1 - 1.).abs() < 0.1, "{kind:?} frame {frame} height");
         }
+    }
+}
+
+#[test]
+fn light_infantry_matches_archer_stature_without_counting_its_spear() {
+    let infantry =
+        image::load_from_memory(IDLE_SHEETS[UnitType::LightInfantry as usize]).unwrap().to_rgba8();
+    let archer =
+        image::load_from_memory(IDLE_SHEETS[UnitType::Archers as usize]).unwrap().to_rgba8();
+    let stature = |sheet: &image::RgbaImage, frame: u32| {
+        let left = frame % frames::COLUMNS * frames::SIZE;
+        let top = frame / frames::COLUMNS * frames::SIZE;
+        // Both grounded figures are centered at x=96. This head/torso band
+        // excludes the taller spear on the infantry's left: total silhouette
+        // height previously concealed a soldier about 10% shorter than an archer.
+        let crown = (0..frames::BASELINE)
+            .find(|&y| (85..110).any(|x| sheet.get_pixel(left + x, top + y)[3] > 127))
+            .expect("centered soldier must have a visible head");
+        frames::BASELINE - crown + 1
+    };
+    for frame in 0..frames::COUNT as u32 {
+        let soldier_height = stature(&infantry, frame);
+        let archer_height = stature(&archer, frame);
+        let ratio = soldier_height as f32 / archer_height as f32;
+        assert!(
+            (0.94..=1.06).contains(&ratio),
+            "frame {frame}: light infantry body is {soldier_height}px versus archer {archer_height}px"
+        );
+    }
+}
+
+#[test]
+fn idle_motion_has_visible_body_travel_and_keeps_planted_feet() {
+    for kind in UnitType::ALL {
+        let sheet = image::load_from_memory(IDLE_SHEETS[kind as usize]).unwrap().to_rgba8();
+        let mut centers = Vec::with_capacity(frames::COUNT);
+        for frame in 0..frames::COUNT as u32 {
+            let left = frame % frames::COLUMNS * frames::SIZE;
+            let top = frame / frames::COLUMNS * frames::SIZE;
+            let (mut mass, mut weighted_x, mut weighted_y) = (0_f64, 0_f64, 0_f64);
+            // Follow the visible upper body, excluding grounded boots/wheels.
+            // This measures actual silhouette travel rather than byte changes
+            // caused by subpixel filtering or transparency alone.
+            for y in 0..frames::BASELINE - 40 {
+                for x in 0..frames::SIZE {
+                    let alpha = f64::from(sheet.get_pixel(left + x, top + y)[3]);
+                    mass += alpha;
+                    weighted_x += f64::from(x) * alpha;
+                    weighted_y += f64::from(y) * alpha;
+                }
+            }
+            assert!(mass > 0., "{} idle {frame} has no upper body", kind.name());
+            centers.push([weighted_x / mass, weighted_y / mass]);
+            for y in frames::BASELINE..frames::SIZE {
+                for x in 0..frames::SIZE {
+                    assert_eq!(
+                        sheet.get_pixel(left + x, top + y),
+                        sheet.get_pixel(x, y),
+                        "{} idle {frame} slides its planted feet at ({x}, {y})",
+                        kind.name()
+                    );
+                }
+            }
+        }
+        let excursion = centers
+            .iter()
+            .flat_map(|a| centers.iter().map(move |b| (a[0] - b[0]).hypot(a[1] - b[1])))
+            .fold(0_f64, f64::max);
+        // The previous 0.4–0.7px poses passed frame-uniqueness tests but looked
+        // stationary after map scaling. Demand meaningful travel across a cycle.
+        assert!(
+            excursion >= 2.,
+            "{} idle is visually static: only {excursion:.2}px of upper-body travel",
+            kind.name()
+        );
     }
 }
 

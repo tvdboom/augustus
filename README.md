@@ -44,9 +44,14 @@ Migration and class changes preserve total population.
 | **Influence** | Funds politics; earned from Nobles, buildings, wonders, political rank, and vassals |
 
 Plebeians and Slaves produce goods, with each worker allocated once by geographic potential and
-Resource Focus. Slaves have higher baseline productivity. Goods enter **global player stockpiles**;
-provincial storage buildings expand capacity. Overflow is discarded after monthly settlement,
-immediate transfers, and ownership changes. Sestertius and Influence have no storage cap.
+Resource Focus. Slaves have higher baseline productivity. Food output scales with productive workers,
+just like Metal and Stone. Slave revolts remove the entire local slave population and raise a hostile
+army proportional to the population removed.
+Revolts raise a red province alert and visible light infantry marked **Revolt**, including at wide zoom.
+Rebels immediately engage a present garrison; an unguarded province keeps the hostile army on the map.
+Goods enter **global player stockpiles**; provincial storage buildings expand capacity. Overflow is
+discarded after monthly settlement, immediate transfers, and ownership changes. Sestertius and Influence
+have no storage cap.
 Only Citizens and Plebeians pay taxes; Nobles and Slaves are exempt.
 
 ### Governance and policies
@@ -124,17 +129,36 @@ Exposure and blackmail consume evidence.
 
 Advance through **Quaestor → Aedile → Praetor → Censor → Consul → Augustus** by paying Influence
 and attracting loyal senators. Promotions are immediate, with at most one per player per month.
-In two-player games, the five promotions require **100/180/280/400/800 Influence** and
-**5/12/22/40/60 supporters**. Support requirements scale down with player count; Augustus always
+In two-player games, the five promotions require **200/360/560/800/1600 Influence** and
+**10/20/30/40/60 supporters**. Support requirements scale down with player count; Augustus always
 requires at least 51. There is no election calendar or nomination auction.
 
 The Senate has 100 persistent senators, initially neutral gray, split into five labeled factions:
 Aristocrats, Merchants, Provincials, Populares, and Military. Supporters use their player's color.
-Every month, faction preferences and individual priorities compare all players' economy, welfare,
-provinces, political standing and military career. Hover chamber sections to inspect the reasons.
-Faction outreach fades over six months; Sestertius bribes lease one senator for six months, with an
-escalating price and ten-senator cap. Exposed real scandals damage relevant factions for a year,
-cancel the target's bribery leases, and can cause senators to switch sides or return to neutral.
+All players start with zero faction confidence. Ordinary gameplay accumulates confidence monthly;
+each seat has ten shared internal points. Gains fill neutral seats first, then compete with rivals.
+A fully influenced seat approves of its player. For example, a fulfilled recurring trade route adds
+half a Merchant point per month, while wars hurt trade confidence. The UI shows approval counts,
+six political career cards, and five faction badges with distinct emblems. Hovering a badge shows
+positive/negative effect lists above the map banner; the chamber itself has no faction tooltips.
+The color legend below the chamber lists Neutral and every player with approval counts in parentheses.
+Exact faction confidence stays hidden.
+
+Click a senator for petitions, gifts, patronage, bribery, threats, murder, public banquets,
+discrediting a rival patron, or lobbying. **Lobby senator** costs 20 Influence upfront
+and 4 Influence per month, listed as **Senator lobbying** in the Influence hover. It grants gradual favor
+only in paid months and stops charging once the senator approves; you can end it at any time.
+Patronage and threats build confidence for six months; bribery acts
+immediately and appears as **Senator bribery** in the sestertii outflow. Risky actions have seeded
+detection chances and create discoverable evidence.
+Exposure causes a larger immediate loss; murder replaces the senator with a neutral newcomer and
+clears every player's confidence in that seat. Each seat permits one personal action per month.
+Personal actions use illustrated cards with separate titles, icons, and currency costs.
+
+Scandals have three severity levels and affect only one or two relevant factions. Exposure consumes
+real evidence and removes confidence immediately, rather than applying a recurring penalty.
+Harsh slave labor is severity I; famine and senator murder are severity III. Public scrutiny lasts
+one year, but lost confidence must be earned again.
 
 Two Consuls serve at most, for **24 months**, then automatically become Proconsuls. All departing
 Consuls must wait **12 months** and meet the full cost and support requirements to return.
@@ -156,11 +180,19 @@ military career separate from political office. Defeated NPC defenders do not au
 
 ### Movement and conquest
 
-Select cohorts, a destination, and optional waypoints in **Military** to preview the route and arrival
-time. Speed depends on the slowest unit, province size, terrain, and roads; access is checked at each
-crossing. Hostile arrivals stop for battle. Defeating independent defenders establishes occupation,
-allowing later Control gains; victory in an enemy-owned province transfers ownership. Peaceful
-military presence does not create occupation.
+Click your army on the map, then right-click a province to open orders beside the cursor. Use
+**All / Half / None**, per-type counts, or individual cohort checkboxes to choose the detachment;
+unselected troops stay behind. The menu previews travel time for **Move**, **Station / defend**
+(where permitted), and **Attack**. Attack declares hostility and engages defenders on arrival.
+Speed depends on the slowest selected unit, province size, terrain, and roads; access is checked
+at each crossing. Defeating independent defenders establishes occupation, allowing later Control
+gains. Enemy-owned provinces also require political Control before legal ownership changes.
+
+**Pressure** enters an independent province at peace without fighting or removing its defenders.
+It builds at most 2 Control per month, reduced by local resistance, up to a 40% ceiling, and costs
+3 Relation each month while stationed. It grants no occupation or automatic conquest. Removing
+the troops ends coercive access and gains. Rome and player-owned territory require ordinary
+stationing permission or an invasion.
 
 ### Battle plans and combat
 
@@ -169,3 +201,19 @@ Plans lock when battle begins; deployment uses available cohorts, terrain width,
 Unit matchups, tactic counters and composition, flanking, support protection, terrain, forts,
 Training, and Morale determine simultaneous combat rounds. Reserves replace routed troops.
 Pre-battle assessments show known hostile forces but keep enemy tactics hidden.
+
+Click a **BATTLE** marker or fighting troops to inspect the centered terrain-backed battle panel.
+Participants see both formations, locked tactics, morale, casualties, and a six-sided die per side
+for every simultaneous round. Four rounds resolve each month, spaced 0.75 seconds apart at normal
+speed; pausing and speed controls also apply to combat. New arrivals stay visible before the first
+round. Ordinary battles have a three-month
+deadline (about nine seconds at normal speed). Surrounded forces and Rome's defenders continue
+fighting until destroyed. Depleted and routed cohorts leave their slots, and reserves fill gaps.
+The panel retains the outcome and round history after resolution. Battle ambience and unit-family
+effects play while an active battle panel is open, respecting shared volume and mute controls.
+
+Victories add career victories, Renown and experience, improve Military faction confidence
+immediately, and contribute to recent-victory support. Defeats weaken that confidence. Direct
+ownership, vassal Control and independent Control shares contribute to the faction's provincial
+control factor. Military rank promotions still require army-size and victory milestones and an
+Influence payment; winning a battle advances those requirements.

@@ -245,6 +245,7 @@ pub(in crate::app) fn draw_governance_panel(
             campaign_widgets::Icon::Province,
             campaign_widgets::Icon::Spy,
             campaign_widgets::Icon::Notifications,
+            campaign_widgets::Icon::SpyUncoverScandals,
         ] {
             campaign_widgets::texture(context, tab);
         }
@@ -276,8 +277,10 @@ pub(in crate::app) fn draw_governance_panel(
     let province_search = &mut view.politics_province_search;
     let spy_search = &mut view.politics_spy_search;
     let notice_filters = &mut view.notice_filters;
+    let scandal_filters = &mut view.scandal_filters;
     let mut requested_event = None;
     let mut requested_notice = None;
+    let mut requested_scandal = None;
     let mut spy_message = None;
     let (changed, close_clicked, target) = governance_panel::show_overview(
         context,
@@ -316,6 +319,11 @@ pub(in crate::app) fn draw_governance_panel(
                     target
                 },
                 4 => {
+                    requested_scandal =
+                        campaign_scandals::overview(ui, &campaign, player, scandal_filters, scale);
+                    None
+                },
+                5 => {
                     requested_notice =
                         campaign_notices::overview(ui, &campaign, player, notice_filters, scale);
                     None
@@ -354,6 +362,19 @@ pub(in crate::app) fn draw_governance_panel(
         campaign_panel::open_notification(
             view,
             &notice,
+            &campaign,
+            &mut panels.province,
+            &mut map_view,
+        );
+        panels.governance.0 = false;
+        panels.close_click.0 = true;
+        play_click(&feedback.sound, &audio, &assets);
+    }
+    if let Some(scandal) = requested_scandal {
+        campaign_panel::open_scandal(
+            view,
+            scandal,
+            None,
             &campaign,
             &mut panels.province,
             &mut map_view,

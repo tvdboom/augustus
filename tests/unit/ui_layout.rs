@@ -172,6 +172,108 @@ fn spy_overview_lists_only_provinces_open_to_player_networks() {
     output.textures_delta.clear();
 }
 
+#[test]
+fn province_and_spy_directories_share_row_spacing_and_name_gaps_with_contained_meters() {
+    for (width, scale) in [(546.0, 1.0), (380.0, 1.0), (320.0, 0.85)] {
+        let mut campaign = fixture();
+        let mut measurements = Vec::new();
+        for spies in [false, true] {
+            let ctx = layout_context();
+            let mut search = String::new();
+            let mut bounds = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 1400.0),
+                    )),
+                    ..Default::default()
+                },
+                |root| {
+                    root.scope_builder(
+                        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 1400.0),
+                        )),
+                        |ui| {
+                            panel_style(ui, scale);
+                            if spies {
+                                politics_spies(ui, &mut campaign, 0, &[], &mut search, scale);
+                            } else {
+                                politics_provinces(ui, &campaign, 0, &[], &mut search, scale);
+                            }
+                            bounds = ui.min_rect();
+                        },
+                    );
+                },
+            );
+            assert!(bounds.width() <= width + 1.5, "Directory overflow at {width}px: {bounds:?}");
+            let text = |name: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == name => Some(text.pos),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("Missing {name}"))
+            };
+            let achaia = text("Achaia");
+            let africa = text("Africa Proconsularis");
+            let rows: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if (rect.rect.height() - 50.0 * scale).abs() < 0.1
+                            && rect.rect.width() > width * 0.8 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .collect();
+            let row = *rows
+                .iter()
+                .find(|row| row.contains(achaia))
+                .expect("Province name stays inside its row");
+            measurements.push((achaia.x - row.left(), africa.y - achaia.y));
+            if !spies {
+                assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "CONTROL" | "RELATION"))));
+                let meters: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if (rect.rect.height() - 24.0 * scale).abs() < 0.1
+                                && rect.rect.width() > 50.0 * scale =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                assert!(!meters.is_empty());
+                for meter in meters {
+                    assert!(
+                        rows.iter().any(|row| row.contains_rect(meter)),
+                        "Meter escaped its row: {meter:?}"
+                    );
+                }
+            }
+            output.textures_delta.clear();
+        }
+        assert!(
+            (measurements[0].0 - measurements[1].0).abs() < 0.1,
+            "Province names need the same gap after their owner marker"
+        );
+        assert!(
+            (measurements[0].1 - measurements[1].1).abs() < 0.1,
+            "Province rows need the same vertical spacing as spies"
+        );
+    }
+}
+
 fn render_spy_overview(
     ctx: &egui::Context,
     campaign: &mut Campaign,
@@ -272,6 +374,15 @@ fn spy_overview_icon_actions_deploy_recall_and_flee_without_opening_province() {
         output.textures_delta.clear();
     }
     assert_eq!(campaign.espionage.missions[0].recall_month, Some(6));
+    for (month, label) in [(0, "6 months"), (5, "1 month")] {
+        campaign.economy.month = month;
+        let (next, _, _) = render_spy_overview(&ctx, &mut campaign, 0.55, vec![]);
+        output = next;
+        let countdown = spy_text_position(&output, label);
+        let row = overview_spy_row(&output);
+        assert!(row.contains(countdown), "Recall countdown must stay inside its spy row");
+        output.textures_delta.clear();
+    }
     let row = overview_spy_row(&output);
     let flee = egui::pos2(row.right() - 21.0, row.center().y);
     for (time, pressed) in [(0.6, true), (0.7, false)] {
@@ -487,9 +598,28 @@ fn spy_buttons_deploy_disable_explain_and_recall_without_switching() {
         assert_eq!(campaign.espionage.missions.len(), 1);
         assert_eq!(campaign.espionage.missions[0].recall_month, Some(6));
         assert_eq!(campaign.actors[0].influence, 990.0, "Recall does not refund deployment");
-        output = render_spy_network(&ctx, &mut campaign, 2, width, 2.1, vec![]);
-        spy_text_position(&output, "Recall in 6 months · Mission and upkeep continue");
-        output.textures_delta.clear();
+        for month in 0..6 {
+            campaign.economy.month = month;
+            output =
+                render_spy_network(&ctx, &mut campaign, 2, width, 2.1 + f64::from(month), vec![]);
+            let remaining = 6 - month;
+            let label = format!(
+                "{remaining} {}",
+                if remaining == 1 {
+                    "month"
+                } else {
+                    "months"
+                }
+            );
+            let countdown = spy_text_position(&output, &label);
+            let flee = spy_text_position(&output, "Flee");
+            assert!((countdown.y - flee.y).abs() < 5.0);
+            assert!(countdown.x < flee.x);
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Recall"
+                    || text.galley.job.text.contains("Mission and upkeep continue"))));
+            output.textures_delta.clear();
+        }
     }
 }
 
@@ -659,28 +789,32 @@ fn unavailable_spy_mission_explains_its_restriction_below_the_effect() {
 #[test]
 fn recall_and_flee_buttons_have_matching_dimensions() {
     let ctx = layout_context();
-    let mut sizes = None;
-    let mut output = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1000.0, 720.0),
-            )),
-            ..Default::default()
-        },
-        |ui| {
-            ui.horizontal(|ui| {
-                let recall = spy_recall_button(ui, 1.0, true);
-                let flee = spy_flee_button(ui, 1.0);
-                sizes = Some((recall.rect.size(), flee.rect.size()));
-            });
-        },
-    );
-    let (recall, flee) = sizes.unwrap();
-    output.textures_delta.clear();
-    assert_eq!(recall, flee);
-    assert_eq!(recall.x, 98.0);
-    assert!(recall.y >= 30.0);
+    for remaining in [None, Some(6), Some(1)] {
+        let mut sizes = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 720.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                panel_style(ui, 1.0);
+                ui.horizontal(|ui| {
+                    let recall = spy_recall_button(ui, 1.0, remaining);
+                    let flee = spy_flee_button(ui, 1.0);
+                    assert_eq!(recall.enabled(), remaining.is_none());
+                    sizes = Some((recall.rect.size(), flee.rect.size()));
+                });
+            },
+        );
+        let (recall, flee) = sizes.unwrap();
+        output.textures_delta.clear();
+        assert_eq!(recall, flee);
+        assert_eq!(recall.x, 98.0);
+        assert!(recall.y >= 30.0);
+    }
 }
 
 #[test]
@@ -1150,9 +1284,22 @@ fn overview_tabs_keep_governance_and_open_the_moved_directories() {
             _ => None,
         })
         .collect();
-    for label in ["Overview", "Governance", "Events", "Provinces", "Spies", "Food Rations"] {
+    for label in [
+        "Overview",
+        "Policies",
+        "Events",
+        "Provinces",
+        "Spies",
+        "Scandals",
+        "Notifications",
+        "Food Rations",
+    ] {
         assert!(texts.iter().any(|text| text.galley.job.text == label), "Missing {label}");
     }
+    let tab_x =
+        |label: &str| texts.iter().find(|text| text.galley.job.text == label).unwrap().pos.x;
+    assert!(tab_x("Spies") < tab_x("Scandals"));
+    assert!(tab_x("Scandals") < tab_x("Notifications"));
     let spies = texts.iter().find(|text| text.galley.job.text == "Spies").unwrap();
     let position = spies.galley.rect.translate(spies.pos.to_vec2()).center();
     for pressed in [true, false] {
@@ -1173,6 +1320,30 @@ fn overview_tabs_keep_governance_and_open_the_moved_directories() {
         &shape.shape,
         egui::Shape::Text(text) if text.galley.job.text == "Directory 3"
     )));
+    let scandals = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Scandals" => {
+                Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+            },
+            _ => None,
+        })
+        .unwrap();
+    for pressed in [true, false] {
+        render(vec![
+            egui::Event::PointerMoved(scandals),
+            egui::Event::PointerButton {
+                pos: scandals,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+    }
+    let (_, shown, active) = render(vec![]);
+    assert_eq!(active, 4);
+    assert_eq!(shown, Some(4));
 }
 
 #[test]
@@ -1180,23 +1351,27 @@ fn global_panel_headers_use_menu_art_and_senate_has_no_directory_tabs() {
     let ctx = layout_context();
     let campaign = fixture();
     let (icons, _) = hover_card_textures(&ctx);
-    for (tab, title) in [
+    for (index, (tab, title)) in [
         (CampaignTab::Military, "Military"),
         (CampaignTab::Trade, "Trade"),
-        (CampaignTab::Senate, "Senate"),
-    ] {
+        (CampaignTab::Senate, "Rome"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut view = CampaignUi {
             open: Some(tab),
             ..Default::default()
         };
-        let mut render = |time| {
+        let mut render = |time, events| {
             ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1200.0, 900.0),
                     )),
-                    time: Some(time),
+                    time: Some(time + index as f64 * 5.0),
+                    events,
                     ..Default::default()
                 },
                 |_| {
@@ -1220,9 +1395,9 @@ fn global_panel_headers_use_menu_art_and_senate_has_no_directory_tabs() {
                 },
             )
         };
-        let mut first = render(0.0);
+        let mut first = render(0.0, vec![]);
         first.textures_delta.clear();
-        let mut output = render(0.1);
+        let mut output = render(0.1, vec![]);
         output.textures_delta.clear();
         assert!(
             output.shapes.iter().any(|shape| matches!(
@@ -1243,6 +1418,37 @@ fn global_panel_headers_use_menu_art_and_senate_has_no_directory_tabs() {
         if tab == CampaignTab::Senate {
             assert!(!texts.contains(&"Provinces"));
             assert!(!texts.contains(&"Spies"));
+        }
+        let heading = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == title => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                },
+                _ => None,
+            })
+            .unwrap();
+        for frame in 1..=4 {
+            let mut hover = render(
+                frame as f64,
+                if frame == 1 {
+                    vec![egui::Event::PointerMoved(heading)]
+                } else {
+                    vec![]
+                },
+            );
+            hover.textures_delta.clear();
+            assert_eq!(
+                hover
+                    .shapes
+                    .iter()
+                    .filter(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == title))
+                    .count(),
+                1,
+                "{title} header must not create a duplicate hover tooltip"
+            );
         }
     }
 }
@@ -2622,6 +2828,101 @@ fn full_control_diplomacy_shows_spy_and_political_actions() {
 }
 
 #[test]
+fn insult_cards_accept_npcs_and_show_the_target_effect_and_yearly_cooldown() {
+    for (width, scale) in [(500.0, 1.0), (380.0, 0.85)] {
+        for province in [1, 2, 3, 4] {
+            let ctx = layout_context();
+            ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+            let mut campaign = fixture();
+            let mut view = CampaignUi::default();
+            let mut pointer = None;
+            let mut message = None;
+            let description = if province == 1 {
+                "Their provinces lose 10 Relation toward you. Once per year."
+            } else {
+                "This province loses 10 Relation toward you. Once per year."
+            };
+            for (frame, time) in
+                [0.0, 0.1, 1.1, 1.2, 1.3, 1.4, 1.5, 2.5, 2.6].into_iter().enumerate()
+            {
+                let events = match frame {
+                    1 => vec![egui::Event::PointerMoved(pointer.unwrap())],
+                    4 | 5 => vec![egui::Event::PointerButton {
+                        pos: pointer.unwrap(),
+                        button: egui::PointerButton::Primary,
+                        pressed: frame == 4,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    6 => vec![egui::Event::PointerMoved(pointer.unwrap() + egui::vec2(1.0, 1.0))],
+                    _ => vec![],
+                };
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 1000.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |root| {
+                        root.scope_builder(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                egui::pos2(20.0, 20.0),
+                                egui::vec2(width, 900.0),
+                            )),
+                            |ui| {
+                                panel_style(ui, scale);
+                                message = diplomacy(
+                                    ui,
+                                    &mut campaign,
+                                    province,
+                                    0,
+                                    &PLAYER_COLORS[..2],
+                                    &mut view,
+                                )
+                                .or(message.take());
+                            },
+                        );
+                    },
+                );
+                if frame == 0 {
+                    pointer = Some(spy_text_position(&output, "Send insult"));
+                }
+                let labels: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if frame == 3 || frame == 8 {
+                    assert!(labels.contains(&description), "Missing insult effect at frame {frame}, province {province}, width {width}: {labels:?}");
+                    assert!(!labels.iter().any(|label| label.contains("requires")));
+                }
+                if frame == 8 {
+                    assert!(
+                        labels.contains(&"Try again in 12 months."),
+                        "Missing cooldown: {labels:?}"
+                    );
+                }
+                output.textures_delta.clear();
+            }
+            let expected = if province == 1 {
+                "Player 2 insulted: −10 Relation in their provinces.".to_owned()
+            } else {
+                format!("{} insulted: −10 Relation.", campaign.economy.provinces[province].name)
+            };
+            assert_eq!(message, Some(expected), "Insult card must accept province {province}");
+            assert_eq!(campaign.politics[province].relation(0), 40.0);
+            assert_eq!(campaign.diplomacy_used.get(&(0, true)), Some(&0));
+        }
+    }
+}
+
+#[test]
 fn own_diplomacy_shows_unboxed_player_rows_and_immediate_access_notices() {
     let ctx = layout_context();
     ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
@@ -3716,12 +4017,8 @@ fn province_notice_cards_filter_history_and_click_through_to_the_related_panel()
                 |root| {
                     root.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                         panel_style(ui, 1.0);
-                        if let Some(notice) = egui::ScrollArea::vertical()
-                            .max_height(rect.height())
-                            .show(ui, |ui| {
-                                province_notifications(ui, &campaign, 0, 0, &mut filters, 1.0)
-                            })
-                            .inner
+                        if let Some(notice) =
+                            province_notifications(ui, &campaign, 0, 0, &mut filters, 1.0)
                         {
                             selected = Some(notice);
                         }
@@ -4038,7 +4335,7 @@ fn military_panel_actions_drive_paid_drafting_movement_locked_battle_and_retreat
             &mut c,
             0,
             0,
-            Action::Move {
+            Action::Attack {
                 destination: 1,
                 units: vec![unit],
                 route: vec![1],
@@ -4098,7 +4395,8 @@ fn military_panel_actions_drive_paid_drafting_movement_locked_battle_and_retreat
 fn senate_appointment_notice_opens_the_chamber_for_each_local_player() {
     use super::super::campaign_notifications::{NoticeAction, NoticeKind};
     let mut c = fixture();
-    for senator in c.senate.senators.iter_mut().take(12) {
+    let required = c.senate_config.requirements(c.actors[0].rank, c.actors.len()).unwrap().senators;
+    for senator in c.senate.senators.iter_mut().take(required) {
         senator.allegiance = Some(0);
     }
     let event = c.senate.promote(0, &mut c.actors, &c.senate_config).unwrap();

@@ -3,6 +3,7 @@
 use super::{campaign::Campaign, flow_panel, ProvinceOwnership};
 use crate::game::economy::happiness_output_multiplier;
 use crate::game::politics::diplomacy::{distance_multiplier, PoliticalState};
+use crate::game::politics::senate::SenatorAction;
 use bevy_egui::egui;
 
 pub(in crate::app) fn show(
@@ -32,8 +33,8 @@ pub(in crate::app) fn show(
                 .sum()
         },
     );
-    let (wonders, buildings, office, vassals, diplomatic_support) = campaign.map_or(
-        (0.0, 0.0, 0.0, 0.0, 0.0),
+    let (wonders, buildings, office, military, vassals, diplomatic_support) = campaign.map_or(
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         |campaign| {
             let owned = campaign
                 .economy
@@ -51,6 +52,10 @@ pub(in crate::app) fn show(
                 .sum();
             let office = campaign.actors.get(player).map_or(0.0, |actor| {
                 campaign.senate_config.rank_income(actor.rank)
+            });
+            let military = campaign.actors.get(player).map_or(0.0, |_| {
+                let rank = campaign.military.rank(crate::game::military::ForceOwner::Player(player));
+                campaign.military.config.rank_influence[rank as usize]
             });
             let vassals = campaign
                 .politics
@@ -77,7 +82,7 @@ pub(in crate::app) fn show(
                     Some(f64::from(relation + control) * campaign.diplomacy_config.monthly_influence * distance)
                 })
                 .sum();
-            (wonders, buildings, office, vassals, diplomatic_support)
+            (wonders, buildings, office, military, vassals, diplomatic_support)
         },
     );
     let income = [
@@ -85,10 +90,20 @@ pub(in crate::app) fn show(
         ("Wonders", wonders),
         ("City buildings", buildings),
         ("Political office", office),
+        ("Military rank", military),
         ("Vassals", vassals),
     ];
     // Influence trading is currently disabled by the default trade configuration.
-    let outflow = [("Diplomatic support", diplomatic_support), ("Trades", 0.0)];
+    let senator_lobbying_upfront =
+        campaign.map_or(0.0, |campaign| campaign.senate.spent_on(player, SenatorAction::Lobby));
+    let senator_lobbying = campaign
+        .map_or(0.0, |campaign| campaign.senate.outreach_upkeep(player, &campaign.senate_config));
+    let outflow = [
+        ("Diplomatic support", diplomatic_support),
+        ("Senator lobbying", senator_lobbying),
+        ("Senator lobbying (upfront)", senator_lobbying_upfront),
+        ("Trades", 0.0),
+    ];
     flow_panel::show(
         context,
         screen,

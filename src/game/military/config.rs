@@ -135,6 +135,8 @@ pub struct MilitaryConfig {
     pub rank_thresholds: [f64; 4],
     /// Rank bonuses to combat morale.
     pub rank_morale: [f64; 4],
+    /// Non-stacking monthly Influence income from the current military rank.
+    pub rank_influence: [f64; 4],
     /// Rank multipliers to occupation/garrison strength.
     pub rank_control: [f64; 4],
     /// Structural Military Senate-bloc score, never fixed votes.
@@ -145,6 +147,12 @@ pub struct MilitaryConfig {
     pub garrison_half_saturation: f64,
     /// Monthly hostile occupation relation loss.
     pub occupation_relation_loss: f64,
+    /// Independent control ceiling for a coercive presence without combat.
+    pub pressure_control_ceiling: f64,
+    /// Maximum monthly control from pressure, reduced by local resistance.
+    pub pressure_monthly_control: f64,
+    /// Monthly relation loss while coercive troops remain stationed.
+    pub pressure_relation_loss: f64,
     /// Province crossing cost by terrain.
     pub terrain_movement: [f64; 7],
     /// Additional road speed per level.
@@ -357,7 +365,7 @@ impl Default for MilitaryConfig {
             base_manpower_damage: 0.055,
             base_morale_damage: 8.0,
             rounds_per_month: 4,
-            maximum_battle_months: 6,
+            maximum_battle_months: 3,
             minimum_retreat_months: 1,
             starting_training: 10.,
             passive_training: 1.,
@@ -376,11 +384,15 @@ impl Default for MilitaryConfig {
             npc_stationing_relation: 80.,
             rank_thresholds: [0., 150., 400., 900.],
             rank_morale: [0., 5., 10., 15.],
+            rank_influence: [0., 5., 10., 15.],
             rank_control: [1., 1.10, 1.20, 1.30],
             rank_senate: [0., 8., 16., 25.],
             maximum_garrison_control: 5.,
             garrison_half_saturation: 20.,
             occupation_relation_loss: 2.,
+            pressure_control_ceiling: 40.,
+            pressure_monthly_control: 2.,
+            pressure_relation_loss: 3.,
             terrain_movement: [0.90, 1., 1.20, 1.25, 1.60, 1.30, 1.50],
             road_speed_bonus: 0.20,
             minimum_road_cost: 0.0,

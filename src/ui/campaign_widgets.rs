@@ -51,6 +51,37 @@ pub(super) fn sestertius_unit(amount: f64) -> &'static str {
     }
 }
 
+/// Both careers explain eligibility and rewards with the same readable hierarchy.
+pub(super) fn rank_tooltip(
+    ui: &mut egui::Ui,
+    scale: f32,
+    requirements: &[(bool, String)],
+    bonuses: &[String],
+) {
+    let size = 14.0 * scale;
+    ui.set_max_width(340.0 * scale);
+    ui.label(egui::RichText::new("Requirements").strong().size(size));
+    if requirements.is_empty() {
+        ui.label(egui::RichText::new("• None").size(size));
+    }
+    for (met, text) in requirements {
+        let color = if *met {
+            egui::Color32::from_rgb(32, 116, 58)
+        } else {
+            egui::Color32::from_rgb(166, 44, 34)
+        };
+        ui.add(
+            egui::Label::new(egui::RichText::new(format!("• {text}")).size(size).color(color))
+                .wrap(),
+        );
+    }
+    ui.separator();
+    ui.label(egui::RichText::new("Bonuses").strong().size(size));
+    for bonus in bonuses {
+        ui.add(egui::Label::new(egui::RichText::new(format!("• {bonus}")).size(size)).wrap());
+    }
+}
+
 /// Semantic artwork shared by tables, action controls and compact statistics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::app) enum Icon {

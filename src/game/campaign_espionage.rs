@@ -80,7 +80,7 @@ impl Campaign {
                         conditions.push((ScandalKind::LowFood, Severity::Minor));
                     }
                     if province.policies.slave_labor == SlaveLabor::Harsh {
-                        conditions.push((ScandalKind::HarshLabor, Severity::Medium));
+                        conditions.push((ScandalKind::HarshLabor, Severity::Minor));
                     }
                     if province.happiness[1] < 25.0 {
                         conditions.push((ScandalKind::UnhappyCitizens, Severity::Medium));
@@ -89,14 +89,7 @@ impl Campaign {
                         conditions.push((ScandalKind::UnhappyPlebeians, Severity::Medium));
                     }
                     if supply < 0.99 {
-                        conditions.push((
-                            ScandalKind::Famine,
-                            if supply < 0.5 {
-                                Severity::Major
-                            } else {
-                                Severity::Medium
-                            },
-                        ));
+                        conditions.push((ScandalKind::Famine, Severity::Major));
                     }
                     if supply < 0.25 {
                         conditions.push((ScandalKind::MassStarvation, Severity::Major));
@@ -167,7 +160,7 @@ impl Campaign {
                 EspionageEvent::Withdrawn(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Warning, NoticeKind::SpyWithdrawn,
                     format!("Spy withdrawn from {}", self.economy.provinces[province].name), "The network could not pay maintenance or the province was no longer a foreign target."),
                 EspionageEvent::Recalled(player, province) => self.notifications.province_notice(player, province, self.economy.month, NoticeSeverity::Info, NoticeKind::SpyWithdrawn,
-                    format!("Spy returned from {}", self.economy.provinces[province].name), "The six-month recall is complete. No additional consequences."),
+                    format!("Spy recalled from {}", self.economy.provinces[province].name), ""),
                 EspionageEvent::Detected(player, province) => {
                     let owner = self.economy.provinces[province].owner;
                     let consequence = owner.map_or_else(|| format!("Relation toward us decreased by {:.0}.", self.espionage_config.npc_detection_relation_loss), |victim| format!("Player {} gained an espionage scandal against us.", victim + 1));

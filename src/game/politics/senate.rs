@@ -1,4 +1,4 @@
-//! Persistent individual loyalties: monthly realignment and immediate support-gated offices.
+//! Accumulating, contested faction confidence and actions on individual Senate seats.
 use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer, PoliticalRank, PoliticalRng};
 
 /// Public factions with distinct preferences and contiguous chamber sections.
@@ -36,11 +36,11 @@ impl Bloc {
     /// Short explanation of the faction's actual structural preferences.
     pub fn preferences(self) -> &'static str {
         match self {
-            Self::Aristocrats => "Happy nobles, political standing, Forums and wonders. Influence prestige has diminishing returns.",
+            Self::Aristocrats => "Happy nobles, political standing, Forums and wonders build confidence each month.",
             Self::Merchants => "Profitable income, reliable delivered trade, Markets and secure resources.",
             Self::Provincials => "Happy free populations, friendly stable vassals and provincial trade. High tribute drives them away.",
             Self::Populares => "Happy citizens and plebeians, generous food and low taxes. Famine and harsh labor drive them away.",
-            Self::Military => "Strong trained armies, military career rank and recent victories. Defeats weaken support.",
+            Self::Military => "Strong trained armies, military career rank, victories and provincial control. Defeats weaken support.",
         }
     }
 }
@@ -62,50 +62,61 @@ pub struct SenateConfig {
     pub loss_grace_months: u32,
     /// Influence price of faction outreach.
     pub court_cost: f64,
-    /// Initial attraction points from non-stacking faction outreach.
+    /// Monthly confidence from non-stacking faction outreach.
     pub court_bonus: f64,
-    /// Lifetime of outreach, fading linearly.
+    /// Lifetime of monthly outreach.
     pub court_months: u32,
-    /// Coin price of the first temporary loyalty lease.
-    pub bribe_base_coin: f64,
-    /// Exclusive lifetime of a senator's bribery lease.
-    pub bribe_months: u32,
-    /// Maximum number of simultaneously bribed senators per player.
-    pub bribe_cap: usize,
-    /// Lifetime of exposed accusations, fading linearly.
+    /// Lifetime of public scrutiny after a scandal's one-time confidence loss.
     pub scandal_months: u32,
+    /// Confidence needed to fill one seat. Confidence is internal, never displayed.
+    pub seat_confidence: f64,
+    /// Costs in SenatorAction order; SenatorAction::currency selects the wallet.
+    pub action_costs: [f64; 9],
+    /// Detection probabilities in SenatorAction order.
+    pub action_risks: [f64; 9],
+    /// Influence paid each month while lobbying an individual senator.
+    pub senator_outreach_upkeep: f64,
 }
 impl Default for SenateConfig {
     fn default() -> Self {
         Self {
-            promotion_costs: [100.0, 180.0, 280.0, 400.0, 800.0],
-            rank_influence: [0.0, 1.0, 2.0, 3.0, 4.0, 0.0],
+            promotion_costs: [500.0, 1000.0, 1500.0, 2000.0, 3000.0],
+            rank_influence: [0.0, 5.0, 10.0, 15.0, 20.0, 25.0],
             bloc_sizes: [20; 5],
             consul_term: 24,
             consul_cooldown: 12,
             loss_grace_months: 3,
             court_cost: 20.0,
-            court_bonus: 8.0,
+            court_bonus: 1.0,
             court_months: 6,
-            bribe_base_coin: 80.0,
-            bribe_months: 6,
-            bribe_cap: 10,
             scandal_months: 12,
+            seat_confidence: 10.0,
+            action_costs: [10.0, 40.0, 25.0, 80.0, 50.0, 180.0, 70.0, 35.0, 20.0],
+            action_risks: [0.0, 0.0, 0.0, 0.20, 0.30, 0.40, 0.0, 0.20, 0.0],
+            senator_outreach_upkeep: 4.0,
         }
     }
 }
 impl SenateConfig {
     /// Enforce chamber, duration and cost invariants before simulation.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.bloc_sizes.iter().map(|n| usize::from(*n)).sum::<usize>() != 100 {
+        if self.bloc_sizes.contains(&0)
+            || self.bloc_sizes.iter().map(|n| usize::from(*n)).sum::<usize>() != 100
+        {
             return Err("The Senate must contain exactly 100 senators.");
+        }
+        if !self.seat_confidence.is_finite()
+            || self.seat_confidence <= 0.0
+            || self.action_costs.iter().any(|n| !n.is_finite() || *n <= 0.0)
+            || self.action_risks.iter().any(|n| !n.is_finite() || !(0.0..=1.0).contains(n))
+        {
+            return Err("Senator confidence, costs and risks must be valid.");
         }
         if [
             self.consul_term,
             self.consul_cooldown,
             self.loss_grace_months,
             self.court_months,
-            self.bribe_months,
             self.scandal_months,
         ]
         .contains(&0)
@@ -115,7 +126,7 @@ impl SenateConfig {
         if self
             .promotion_costs
             .iter()
-            .chain([&self.court_cost, &self.court_bonus, &self.bribe_base_coin])
+            .chain([&self.court_cost, &self.court_bonus, &self.senator_outreach_upkeep])
             .any(|n| !n.is_finite() || *n <= 0.0)
         {
             return Err("Political costs and bonuses must be finite and positive.");
@@ -138,7 +149,7 @@ impl SenateConfig {
         };
         let i = next.ladder_index() - 1;
         let scale = (2.0 / players.clamp(2, 8) as f64).sqrt();
-        let senators = (([5.0, 12.0, 22.0, 40.0, 60.0][i] * scale).round() as usize).max(
+        let senators = (([10.0, 20.0, 30.0, 40.0, 60.0][i] * scale).round() as usize).max(
             if next == PoliticalRank::Augustus {
                 51
             } else {
@@ -222,6 +233,12 @@ pub struct PoliticalProfile {
     pub recent_victories: f64,
     /// Military career rank index, 0..3.
     pub military_rank: f64,
+    /// Active, fulfilled recurring routes; each adds half a point per month.
+    pub active_trade_routes: f64,
+    /// Declared wars, including independent provinces.
+    pub active_wars: f64,
+    /// Directly controlled provinces.
+    pub controlled_provinces: f64,
 }
 
 impl Default for PoliticalProfile {
@@ -252,20 +269,23 @@ impl Default for PoliticalProfile {
             military_strength: 0.0,
             recent_victories: 0.0,
             military_rank: 0.0,
+            active_trade_routes: 0.0,
+            active_wars: 0.0,
+            controlled_provinces: 0.0,
         }
     }
 }
 
-/// Named contribution in percentage points for transparent hover explanations.
+/// A recurring confidence modifier. The UI shows its direction, never its value.
 #[derive(Debug, Clone)]
 pub struct SupportReason {
     /// Concise explanation of the driver.
     pub label: &'static str,
-    /// Signed percentage-point support contribution.
+    /// Signed monthly confidence contribution.
     pub points: f64,
 }
 
-/// One stable senator with individual emphasis within a public faction.
+/// One stable seat with shared confidence capacity, initially entirely neutral.
 #[derive(Debug, Clone)]
 pub struct Senator {
     /// Stable chamber identity, never changed during a match.
@@ -274,18 +294,104 @@ pub struct Senator {
     pub bloc: Bloc,
     /// Player currently supported, or neutral gray.
     pub allegiance: Option<PlayerId>,
-    /// Temporary loyalty override, visibly marked by a gold ring.
-    pub bribe: Option<SenatorBribe>,
-    preferences: [f64; 7],
-    threshold: f64,
+    /// Active personal arrangement, visibly marked by a gold ring.
+    pub arrangement: Option<SenatorArrangement>,
+    /// Changes when a murdered senator is replaced, while the seat ID stays stable.
+    pub generation: u32,
+    confidence: Vec<f64>,
+    acted_at: Option<u32>,
 }
 #[derive(Debug, Clone, Copy)]
-/// An exclusive temporary loyalty lease.
-pub struct SenatorBribe {
-    /// Player who paid for the senator's support.
+/// A non-stacking personal relationship that adds confidence each month.
+pub struct SenatorArrangement {
+    /// Player who initiated the relationship.
     pub player: PlayerId,
+    /// Patronage, coercion or paid lobbying.
+    pub action: SenatorAction,
     /// Exclusive expiry month.
     pub until: u32,
+    /// Monthly lobbying only grants confidence after this month's Influence was paid.
+    pub paid_at: Option<u32>,
+}
+/// All options available from an individual seat's action panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenatorAction {
+    /// A modest one-time appeal paid with Influence.
+    Petition,
+    /// A lawful one-time gift paid with coin.
+    Gift,
+    /// A fixed six-month relationship paid with Influence.
+    Patronage,
+    /// Immediate confidence purchased with coin, with a risk of exposure.
+    Bribe,
+    /// Six months of coercive confidence gains with political downsides.
+    Threaten,
+    /// Kill and replace the member, clearing all confidence in the seat.
+    Assassinate,
+    /// A public feast helping this senator and the Populares.
+    Banquet,
+    /// Weaken this senator's rival patron.
+    Discredit,
+    /// Gradual lobbying funded by upfront and monthly Influence.
+    Lobby,
+}
+impl SenatorAction {
+    /// Stable ordering shared by prices, risks and the individual action panel.
+    pub const ALL: [Self; 9] = [
+        Self::Petition,
+        Self::Gift,
+        Self::Patronage,
+        Self::Bribe,
+        Self::Threaten,
+        Self::Assassinate,
+        Self::Banquet,
+        Self::Discredit,
+        Self::Lobby,
+    ];
+    /// Public action name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Petition => "Petition",
+            Self::Gift => "Send a gift",
+            Self::Patronage => "Offer patronage",
+            Self::Bribe => "Bribe",
+            Self::Threaten => "Threaten",
+            Self::Assassinate => "Murder",
+            Self::Banquet => "Host a public banquet",
+            Self::Discredit => "Discredit their patron",
+            Self::Lobby => "Lobby senator",
+        }
+    }
+    /// Explain the action without revealing internal confidence amounts.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Petition => "Make your case. A modest immediate improvement in confidence.",
+            Self::Gift => "Send a lawful gift. A larger immediate improvement in confidence.",
+            Self::Patronage => "Build confidence monthly for six months, until this senator fully approves of you.",
+            Self::Bribe => "Buy this senator's confidence immediately. Exposure costs far more faction confidence than you gain.",
+            Self::Threaten => "Gain confidence monthly for six months, until this senator approves of you. Coercion hurts your standing with Aristocrats and Populares.",
+            Self::Assassinate => "Remove every player's confidence in this seat. A neutral replacement arrives immediately. Exposure creates a severity III scandal.",
+            Self::Banquet => "Improve this senator's confidence and your standing with the Populares immediately.",
+            Self::Discredit => "Weaken this senator's current patron immediately. A failed smear creates a severity II scandal.",
+            Self::Lobby => "Spend Influence to begin lobbying, then pay Influence each month to build favor gradually. Payments stop once this senator approves of you; unpaid months grant no favor.",
+        }
+    }
+    /// Currency spent by this action.
+    pub fn currency(self) -> Currency {
+        if matches!(self, Self::Petition | Self::Patronage | Self::Discredit | Self::Lobby) {
+            Currency::Influence
+        } else {
+            Currency::Coin
+        }
+    }
+}
+#[derive(Debug, Clone, Copy)]
+/// Recorded outcome of a paid personal action.
+pub struct SenatorActionOutcome {
+    /// Whether the misconduct was publicly exposed immediately.
+    pub caught: bool,
+    /// Even undiscovered misconduct can later be found by a spy network.
+    pub misconduct: Option<(super::espionage::ScandalKind, super::espionage::Severity)>,
 }
 #[derive(Debug, Clone)]
 struct Outreach {
@@ -294,11 +400,11 @@ struct Outreach {
     until: u32,
 }
 #[derive(Debug, Clone)]
-/// An exposed real scandal with faction-specific, fading attraction penalties.
+/// Public scrutiny retained after its immediate confidence loss has been applied.
 pub struct Accusation {
     /// Player whose misconduct was exposed.
     pub target: PlayerId,
-    /// Attraction-point penalties in faction order.
+    /// Immediate confidence losses in faction order; never applied again monthly.
     pub penalties: [f64; 5],
     /// Exclusive expiry month.
     pub until: u32,
@@ -330,44 +436,35 @@ pub struct SenateState {
     outreach: Vec<Outreach>,
     low_support: Vec<u32>,
     used_actions: Vec<(PlayerId, Bloc, bool)>,
+    rng: PoliticalRng,
+    seat_confidence: f64,
+    action_spending: Vec<(PlayerId, SenatorAction, f64)>,
 }
 impl SenateState {
     /// A public invasion without casus belli damages faction support immediately.
     pub fn record_unjustified_attack(&mut self, player: PlayerId, config: &SenateConfig) {
         use super::espionage::{ScandalKind, Severity};
-        self.accusations.push(Accusation {
-            target: player,
-            penalties: ScandalKind::FriendlyAttack
-                .bloc_penalties(Severity::Major)
-                .map(|value| value * 100.0),
-            until: self.month.saturating_add(config.scandal_months),
-        });
+        self.apply_scandal(player, ScandalKind::FriendlyAttack, Severity::Major, config);
     }
 
-    /// Breaking a trade route immediately damages Merchant support for six months.
+    /// Breaking a trade route immediately removes ten Merchant confidence points.
     pub fn record_trade_breach(&mut self, player: PlayerId) {
+        self.remove_confidence(player, Bloc::Merchants, 10.0);
         self.accusations.push(Accusation {
             target: player,
-            penalties: [0.0, 8.0, 0.0, 0.0, 0.0],
+            penalties: [0.0, 10.0, 0.0, 0.0, 0.0],
             until: self.month.saturating_add(6),
         });
-        if let Some(senator) = self
-            .senators
-            .iter_mut()
-            .find(|senator| senator.bloc == Bloc::Merchants && senator.allegiance == Some(player))
-        {
-            senator.allegiance = None;
-        }
+        self.review_allegiances();
     }
 
-    /// Initialize a default chamber with neutral loyalties and seeded preferences.
+    /// Initialize a default chamber with zero confidence for every player.
     pub fn new(seed: u64) -> Self {
         Self::with_config(seed, &SenateConfig::default())
     }
     /// Initialize a chamber from the authoritative match configuration.
     pub fn with_config(seed: u64, config: &SenateConfig) -> Self {
         assert!(config.validate().is_ok(), "invalid Senate configuration");
-        let mut rng = PoliticalRng::new(seed);
         let mut senators = Vec::with_capacity(100);
         for bloc in Bloc::ALL {
             for _ in 0..config.bloc_sizes[bloc.index()] {
@@ -375,9 +472,10 @@ impl SenateState {
                     id: senators.len(),
                     bloc,
                     allegiance: None,
-                    bribe: None,
-                    preferences: std::array::from_fn(|_| 0.65 + rng.unit() * 0.7),
-                    threshold: 3.0 + rng.unit() * 10.0,
+                    arrangement: None,
+                    generation: 0,
+                    confidence: vec![],
+                    acted_at: None,
                 });
             }
         }
@@ -389,6 +487,9 @@ impl SenateState {
             outreach: vec![],
             low_support: vec![],
             used_actions: vec![],
+            rng: PoliticalRng::new(seed),
+            seat_confidence: config.seat_confidence,
+            action_spending: vec![],
         }
     }
     /// Count all senators currently supporting a player.
@@ -461,7 +562,7 @@ impl SenateState {
             Ok(SenateEvent::RankAdvanced(player, requirement.rank))
         }
     }
-    /// Legitimate short-lived outreach. Refreshing replaces the bonus; it never stacks.
+    /// Legitimate monthly outreach. Refreshing replaces the campaign; it never stacks.
     pub fn court(
         &mut self,
         player: PlayerId,
@@ -498,59 +599,342 @@ impl SenateState {
         }
         Ok(())
     }
-    /// Count unexpired leases against this player's bribery cap.
-    pub fn active_bribes(&self, player: PlayerId) -> usize {
-        self.senators
-            .iter()
-            .filter(|s| s.bribe.is_some_and(|b| b.player == player && b.until > self.month))
-            .count()
-    }
-    /// Quote the validated escalating price without purchasing a loyalty lease.
-    pub fn bribe_quote(
+    /// Validate an individual action without spending money or drawing randomness.
+    pub fn senator_action_quote(
         &self,
         player: PlayerId,
-        bloc: Bloc,
+        id: usize,
+        action: SenatorAction,
         players: &[PoliticalPlayer],
         config: &SenateConfig,
-    ) -> Result<f64, PoliticalError> {
-        self.action_eligibility(player, bloc, true, players)?;
-        let count = self.active_bribes(player);
-        if count >= config.bribe_cap
-            || !self
-                .senators
-                .iter()
-                .any(|s| s.bloc == bloc && s.allegiance != Some(player) && s.bribe.is_none())
+    ) -> Result<(Currency, f64, f64), PoliticalError> {
+        let actor = players.get(player).ok_or(PoliticalError::MissingTarget)?;
+        let seat = self.senators.get(id).ok_or(PoliticalError::MissingTarget)?;
+        if self.winner.is_some() {
+            return Err(PoliticalError::Ineligible);
+        }
+        if seat.acted_at == Some(self.month) {
+            return Err(PoliticalError::AlreadyUsed);
+        }
+        if matches!(action, SenatorAction::Discredit) && seat.allegiance.is_none_or(|p| p == player)
         {
             return Err(PoliticalError::Ineligible);
         }
-        Ok(config.bribe_base_coin + 20.0 * count as f64)
+        if matches!(
+            action,
+            SenatorAction::Patronage | SenatorAction::Threaten | SenatorAction::Lobby
+        ) && seat.arrangement.is_some_and(|a| a.until > self.month)
+        {
+            return Err(PoliticalError::AlreadyUsed);
+        }
+        if action != SenatorAction::Assassinate
+            && action != SenatorAction::Discredit
+            && seat.allegiance == Some(player)
+        {
+            return Err(PoliticalError::Ineligible);
+        }
+        let currency = action.currency();
+        let cost = config.action_costs[action as usize];
+        let balance = if currency == Currency::Coin {
+            actor.coin
+        } else {
+            actor.influence
+        };
+        if balance + 1e-9 < cost {
+            return Err(PoliticalError::InsufficientFunds);
+        }
+        Ok((currency, cost, config.action_risks[action as usize]))
     }
-    /// One senator per payment, at most ten active leases. Caller records real misconduct.
-    pub fn bribe(
+
+    /// Spend once, apply a targeted effect and resolve its seeded detection risk.
+    pub fn act_on_senator(
         &mut self,
         player: PlayerId,
-        bloc: Bloc,
+        id: usize,
+        action: SenatorAction,
         players: &mut [PoliticalPlayer],
         config: &SenateConfig,
-    ) -> Result<usize, PoliticalError> {
-        let cost = self.bribe_quote(player, bloc, players, config)?;
-        let index = self
+    ) -> Result<SenatorActionOutcome, PoliticalError> {
+        use super::espionage::{ScandalKind, Severity};
+        let (currency, cost, risk) =
+            self.senator_action_quote(player, id, action, players, config)?;
+        players[player].spend(currency, cost)?;
+        self.action_spending.push((player, action, cost));
+        self.ensure_players(players.len());
+        let bloc = self.senators[id].bloc;
+        self.senators[id].acted_at = Some(self.month);
+        let misconduct = match action {
+            SenatorAction::Bribe => Some((ScandalKind::PoliticalBribery, Severity::Medium)),
+            SenatorAction::Threaten => Some((ScandalKind::SenatorCoercion, Severity::Medium)),
+            SenatorAction::Assassinate => Some((ScandalKind::SenatorMurder, Severity::Major)),
+            SenatorAction::Discredit => Some((ScandalKind::PoliticalSmear, Severity::Medium)),
+            _ => None,
+        };
+        match action {
+            SenatorAction::Petition => self.add_to_seat(id, player, 3.0),
+            SenatorAction::Gift => self.add_to_seat(id, player, 4.0),
+            SenatorAction::Bribe => self.add_to_seat(id, player, self.seat_confidence),
+            SenatorAction::Patronage | SenatorAction::Threaten | SenatorAction::Lobby => {
+                self.senators[id].arrangement = Some(SenatorArrangement {
+                    player,
+                    action,
+                    until: if action == SenatorAction::Lobby {
+                        u32::MAX
+                    } else {
+                        self.month.saturating_add(6)
+                    },
+                    paid_at: None,
+                });
+            },
+            SenatorAction::Assassinate => {
+                let seat = &mut self.senators[id];
+                seat.confidence.fill(0.0);
+                seat.allegiance = None;
+                seat.arrangement = None;
+                seat.generation += 1;
+            },
+            SenatorAction::Banquet => {
+                self.add_to_seat(id, player, 5.0);
+                self.gain_confidence(player, Bloc::Populares, 5.0);
+            },
+            SenatorAction::Discredit => {
+                let patron = self.senators[id].allegiance.unwrap();
+                self.senators[id].confidence[patron] =
+                    (self.senators[id].confidence[patron] - 5.0).max(0.0);
+            },
+        }
+        let caught = risk > 0.0 && self.rng.unit() < risk;
+        if caught {
+            // The public penalty is larger than the action's gain, and applies now.
+            let (kind, severity) = misconduct.unwrap();
+            self.apply_scandal(player, kind, severity, config);
+            self.remove_confidence(
+                player,
+                bloc,
+                if action == SenatorAction::Assassinate {
+                    50.0
+                } else {
+                    30.0
+                },
+            );
+            if self.senators[id].arrangement.is_some_and(|a| a.player == player) {
+                self.senators[id].arrangement = None;
+            }
+        }
+        self.review_allegiances();
+        Ok(SenatorActionOutcome {
+            caught,
+            misconduct,
+        })
+    }
+
+    /// Upfront expenses incurred by this action in the current campaign month.
+    pub fn spent_on(&self, player: PlayerId, action: SenatorAction) -> f64 {
+        self.action_spending
+            .iter()
+            .filter(|(p, a, _)| *p == player && *a == action)
+            .map(|(_, _, cost)| cost)
+            .sum()
+    }
+
+    /// Scheduled Influence outflow for personal senator lobbying.
+    pub fn outreach_upkeep(&self, player: PlayerId, config: &SenateConfig) -> f64 {
+        if self.winner.is_some() {
+            return 0.0;
+        }
+        self.senators
+            .iter()
+            .filter(|s| {
+                s.arrangement.is_some_and(|a| {
+                    a.player == player
+                        && a.action == SenatorAction::Lobby
+                        && s.confidence.get(player).copied().unwrap_or(0.0)
+                            < self.seat_confidence - 1e-9
+                })
+            })
+            .count() as f64
+            * config.senator_outreach_upkeep
+    }
+
+    /// Pay before new monthly income arrives. Unpaid arrangements pause rather than creating debt.
+    pub fn pay_outreach(&mut self, players: &mut [PoliticalPlayer], config: &SenateConfig) {
+        if self.winner.is_some() {
+            return;
+        }
+        self.ensure_players(players.len());
+        for seat in &mut self.senators {
+            let Some(mut a) = seat.arrangement.filter(|a| a.action == SenatorAction::Lobby) else {
+                continue;
+            };
+            let Some(actor) = players.get_mut(a.player) else {
+                seat.arrangement = None;
+                continue;
+            };
+            if seat.confidence[a.player] >= self.seat_confidence - 1e-9 {
+                seat.arrangement = None;
+                continue;
+            }
+            if a.paid_at == Some(self.month) {
+                continue;
+            }
+            if actor.spend(Currency::Influence, config.senator_outreach_upkeep).is_ok() {
+                a.paid_at = Some(self.month);
+                seat.arrangement = Some(a);
+            }
+        }
+    }
+
+    /// End the player's ongoing paid outreach without another charge.
+    pub fn end_outreach(&mut self, player: PlayerId, id: usize) -> Result<(), PoliticalError> {
+        let seat = self.senators.get_mut(id).ok_or(PoliticalError::MissingTarget)?;
+        if !seat.arrangement.is_some_and(|a| a.player == player && a.action == SenatorAction::Lobby)
+        {
+            return Err(PoliticalError::Ineligible);
+        }
+        seat.arrangement = None;
+        Ok(())
+    }
+
+    fn ensure_players(&mut self, count: usize) {
+        for seat in &mut self.senators {
+            if seat.confidence.len() < count {
+                seat.confidence.resize(count, 0.0);
+            }
+        }
+    }
+
+    /// Shared capacity: fill neutral confidence first, then take it from rivals.
+    fn add_to_seat(&mut self, id: usize, player: PlayerId, amount: f64) {
+        let seat = &mut self.senators[id];
+        let gain = amount.max(0.0).min(self.seat_confidence - seat.confidence[player]);
+        let used: f64 = seat.confidence.iter().sum();
+        let neutral = (self.seat_confidence - used).max(0.0);
+        let transfer = (gain - neutral).max(0.0);
+        let rivals = used - seat.confidence[player];
+        if transfer > 0.0 && rivals > 0.0 {
+            for (p, points) in seat.confidence.iter_mut().enumerate() {
+                if p != player {
+                    *points = (*points * (1.0 - transfer / rivals)).max(0.0);
+                }
+            }
+        }
+        seat.confidence[player] += gain;
+    }
+
+    /// A victory or defeat changes military confidence immediately; seats remain contested.
+    pub fn record_battle_result(&mut self, player: PlayerId, won: bool) {
+        if self.winner.is_some() {
+            return;
+        }
+        self.ensure_players(player + 1);
+        if won {
+            self.gain_confidence(player, Bloc::Military, 3.);
+        } else {
+            self.remove_confidence(player, Bloc::Military, 2.);
+        }
+        self.review_allegiances();
+    }
+
+    /// Pack gains into one's unfinished seat, then empty seats, then rival seats.
+    fn gain_confidence(&mut self, player: PlayerId, bloc: Bloc, mut amount: f64) {
+        while amount > 1e-9 {
+            let neutral_available = self.senators.iter().any(|s| {
+                s.bloc == bloc && s.confidence.iter().sum::<f64>() < self.seat_confidence - 1e-9
+            });
+            let candidate = self
+                .senators
+                .iter()
+                .filter(|s| s.bloc == bloc && s.confidence[player] < self.seat_confidence - 1e-9)
+                .filter(|s| {
+                    !neutral_available
+                        || s.confidence.iter().sum::<f64>() < self.seat_confidence - 1e-9
+                })
+                .max_by(|a, b| {
+                    let priority = |s: &Senator| {
+                        let own = s.confidence[player];
+                        let total: f64 = s.confidence.iter().sum();
+                        if own > 0.0 {
+                            (3, own)
+                        } else if total < 1e-9 {
+                            (2, 0.0)
+                        } else {
+                            (1, -total)
+                        }
+                    };
+                    let (ac, av) = priority(a);
+                    let (bc, bv) = priority(b);
+                    ac.cmp(&bc).then_with(|| av.total_cmp(&bv)).then_with(|| b.id.cmp(&a.id))
+                })
+                .map(|s| s.id);
+            let Some(id) = candidate else {
+                break;
+            };
+            let available = self.seat_confidence
+                - if neutral_available {
+                    self.senators[id].confidence.iter().sum::<f64>()
+                } else {
+                    self.senators[id].confidence[player]
+                };
+            let gain = amount.min(available);
+            self.add_to_seat(id, player, gain);
+            amount -= gain;
+        }
+    }
+
+    /// Losses drain unfinished confidence before releasing fully supporting seats.
+    fn remove_confidence(&mut self, player: PlayerId, bloc: Bloc, mut amount: f64) {
+        let mut seats: Vec<_> = self
             .senators
             .iter()
-            .position(|s| s.bloc == bloc && s.allegiance != Some(player) && s.bribe.is_none())
-            .ok_or(PoliticalError::Ineligible)?;
-        players[player].spend(Currency::Coin, cost)?;
-        let senator = &mut self.senators[index];
-        senator.bribe = Some(SenatorBribe {
-            player,
-            until: self.month + config.bribe_months,
-        });
-        senator.allegiance = Some(player);
-        self.used_actions.push((player, bloc, true));
-        Ok(senator.id)
+            .filter(|s| s.bloc == bloc)
+            .filter_map(|s| s.confidence.get(player).filter(|v| **v > 0.0).map(|v| (s.id, *v)))
+            .collect();
+        seats.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        for (id, _) in seats {
+            let points = &mut self.senators[id].confidence[player];
+            let loss = amount.min(*points);
+            *points -= loss;
+            amount -= loss;
+            if amount <= 1e-9 {
+                break;
+            }
+        }
     }
-    /// Accusations need real unexpired evidence, consumed atomically here. They damage
-    /// relevant factions for a year and release that target's compromised bribery leases.
+
+    fn review_allegiances(&mut self) {
+        for seat in &mut self.senators {
+            seat.allegiance =
+                seat.confidence.iter().position(|v| *v >= self.seat_confidence - 1e-9);
+        }
+    }
+
+    fn apply_scandal(
+        &mut self,
+        target: PlayerId,
+        kind: super::espionage::ScandalKind,
+        severity: super::espionage::Severity,
+        config: &SenateConfig,
+    ) {
+        let penalties = kind.senate_losses(severity);
+        for bloc in Bloc::ALL {
+            self.remove_confidence(target, bloc, penalties[bloc.index()]);
+        }
+        for seat in &mut self.senators {
+            if seat
+                .arrangement
+                .is_some_and(|a| a.player == target && a.action == SenatorAction::Threaten)
+            {
+                seat.arrangement = None;
+            }
+        }
+        self.accusations.push(Accusation {
+            target,
+            penalties,
+            until: self.month.saturating_add(config.scandal_months),
+        });
+        self.review_allegiances();
+    }
+    /// Real unexpired evidence is consumed atomically, with immediate faction losses.
     pub fn expose_scandal(
         &mut self,
         holder: PlayerId,
@@ -576,21 +960,14 @@ impl SenateState {
         if target == holder || holder >= players.len() || target >= players.len() {
             return Err(PoliticalError::Ineligible);
         }
-        let penalties = evidence.kind.bloc_penalties(evidence.severity).map(|n| n * 100.0);
+        let kind = evidence.kind;
+        let severity = evidence.severity;
         espionage.consume(holder, id, self.month)?;
-        self.accusations.push(Accusation {
-            target,
-            penalties,
-            until: self.month + config.scandal_months,
-        });
-        for senator in &mut self.senators {
-            if senator.bribe.is_some_and(|b| b.player == target) {
-                senator.bribe = None;
-            }
-        }
+        self.ensure_players(players.len());
+        self.apply_scandal(target, kind, severity, config);
         Ok(target)
     }
-    /// Explain structural attraction plus the current fading outreach and scandals.
+    /// Explain actual recurring drivers, separate from one-time actions and scandals.
     pub fn reasons(
         &self,
         player: PlayerId,
@@ -604,32 +981,34 @@ impl SenateState {
             .outreach
             .iter()
             .filter(|o| o.player == player && o.bloc == bloc && o.until > self.month)
-            .map(|o| {
-                config.court_bonus * (o.until - self.month) as f64 / config.court_months as f64
-            })
-            .sum();
-        let penalty = self
-            .accusations
-            .iter()
-            .filter(|a| a.target == player && a.until > self.month)
-            .map(|a| {
-                a.penalties[bloc.index()] * (a.until - self.month) as f64
-                    / config.scandal_months as f64
-            })
-            .sum::<f64>()
-            .min(30.0);
+            .count() as f64
+            * config.court_bonus;
         reasons.push(SupportReason {
-            label: "Faction outreach (fades)",
+            label: "Faction outreach",
             points: outreach,
         });
-        reasons.push(SupportReason {
-            label: "Exposed scandals (fades)",
-            points: -penalty,
-        });
+        if matches!(bloc, Bloc::Aristocrats | Bloc::Populares) {
+            let coercion = self
+                .senators
+                .iter()
+                .filter(|s| {
+                    s.arrangement.is_some_and(|a| {
+                        a.player == player
+                            && a.action == SenatorAction::Threaten
+                            && a.until > self.month
+                    })
+                })
+                .count() as f64;
+            reasons.push(SupportReason {
+                label: "Coercion of senators",
+                points: -0.5 * coercion,
+            });
+        }
         reasons
     }
-    /// All senators compare all players against the same snapshot once each month.
-    /// Exact ties remain neutral; a two-point incumbent margin prevents jitter.
+
+    /// Monthly snapshots change accumulated confidence, never replace it.
+    /// Losses resolve first; the first recipient rotates to avoid persistent order bias.
     pub fn advance_month(
         &mut self,
         players: &mut [PoliticalPlayer],
@@ -640,68 +1019,64 @@ impl SenateState {
         if self.winner.is_some() {
             return vec![];
         }
-        self.month += 1;
-        self.used_actions.clear();
-        self.outreach.retain(|o| o.until > self.month);
-        self.accusations.retain(|a| a.until > self.month);
-        let factors: Vec<_> = players
+        self.ensure_players(players.len());
+        let rates: Vec<_> = players
             .iter()
             .enumerate()
             .map(|(id, actor)| {
-                let p = profiles.get(id).cloned().unwrap_or_default();
-                Bloc::ALL.map(|bloc| self.reasons(id, bloc, actor, &p, config))
+                let profile = profiles.get(id).cloned().unwrap_or_default();
+                Bloc::ALL.map(|bloc| {
+                    self.reasons(id, bloc, actor, &profile, config)
+                        .iter()
+                        .map(|r| r.points)
+                        .sum::<f64>()
+                })
             })
             .collect();
-        for senator in &mut self.senators {
-            if let Some(bribe) = senator.bribe {
-                if bribe.until > self.month && bribe.player < players.len() {
-                    senator.allegiance = Some(bribe.player);
-                    continue;
-                }
-                senator.bribe = None;
+        for (player, rate) in rates.iter().enumerate() {
+            for bloc in Bloc::ALL {
+                self.remove_confidence(player, bloc, (-rate[bloc.index()]).max(0.0));
             }
-            let scores: Vec<f64> = factors
-                .iter()
-                .map(|factions| {
-                    factions[senator.bloc.index()]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, r)| {
-                            // Outreach and scandal effects are public and identical within a faction.
-                            r.points
-                                * if i < structural_reasons_len(senator.bloc) {
-                                    senator.preferences[i]
-                                } else {
-                                    1.0
-                                }
-                        })
-                        .sum()
-                })
-                .collect();
-            let mut best = None;
-            let mut best_score = senator.threshold;
-            let mut tied = false;
-            for (player, &score) in scores.iter().enumerate() {
-                if score > best_score + 0.000_001 {
-                    best = Some(player);
-                    best_score = score;
-                    tied = false;
-                } else if best.is_some() && (score - best_score).abs() <= 0.000_001 {
-                    tied = true;
-                }
-            }
-            if let Some(incumbent) = senator.allegiance.filter(|&p| p < scores.len()) {
-                let score = scores[incumbent];
-                if score >= senator.threshold - 2.0 && best_score <= score + 2.0 {
-                    continue;
-                }
-            }
-            senator.allegiance = if tied {
-                None
-            } else {
-                best
-            };
         }
+        for turn in 0..players.len() {
+            let player = (turn + self.month as usize) % players.len();
+            for bloc in Bloc::ALL {
+                self.gain_confidence(player, bloc, rates[player][bloc.index()].max(0.0));
+            }
+        }
+        for id in 0..self.senators.len() {
+            if let Some(a) = self.senators[id].arrangement {
+                if a.until > self.month
+                    && a.player < players.len()
+                    && (a.action != SenatorAction::Lobby || a.paid_at == Some(self.month))
+                {
+                    self.add_to_seat(
+                        id,
+                        a.player,
+                        if a.action == SenatorAction::Threaten {
+                            2.0
+                        } else {
+                            1.0
+                        },
+                    );
+                }
+            }
+        }
+        self.month += 1;
+        self.action_spending.clear();
+        self.used_actions.clear();
+        self.outreach.retain(|o| o.until > self.month);
+        self.accusations.retain(|a| a.until > self.month);
+        for seat in &mut self.senators {
+            if seat.arrangement.is_some_and(|a| {
+                a.until <= self.month
+                    || (a.action == SenatorAction::Lobby
+                        && seat.confidence[a.player] >= self.seat_confidence - 1e-9)
+            }) {
+                seat.arrangement = None;
+            }
+        }
+        self.review_allegiances();
         self.low_support.resize(players.len(), 0);
         let mut events = Vec::new();
         for id in 0..players.len() {
@@ -738,67 +1113,73 @@ impl SenateState {
         self.low_support[id] = 0;
     }
 }
-fn structural_reasons_len(bloc: Bloc) -> usize {
-    match bloc {
-        Bloc::Aristocrats => 6,
-        Bloc::Merchants | Bloc::Provincials => 5,
-        Bloc::Populares => 7,
-        Bloc::Military => 3,
-    }
-}
-
-/// Smooth, bounded return curve shared by Influence and coin campaign actions.
+/// Bounded returns improve monthly progress without runaway growth.
 fn diminishing(amount: f64, half: f64) -> f64 {
     amount.max(0.0) / (amount.max(0.0) + half.max(0.001))
 }
 
-/// Explain structural bloc preferences in percentage points. Population and wealth
-/// use soft caps; even huge empires cannot purchase permanent Senate dominance.
 fn structural_reasons(
     bloc: Bloc,
-    profile: &PoliticalProfile,
+    p: &PoliticalProfile,
     actor: &PoliticalPlayer,
 ) -> Vec<SupportReason> {
-    let p = profile;
+    let governed = p.controlled_provinces > 0.0;
     let rows: Vec<(&'static str, f64)> = match bloc {
         Bloc::Aristocrats => vec![
             (
-                "Noble population (diminishing)",
-                8.0 * diminishing((p.nobles / crate::map::POPULATION_SCALE).sqrt(), 8.0),
+                "Noble population",
+                0.6 * diminishing((p.nobles / crate::map::POPULATION_SCALE).sqrt(), 8.0),
             ),
-            ("Noble happiness", (p.noble_happiness - 50.0) * 0.16),
-            ("Political office", actor.rank.ladder_index() as f64 * 1.5),
-            ("Influence prestige", 4.0 * diminishing(actor.influence, 200.0)),
-            ("Completed wonders", 5.0 * diminishing(p.wonders, 2.0)),
-            ("Political city buildings", 4.0 * diminishing(p.political_buildings, 4.0)),
+            ("Noble happiness", (p.noble_happiness - 50.0) * 0.025),
+            ("Political office", actor.rank.ladder_index() as f64 * 0.15),
+            ("Completed wonders", 0.8 * diminishing(p.wonders, 2.0)),
+            ("Forums", 0.6 * diminishing(p.political_buildings, 4.0)),
         ],
         Bloc::Merchants => vec![
-            ("Sestertius income", 8.0 * diminishing(p.coin_income, 30.0)),
-            ("Recurring trade", 7.0 * diminishing(p.trade_volume, 60.0)),
-            ("Trade reliability", (p.trade_reliability - 0.8) * 15.0),
-            ("Urban Markets", 4.0 * diminishing(p.markets, 5.0)),
-            ("Resource security", (p.resource_security - 0.8) * 20.0),
+            ("Profitable income", 0.8 * diminishing(p.coin_income, 30.0)),
+            ("Active fulfilled trade routes", 0.5 * p.active_trade_routes.clamp(0.0, 10.0)),
+            ("Unfulfilled trade commitments", -(1.0 - p.trade_reliability).clamp(0.0, 1.0)),
+            ("Urban Markets", 0.6 * diminishing(p.markets, 5.0)),
+            ("Resource shortages", -(1.0 - p.resource_security).clamp(0.0, 1.0)),
+            ("Active wars", -0.5 * p.active_wars.clamp(0.0, 4.0)),
+            (
+                "Loss-making economy",
+                if p.coin_income < 0.0 {
+                    -0.5
+                } else {
+                    0.0
+                },
+            ),
         ],
         Bloc::Provincials => vec![
-            ("Vassal relations", (p.vassal_relation - 50.0) * 0.14),
-            ("Voluntary vassal stability", (p.voluntary_vassal_stability - 0.5) * 10.0),
-            ("Free-pop happiness", (p.provincial_happiness - 50.0) * 0.18),
-            ("Provincial trade", 5.0 * diminishing(p.provincial_trade, 40.0)),
-            ("High tribute", -12.0 * p.high_tribute),
+            ("Vassal relations", (p.vassal_relation - 50.0) * 0.02),
+            ("Voluntary vassal stability", (p.voluntary_vassal_stability - 0.5) * 0.8),
+            ("Free population happiness", (p.provincial_happiness - 50.0) * 0.025),
+            ("Provincial trade", 0.8 * diminishing(p.provincial_trade, 40.0)),
+            ("High tribute", -1.5 * p.high_tribute),
+            ("Active wars", -0.25 * p.active_wars.clamp(0.0, 4.0)),
         ],
         Bloc::Populares => vec![
-            ("Citizen happiness", (p.citizen_happiness - 50.0) * 0.24),
-            ("Plebeian happiness", (p.plebeian_happiness - 50.0) * 0.16),
-            ("Food policy", p.food_policy * 4.0),
-            ("Food security", (p.food_security - 0.8) * 15.0),
-            ("Active famine", -18.0 * p.famine),
-            ("Tax pressure", -8.0 * p.tax_pressure),
-            ("Harsh domestic policies", -7.0 * p.harsh_policies),
+            ("Citizen happiness", (p.citizen_happiness - 50.0) * 0.03),
+            ("Plebeian happiness", (p.plebeian_happiness - 50.0) * 0.025),
+            ("Generous or restricted food policy", p.food_policy * 0.5),
+            (
+                "Reliable food supply",
+                if governed {
+                    (p.food_security - 0.8) * 1.25
+                } else {
+                    0.0
+                },
+            ),
+            ("Active famine", -3.0 * p.famine),
+            ("Tax pressure", -p.tax_pressure),
+            ("Harsh slave labor", -p.harsh_policies),
         ],
         Bloc::Military => vec![
-            ("Effective military strength", 10.0 * diminishing(p.military_strength, 500.0)),
-            ("Recent victories and defeats", p.recent_victories.clamp(-4.0, 4.0) * 2.0),
-            ("Military rank", p.military_rank.clamp(0.0, 3.0) * 3.0),
+            ("Effective army strength", 1.5 * diminishing(p.military_strength, 500.0)),
+            ("Recent victories or defeats", p.recent_victories.clamp(-4.0, 4.0) * 0.3),
+            ("Military rank", p.military_rank.clamp(0.0, 3.0) * 0.5),
+            ("Controlled provinces", 0.15 * p.controlled_provinces.clamp(0.0, 10.0)),
         ],
     };
     rows.into_iter()

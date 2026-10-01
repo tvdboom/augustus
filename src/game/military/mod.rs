@@ -29,6 +29,17 @@ pub type PlayerId = usize;
 /// Stable, never reused unit identifier.
 pub type UnitId = u64;
 
+/// Explicit strategic purpose of a player-issued province order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmyOrderKind {
+    /// Peaceful movement or invited stationing.
+    Move,
+    /// Explicit invasion followed by combat on arrival.
+    Attack,
+    /// Limited coercive control without fighting local defenders.
+    Pressure,
+}
+
 /// Internal combat-strength point to whole people; recruitment cost is separate.
 pub const PEOPLE_PER_POPULATION: f64 = 100.0;
 
@@ -274,9 +285,9 @@ impl MilitaryRank {
     pub fn promotion_requirements(self) -> Option<MilitaryPromotionRequirements> {
         let (peak_manpower, victories, influence) = match self {
             Self::Centurion => return None,
-            Self::MilitaryTribune => (200.0, 2, 100.0),
-            Self::Legate => (400.0, 4, 200.0),
-            Self::Imperator => (600.0, 6, 300.0),
+            Self::MilitaryTribune => (200.0, 2, 500.0),
+            Self::Legate => (400.0, 4, 1000.0),
+            Self::Imperator => (600.0, 6, 2000.0),
         };
         Some(MilitaryPromotionRequirements {
             previous: [Self::Centurion, Self::Centurion, Self::MilitaryTribune, Self::Legate]

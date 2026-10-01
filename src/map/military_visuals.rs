@@ -232,14 +232,12 @@ pub(super) fn paint(
     });
     anchors.retain_for(world);
     let threshold = world.config.sprite_zoom_threshold.max(0.0) as f32;
-    if zoom < threshold {
-        return vec![];
-    }
+    let revolts = active_revolt_provinces(world);
     let atlas = atlas();
     // Like city and wonder artwork, units keep one map footprint as the camera zooms.
     let size = troop_size(zoom);
     let alpha = troop_alpha(zoom, threshold);
-    if alpha == 0 {
+    if alpha == 0 && !revolts.iter().any(|&active| active) {
         return vec![];
     }
     let cache_id = egui::Id::new("military-sprite-sheet-cache");
@@ -251,20 +249,21 @@ pub(super) fn paint(
         let Some(map_province) = atlas.provinces.get(province) else {
             continue;
         };
+        let revolt = revolts[province];
+        let (size, alpha) = revolt_troop_style(size, alpha, revolt);
+        if alpha == 0 {
+            continue;
+        }
         let anchor = projection.point(map_province.visual_center);
         if !viewport.expand(size * 2.).contains(anchor) {
             continue;
         }
         let owners: Vec<_> = state.forces.iter().filter(|(_, units)| !units.is_empty()).collect();
         for (cluster, (&owner, units)) in owners.iter().enumerate() {
-            let types = map_representatives(units);
-            // Latium is narrow and shares its northern edge with Etruria. Keep
-            // Rome's figures compact and grounded farther south of that edge.
-            let army_size = if map_province.name == "Latium" {
-                (size * 0.5).min(projection.scale * 0.11)
-            } else {
-                size
-            };
+            let mut types = map_representatives(units);
+            if revolt && zoom <= threshold {
+                types.truncate(1);
+            }
             // Leave the centered province name and its resources room first.
             // This is a placement preference, never a reason to move an existing army.
             let label_center = labels
@@ -274,10 +273,10 @@ pub(super) fn paint(
             let offset = if map_province.name == "Latium" {
                 egui::vec2(0., 0.)
             } else {
-                egui::vec2(0., -army_size * 1.25)
-            } + cluster_offset(cluster, owners.len(), army_size);
+                egui::vec2(0., -size * 1.25)
+            } + cluster_offset(cluster, owners.len(), size);
             let preferred_center = if map_province.name == "Latium" {
-                projection.point([13.27, 41.55])
+                projection.point([13.30, 41.65])
             } else {
                 label_center
             };
@@ -285,7 +284,7 @@ pub(super) fn paint(
                 let place = |obstacles: &[egui::Rect]| {
                     province_anchor(
                         preferred_center + offset,
-                        army_size,
+                        size,
                         viewport,
                         obstacles,
                         &occupied,
@@ -304,6 +303,38 @@ pub(super) fn paint(
                     }
                 }
                 place(landmarks)
+                    .or_else(|| {
+                        // Rome's narrow province must not shrink or hide its army
+                        // when nearby artwork leaves no unobstructed rectangle.
+                        (map_province.name == "Latium")
+                            .then(|| {
+                                province_anchor(
+                                    preferred_center + offset,
+                                    size,
+                                    viewport,
+                                    &[],
+                                    &occupied,
+                                    map_province,
+                                    projection,
+                                    &types,
+                                )
+                            })
+                            .flatten()
+                    })
+                    .or_else(|| {
+                        revolt
+                            .then(|| {
+                                revolt_anchor(
+                                    preferred_center + offset,
+                                    size,
+                                    map_province,
+                                    projection,
+                                    &types,
+                                    &occupied,
+                                )
+                            })
+                            .flatten()
+                    })
             }) else {
                 continue;
             };
@@ -316,7 +347,7 @@ pub(super) fn paint(
                 units,
                 &types,
                 center,
-                army_size,
+                size,
                 1,
                 clock,
                 alpha,
@@ -328,6 +359,9 @@ pub(super) fn paint(
         }
     }
     for movement in &world.movements {
+        if alpha == 0 {
+            continue;
+        }
         let types = map_representatives(&movement.units);
         let (Some(origin), Some(destination)) = (
             atlas.provinces.get(movement.origin),
@@ -344,7 +378,7 @@ pub(super) fn paint(
         if !viewport.expand(size).contains(anchor) {
             continue;
         }
-        let color = owner_color(movement.owner, ownership);
+        let color = owner_color(movement.owner, world, ownership);
         painter.line_segment([start, end], egui::Stroke::new(1.3, color.gamma_multiply(0.45)));
         draw_cluster(
             painter,
@@ -369,6 +403,11 @@ pub(super) fn paint(
         let Some(map_province) = atlas.provinces.get(battle.province) else {
             continue;
         };
+        let revolt = revolts[battle.province];
+        let (size, alpha) = revolt_troop_style(size, alpha, revolt);
+        if alpha == 0 {
+            continue;
+        }
         let anchor = projection.point(map_province.visual_center);
         if !viewport.expand(size * 2.).contains(anchor) {
             continue;
@@ -390,12 +429,16 @@ pub(super) fn paint(
                     .filter(|u| u.owner == *owner && u.current_manpower > 0.)
                     .cloned()
                     .collect();
-                let types = map_representatives(&active);
+                let mut types = map_representatives(&active);
+                if revolt && zoom <= threshold {
+                    types.truncate(1);
+                }
                 let Some(center) =
                     anchors.get_or_place((battle.province, *owner, key), projection, || {
+                        let desired = anchor
+                            + egui::vec2(direction * size * 0.6, cluster as f32 * size * 0.65);
                         province_anchor(
-                            anchor
-                                + egui::vec2(direction * size * 0.6, cluster as f32 * size * 0.65),
+                            desired,
                             size,
                             viewport,
                             landmarks,
@@ -404,6 +447,20 @@ pub(super) fn paint(
                             projection,
                             &types,
                         )
+                        .or_else(|| {
+                            revolt
+                                .then(|| {
+                                    revolt_anchor(
+                                        desired,
+                                        size,
+                                        map_province,
+                                        projection,
+                                        &types,
+                                        &occupied,
+                                    )
+                                })
+                                .flatten()
+                        })
                     })
                 else {
                     continue;
@@ -428,13 +485,6 @@ pub(super) fn paint(
                 );
             }
         }
-        painter.text(
-            anchor + egui::vec2(0., -size * 0.65),
-            egui::Align2::CENTER_CENTER,
-            "BATTLE",
-            egui::FontId::proportional(10.),
-            egui::Color32::from_rgba_unmultiplied(110, 35, 28, alpha),
-        );
     }
     painter.ctx().data_mut(|data| data.insert_temp(cache_id, textures));
     if !occupied.is_empty() {
@@ -448,6 +498,69 @@ pub(super) fn paint(
 
 fn troop_alpha(zoom: f32, threshold: f32) -> u8 {
     (smoothstep((zoom - threshold) / 0.5) * 255.).round() as u8
+}
+
+fn is_rebel(owner: ForceOwner, world: &MilitaryWorld) -> bool {
+    matches!(owner, ForceOwner::Local(home)
+        if world.provinces.get(home).is_some_and(|province| province.slave_rebellion))
+}
+
+fn active_revolt_provinces(world: &MilitaryWorld) -> Vec<bool> {
+    let mut active = vec![false; world.provinces.len()];
+    for (province, unit) in world.units_with_province() {
+        if let Some(province) = province {
+            if unit.current_manpower > 0.0 && is_rebel(unit.owner, world) {
+                active[province] = true;
+            }
+        }
+    }
+    active
+}
+
+fn revolt_troop_style(size: f32, alpha: u8, active: bool) -> (f32, u8) {
+    if active {
+        (size.max(14.0), 255)
+    } else {
+        (size, alpha)
+    }
+}
+
+/// An uprising must remain visible even when landmarks cover the available ground.
+/// Like Rome's narrow ground, keep the feet and badge anchored inside the province.
+fn revolt_anchor(
+    desired: egui::Pos2,
+    size: f32,
+    province: &Province,
+    projection: &Projection,
+    types: &[UnitType],
+    troops: &[egui::Rect],
+) -> Option<egui::Pos2> {
+    let overlap = |point: egui::Pos2| {
+        let bounds = cluster_bounds(point, size, types);
+        troops
+            .iter()
+            .filter(|&&rect| bounds.intersects(rect))
+            .map(|&rect| bounds.intersect(rect).area())
+            .sum::<f32>()
+    };
+    (0..24)
+        .flat_map(|row| (0..24).map(move |column| (row, column)))
+        .map(|(row, column)| {
+            projection.point([
+                province.bounds[0]
+                    + (province.bounds[2] - province.bounds[0]) * (column as f32 + 0.5) / 24.,
+                province.bounds[1]
+                    + (province.bounds[3] - province.bounds[1]) * (row as f32 + 0.5) / 24.,
+            ])
+        })
+        .filter(|&point| ground_anchors_in_province(point, size, types.len(), province, projection))
+        // Ignore landmark obstruction for an urgent revolt, but keep opposing
+        // army sprites and banners apart wherever the province has room.
+        .min_by(|&a, &b| {
+            overlap(a)
+                .total_cmp(&overlap(b))
+                .then_with(|| a.distance_sq(desired).total_cmp(&b.distance_sq(desired)))
+        })
 }
 
 fn troop_size(zoom: f32) -> f32 {
@@ -467,7 +580,8 @@ fn cluster_bounds(anchor: egui::Pos2, size: f32, types: &[UnitType]) -> egui::Re
 
 /// Keep unit feet and their badge inside their own province. Upright artwork can
 /// extend above its ground footprint, as city and wonder illustrations do.
-/// Narrow provinces hide a group until zoom provides room to show it safely.
+/// In tapering Latium, validate each planted anchor rather than requiring the
+/// empty rectangle between the figures to fit the province as well.
 fn province_anchor(
     desired: egui::Pos2,
     size: f32,
@@ -481,14 +595,16 @@ fn province_anchor(
     let province_bounds = projection.bounds_rect(province.bounds);
     let valid = |point: egui::Pos2| {
         let bounds = cluster_bounds(point, size, types);
-        province_bounds.contains_rect(ground_footprint(point, size, types.len()))
+        let ground_inside = if province.name == "Latium" {
+            ground_anchors_in_province(point, size, types.len(), province, projection)
+        } else {
+            let footprint = ground_footprint(point, size, types.len());
+            province_bounds.contains_rect(footprint)
+                && footprint_in_province(footprint, province, projection)
+        };
+        ground_inside
             && !landmarks.iter().chain(troops).any(|other| bounds.intersects(*other))
             && province.contains(projection.inverse(point))
-            && footprint_in_province(
-                ground_footprint(point, size, types.len()),
-                province,
-                projection,
-            )
     };
     for ring in 0..=7 {
         for direction in 0..16 {
@@ -514,6 +630,20 @@ fn province_anchor(
         })
         .filter(|&point| valid(point))
         .min_by(|a, b| a.distance_sq(desired).total_cmp(&b.distance_sq(desired)))
+}
+
+fn ground_anchors_in_province(
+    anchor: egui::Pos2,
+    size: f32,
+    count: usize,
+    province: &Province,
+    projection: &Projection,
+) -> bool {
+    (0..count).all(|index| {
+        let feet = anchor
+            + egui::vec2((index as f32 - (count as f32 - 1.) * 0.5) * size * 0.52, size * 0.5);
+        province.contains(projection.inverse(feet))
+    }) && province.contains(projection.inverse(anchor + egui::vec2(0., size * 0.5 + 7.)))
 }
 
 fn ground_footprint(anchor: egui::Pos2, size: f32, count: usize) -> egui::Rect {
@@ -679,7 +809,7 @@ fn draw_cluster(
     if types.is_empty() {
         return;
     }
-    let owner_color = owner_color(owner, ownership);
+    let owner_color = owner_color(owner, world, ownership);
     for (index, kind) in types.iter().enumerate() {
         let rect = troop_rect(anchor, size, index, types.len(), *kind);
         let animation = match row {
@@ -712,14 +842,18 @@ fn draw_cluster(
     painter.rect_filled(banner, 2., owner_color.gamma_multiply(f32::from(alpha) / 255.));
     let caption = match owner {
         ForceOwner::Player(p) => format!("P{}", p + 1),
-        ForceOwner::Local(_) if world.provinces[province].slave_rebellion => "REB".to_owned(),
+        ForceOwner::Local(_) if is_rebel(owner, world) => "Revolt".to_owned(),
         ForceOwner::Local(_) => "NPC".to_owned(),
     };
     painter.text(
         banner.center(),
         egui::Align2::CENTER_CENTER,
         caption,
-        egui::FontId::proportional(9.),
+        egui::FontId::proportional(if is_rebel(owner, world) {
+            8.
+        } else {
+            9.
+        }),
         egui::Color32::from_white_alpha(alpha),
     );
     occupied.push(banner);
@@ -795,13 +929,18 @@ fn motion_texture(
 }
 
 /// Reuse the current owner's exact map-banner color with a neutral bronze for NPCs.
-fn owner_color(owner: ForceOwner, ownership: &ProvinceOwnership) -> egui::Color32 {
+fn owner_color(
+    owner: ForceOwner,
+    world: &MilitaryWorld,
+    ownership: &ProvinceOwnership,
+) -> egui::Color32 {
     match owner {
         ForceOwner::Player(player) => ownership
             .player_colors
             .get(player)
             .copied()
             .unwrap_or(egui::Color32::from_rgb(146, 47, 40)),
+        ForceOwner::Local(_) if is_rebel(owner, world) => egui::Color32::from_rgb(176, 45, 35),
         ForceOwner::Local(_) => egui::Color32::from_rgb(127, 99, 66),
     }
 }

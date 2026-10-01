@@ -9,6 +9,101 @@ fn campaign() -> Campaign {
 }
 
 #[test]
+fn attack_order_detaches_selected_units_and_engages_only_on_arrival() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let sent = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    let stays = c.military.seed_unit(0, own, UnitType::Archers).unwrap();
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::HeavyInfantry).unwrap();
+    c.graph[0].area = 900.;
+    c.military.config.base_manpower_damage = 0.;
+    c.military.config.base_morale_damage = 0.;
+    c.order_army(0, 0, 1, &[sent], &[1], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    assert!(c.npc_wars[0][1]);
+    assert!(c.military.battles.is_empty());
+    assert_eq!(c.military.provinces[0].forces[&own][0].id, stays);
+    let months = c.military.movements[0].required_progress.ceil() as usize;
+    assert!(months > 1, "large province takes longer to cross");
+    for _ in 1..months {
+        c.advance_month();
+        assert!(c.military.battles.is_empty());
+    }
+    c.advance_month();
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].attackers.units[0].id, sent);
+    assert_eq!(c.military.battles[0].rounds.len(), c.military.config.rounds_per_month);
+}
+
+#[test]
+fn invalid_attack_does_not_declare_war_or_remove_cohorts() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let id = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    assert!(c
+        .order_army(0, 0, 1, &[id, id], &[1], BattlePlan::default(), ArmyOrderKind::Attack)
+        .is_err());
+    assert!(!c.npc_wars[0][1]);
+    assert_eq!(c.military.provinces[0].forces[&own].len(), 1);
+    assert!(c.military.movements.is_empty());
+}
+
+#[test]
+fn live_arrivals_remain_visible_then_resolve_one_round_at_a_time() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let id = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::HeavyInfantry).unwrap();
+    c.military.config.base_manpower_damage = 0.;
+    c.military.config.base_morale_damage = 0.;
+    c.order_army(0, 0, 1, &[id], &[1], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    let travel = c.military.movements[0].required_progress.ceil() as usize;
+    for _ in 0..travel {
+        c.advance_live_month();
+    }
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].round, 0);
+    assert!(c.military.history.is_empty());
+    c.advance_live_combat();
+    assert_eq!(c.military.battles[0].round, 1);
+    let total = c.military.config.maximum_battle_months * c.military.config.rounds_per_month;
+    for _ in 1..total {
+        c.advance_live_combat();
+    }
+    assert!(c.military.battles.is_empty());
+    assert_eq!(c.military.history[0].rounds, total);
+    assert_eq!(c.recent_victories[0], -1.);
+    assert!(c.notifications.history_for(0).any(|notice| notice.kind == NoticeKind::BattleResolved));
+}
+
+#[test]
+fn pressure_preserves_defenders_caps_control_and_ends_when_troops_leave() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let id = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    let defender = c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
+    c.politics[1].relations[0] = 40.;
+    c.politics[1].gain_control_now(0, 39.8).unwrap();
+    c.order_army(0, 0, 1, &[id], &[1], BattlePlan::default(), ArmyOrderKind::Pressure).unwrap();
+    for _ in 0..4 {
+        c.advance_month();
+    }
+    assert!(!c.npc_wars[0][1]);
+    assert!(c.military.battles.is_empty());
+    assert!(c.military.provinces[1].occupation.is_none());
+    assert_eq!(c.military.provinces[1].forces[&ForceOwner::Local(1)][0].id, defender);
+    assert!((c.politics[1].control(0) - 40.).abs() < 1e-8);
+    assert!(c.politics[1].relation(0) < 40.);
+    assert!(
+        c.profiles[0].controlled_provinces > 1.,
+        "partial control contributes to Military support"
+    );
+    c.order_army(1, 0, 0, &[id], &[0], BattlePlan::default(), ArmyOrderKind::Move).unwrap();
+    c.advance_month();
+    assert!(!c.military_pressure.contains(&(0, 1)));
+    assert_eq!(c.access_snapshot()[0][1], MilitaryAccess::Blocked);
+}
+
+#[test]
 fn an_empty_deficit_treasury_flees_spies_and_breaks_unpaid_armies() {
     use crate::game::politics::espionage::SpyAssignment;
 
@@ -119,32 +214,144 @@ fn slave_revolt_removes_residents_and_attacks_the_owners_garrison() {
     let mut c = campaign();
     c.economy.provinces[0].population[3] = 12.0;
     c.military.seed_unit(0, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
-    c.start_slave_revolt(0, 0, 3);
+    c.start_slave_revolt(0, 0);
     assert_eq!(c.economy.provinces[0].population[3], 0.0);
     assert!(c.npc_wars[0][0]);
     assert!(c.military.provinces[0].slave_rebellion);
     assert_eq!(c.military.battles.len(), 1);
     let battle = &c.military.battles[0];
-    assert_eq!(battle.attackers.units.len(), 3);
+    assert_eq!(battle.attackers.units.len(), 2);
+    assert_eq!(battle.attackers.manpower(), 12.0);
+    assert_eq!(battle.attackers.units[1].manpower_ratio(), 0.2);
+    let food: f64 =
+        battle.attackers.units.iter().map(|unit| unit.food_demand(&c.military.config)).sum();
+    assert!((food - 1.8).abs() < 1e-10, "the partial cohort must not consume full rations");
     assert!(battle.attackers.units.iter().all(|unit| {
         unit.owner == ForceOwner::Local(0) && unit.unit_type == UnitType::LightInfantry
     }));
     assert!(battle.defenders.plans.contains_key(&ForceOwner::Player(0)));
-    assert!(c.notifications.history_for(0).any(|notice| notice.kind == NoticeKind::SlaveRevolt));
+    let notice = c
+        .notifications
+        .history_for(0)
+        .find(|notice| notice.kind == NoticeKind::SlaveRevolt)
+        .unwrap();
+    assert_eq!(notice.title, "Slave revolt in Test 0");
+    assert_eq!(notice.action, NoticeAction::OpenProvince(0));
+    assert!(notice.body.contains("fighting your army"));
+}
+
+#[test]
+fn an_unguarded_revolt_leaves_hostile_light_infantry_in_its_province() {
+    let mut c = campaign();
+    c.economy.provinces[0].population[3] = 120.0;
+    c.start_slave_revolt(0, 0);
+    assert!(c.military.battles.is_empty());
+    let rebel = ForceOwner::Local(0);
+    assert_eq!(c.military.provinces[0].forces[&rebel].len(), 12);
+    assert!(c.forces_hostile(rebel, ForceOwner::Player(0)));
+    let notice = c
+        .notifications
+        .history_for(0)
+        .find(|notice| notice.kind == NoticeKind::SlaveRevolt)
+        .unwrap();
+    assert_eq!(notice.action, NoticeAction::OpenProvince(0));
+    assert!(notice.body.contains("hostile rebel army now stands in the province"));
+    assert!(c.military.provinces[0].forces[&rebel]
+        .iter()
+        .all(|unit| unit.unit_type == UnitType::LightInfantry));
+}
+
+#[test]
+fn a_revolt_joins_the_garrisons_existing_battle_immediately() {
+    let mut c = campaign();
+    c.wars[0][1] = true;
+    c.wars[1][0] = true;
+    for player in 0..2 {
+        c.military.seed_unit(0, ForceOwner::Player(player), UnitType::HeavyInfantry).unwrap();
+    }
+    c.begin_encounter(0, ForceOwner::Player(1), None);
+    let id = c.military.battles[0].id;
+    c.economy.provinces[0].population[3] = 120.0;
+    c.start_slave_revolt(0, 0);
+    assert_eq!(c.military.battles.len(), 1);
+    let battle = &c.military.battles[0];
+    assert_eq!(battle.id, id);
+    assert!(battle.attackers.plans.contains_key(&ForceOwner::Local(0)));
+    assert!(battle.defenders.plans.contains_key(&ForceOwner::Player(0)));
+    assert_eq!(
+        battle.attackers.units.iter().filter(|unit| unit.owner == ForceOwner::Local(0)).count(),
+        12
+    );
+    assert!(c.military.provinces[0].forces.get(&ForceOwner::Local(0)).is_none_or(Vec::is_empty));
+}
+
+#[test]
+fn fresh_rebels_join_an_existing_revolt_battle_immediately() {
+    let mut c = campaign();
+    c.military.seed_unit(0, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    c.economy.provinces[0].population[3] = 12.0;
+    c.start_slave_revolt(0, 0);
+    let id = c.military.battles[0].id;
+    c.economy.provinces[0].population[3] = 20.0;
+    c.start_slave_revolt(0, 0);
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].id, id);
+    assert_eq!(c.military.battles[0].attackers.manpower(), 32.0);
+    assert!(c.military.provinces[0].forces.get(&ForceOwner::Local(0)).is_none_or(Vec::is_empty));
+}
+
+#[test]
+fn slave_revolt_removes_every_slave_and_scales_past_eight_cohorts() {
+    for population in [12.0, 120.0, 300_000.0] {
+        let mut c = campaign();
+        c.economy.provinces[0].population[3] = population;
+        c.economy.last_report.province_reports =
+            vec![crate::game::economy::ProvinceMonth::default(); c.economy.provinces.len()];
+        c.start_slave_revolt(0, 0);
+        assert_eq!(c.economy.provinces[0].population[3], 0.0);
+        let report = &c.economy.last_report.province_reports[0];
+        assert_eq!(report.slave_revolt_loss, population);
+        assert_eq!(report.population_delta, -population);
+        let owner = ForceOwner::Local(0);
+        assert_eq!(c.military.total_manpower(owner), population);
+        assert_eq!(c.military.peak_manpower[&owner], population);
+        assert_eq!(
+            c.military.provinces[0].forces[&owner].len(),
+            (population / 10.0).ceil() as usize
+        );
+    }
+}
+
+#[test]
+fn an_empty_slave_population_cannot_create_a_revolt_force() {
+    let mut c = campaign();
+    c.economy.provinces[0].population[3] = 0.0;
+    c.start_slave_revolt(0, 0);
+    assert_eq!(c.military.total_manpower(ForceOwner::Local(0)), 0.0);
+    assert!(!c.npc_wars[0][0]);
+    assert!(!c.military.provinces[0].slave_rebellion);
+    assert!(!c.notifications.history_for(0).any(|notice| notice.kind == NoticeKind::SlaveRevolt));
 }
 
 #[test]
 fn desperate_slaves_revolt_with_configured_certain_chance() {
-    let mut c = campaign();
-    c.economy.config.slave_revolt_chance = [1.0; 2];
-    c.economy.provinces[0].happiness[3] = 0.0;
-    c.economy.provinces[0].population[3] = 4.0 * crate::map::POPULATION_SCALE;
-    c.resolve_slave_revolts();
-    assert_eq!(c.economy.provinces[0].population[3], 0.0);
-    let army = &c.military.provinces[0].forces[&ForceOwner::Local(0)];
-    assert!((1..=4).contains(&army.len()));
-    assert!(army.iter().all(|unit| unit.unit_type == UnitType::LightInfantry));
-    assert!(c.notifications.history_for(0).any(|notice| notice.kind == NoticeKind::SlaveRevolt));
+    for cost in [2.0, 10.0, 25.0] {
+        let mut c = campaign();
+        c.military.config.units[UnitType::LightInfantry as usize].population_cost = cost;
+        c.economy.config.slave_revolt_chance = [1.0; 2];
+        c.economy.provinces[0].happiness[3] = 0.0;
+        c.economy.provinces[0].population[3] = 4.0 * cost;
+        c.resolve_slave_revolts();
+        let army = &c.military.provinces[0].forces[&ForceOwner::Local(0)];
+        assert_eq!(army.len(), 4);
+        assert_eq!(c.economy.provinces[0].population[3], 0.0);
+        assert_eq!(c.military.total_manpower(ForceOwner::Local(0)), 40.0);
+        assert!(army.iter().all(|unit| unit.unit_type == UnitType::LightInfantry));
+        assert!(c
+            .notifications
+            .history_for(0)
+            .any(|notice| notice.kind == NoticeKind::SlaveRevolt));
+    }
 }
 
 #[test]
@@ -999,14 +1206,14 @@ fn noble_bribes_and_insults_obey_yearly_limits_and_change_their_own_values() {
     assert_eq!(c.bribe_nobles(0, 1), Err(PoliticalError::AlreadyUsed));
     let senate_before = c.senate.support(0);
     let accusations_before = c.senate.accusations.len();
-    assert_eq!(c.insult_player(0, 2), Ok(1));
+    assert_eq!(c.send_insult(0, 2), Ok(TradeParty::Player(1)));
     assert_eq!(c.politics[2].relation(0), 40.0);
-    assert_eq!(c.insult_player(0, 2), Err(PoliticalError::AlreadyUsed));
+    assert_eq!(c.send_insult(0, 2), Err(PoliticalError::AlreadyUsed));
     assert_eq!(c.senate.support(0), senate_before);
     assert_eq!(c.senate.accusations.len(), accusations_before);
     c.economy.month = 12;
     assert!(c.noble_bribe_cost(0, 2).is_ok());
-    assert_eq!(c.insult_player(0, 2), Ok(1));
+    assert_eq!(c.send_insult(0, 2), Ok(TradeParty::Player(1)));
     assert_eq!(c.politics[2].relation(0), 30.0);
 }
 
@@ -1015,9 +1222,89 @@ fn an_insult_cannot_be_sent_to_a_different_player_in_the_same_year() {
     let mut c = campaign_with_players(3);
     c.politics[1] = ProvincePolitics::owned(3, 2);
     c.economy.provinces[1].owner = Some(2);
-    assert_eq!(c.insult_player(0, 2), Ok(1));
-    assert_eq!(c.insult_player(0, 1), Err(PoliticalError::AlreadyUsed));
+    assert_eq!(c.send_insult(0, 2), Ok(TradeParty::Player(1)));
+    assert_eq!(c.send_insult(0, 1), Err(PoliticalError::AlreadyUsed));
     assert_eq!(c.politics[1].relation(0), 50.0);
+}
+
+#[test]
+fn insulting_an_npc_changes_only_its_relation_to_the_sender() {
+    for state in [
+        PoliticalState::Independent {
+            local: 70.0,
+            shares: vec![20.0, 10.0],
+        },
+        PoliticalState::Vassal {
+            overlord: 0,
+            control: 70.0,
+            tribute: Tribute::Normal,
+        },
+        PoliticalState::Vassal {
+            overlord: 1,
+            control: 70.0,
+            tribute: Tribute::Normal,
+        },
+    ] {
+        let mut c = campaign();
+        c.politics[1].state = state.clone();
+        c.reconcile_provinces();
+        let controls: Vec<_> = c.politics.iter().map(|p| (p.control(0), p.control(1))).collect();
+        let wallets: Vec<_> = c.economy.players.iter().map(|p| p.balances()).collect();
+        let senate_support = c.senate.support(0);
+        let accusations = c.senate.accusations.len();
+        let scandals = c.espionage.scandals.len();
+
+        assert_eq!(c.insult_target(0, 1), Ok(TradeParty::Npc(1)));
+        assert_eq!(c.send_insult(0, 1), Ok(TradeParty::Npc(1)));
+        assert_eq!(c.politics[1].relation(0), 40.0);
+        assert_eq!(c.economy.provinces[1].relation_by_player[0], 40.0);
+        assert_eq!(c.politics[1].relation(1), 50.0);
+        assert_eq!(c.politics[0].relation(0), 50.0);
+        assert_eq!(c.politics[2].relation(0), 50.0);
+        assert_eq!(c.politics[1].state, state);
+        assert_eq!(
+            c.politics.iter().map(|p| (p.control(0), p.control(1))).collect::<Vec<_>>(),
+            controls
+        );
+        assert_eq!(c.economy.players.iter().map(|p| p.balances()).collect::<Vec<_>>(), wallets);
+        assert!(c.wars.iter().flatten().all(|hostile| !hostile));
+        assert!(c.npc_wars.iter().flatten().all(|hostile| !hostile));
+        assert_eq!(c.senate.support(0), senate_support);
+        assert_eq!(c.senate.accusations.len(), accusations);
+        assert_eq!(c.espionage.scandals.len(), scandals);
+    }
+}
+
+#[test]
+fn npc_and_player_insults_share_the_yearly_limit_and_relation_floor() {
+    let mut c = campaign();
+    c.economy.month = 11;
+    c.politics[1].relations[0] = 5.0;
+    assert_eq!(c.send_insult(0, 1), Ok(TradeParty::Npc(1)));
+    assert_eq!(c.politics[1].relation(0), 0.0);
+    assert_eq!(c.send_insult(0, 1), Err(PoliticalError::AlreadyUsed));
+    assert_eq!(c.send_insult(0, 2), Err(PoliticalError::AlreadyUsed));
+    assert_eq!(c.politics[2].relation(0), 50.0);
+
+    c.economy.month = 12;
+    assert_eq!(c.send_insult(0, 2), Ok(TradeParty::Player(1)));
+    assert_eq!(c.send_insult(0, 1), Err(PoliticalError::AlreadyUsed));
+    c.economy.month = 24;
+    assert_eq!(c.send_insult(0, 1), Ok(TradeParty::Npc(1)));
+    assert_eq!(c.politics[1].relation(0), 0.0);
+}
+
+#[test]
+fn insults_reject_own_provinces_rome_and_missing_targets_without_using_the_cooldown() {
+    let mut c = campaign();
+    c.politics[1] = ProvincePolitics::rome(2);
+    for (player, province) in [(0, 0), (0, 1), (0, 3), (2, 2)] {
+        assert_eq!(c.insult_target(player, province), Err(PoliticalError::Ineligible));
+        assert_eq!(c.send_insult(player, province), Err(PoliticalError::Ineligible));
+    }
+    assert!(c.diplomacy_used.is_empty());
+    assert!(c.politics.iter().all(|p| p.relation(0) == 50.0));
+    assert_eq!(c.send_insult(0, 2), Ok(TradeParty::Player(1)));
 }
 
 #[test]
@@ -1161,20 +1448,77 @@ fn military_victory_surfaces_npc_defeat_and_occupation_without_automatic_promoti
 }
 
 #[test]
+fn career_influence_is_paid_once_per_month_to_the_wallet_and_report() {
+    use crate::game::politics::PoliticalRank;
+    for (political_rank, political_income) in [
+        (PoliticalRank::Quaestor, 0.),
+        (PoliticalRank::Aedile, 5.),
+        (PoliticalRank::Praetor, 10.),
+        (PoliticalRank::Censor, 15.),
+        (PoliticalRank::Consul, 20.),
+        (PoliticalRank::Proconsul, 20.),
+        (PoliticalRank::Augustus, 25.),
+    ] {
+        for (military_rank, military_income) in [
+            (MilitaryRank::Centurion, 0.),
+            (MilitaryRank::MilitaryTribune, 5.),
+            (MilitaryRank::Legate, 10.),
+            (MilitaryRank::Imperator, 15.),
+        ] {
+            let mut baseline = campaign();
+            let mut ranked = campaign();
+            for state in [&mut baseline, &mut ranked] {
+                for senator in &mut state.senate.senators {
+                    senator.allegiance = Some(0);
+                }
+            }
+            ranked.actors[0].rank = political_rank;
+            ranked.actors[0].consul_until = Some(100);
+            ranked.military.ranks.insert(ForceOwner::Player(0), military_rank);
+            let expected = political_income + military_income;
+            for month in 1..=2 {
+                baseline.advance_month();
+                ranked.advance_month();
+                assert!(
+                    (ranked.economy.players[0].influence
+                        - baseline.economy.players[0].influence
+                        - month as f64 * expected)
+                        .abs()
+                        < 1e-8,
+                    "{political_rank:?}/{military_rank:?}"
+                );
+                assert_eq!(ranked.actors[0].influence, ranked.economy.players[0].influence);
+                assert!(
+                    (ranked.economy.last_report.player_delta[0][4]
+                        - baseline.economy.last_report.player_delta[0][4]
+                        - expected)
+                        .abs()
+                        < 1e-8
+                );
+                assert_eq!(
+                    ranked.economy.players[1].influence,
+                    baseline.economy.players[1].influence
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn military_promotions_require_order_milestones_and_spend_influence_once() {
     let mut c = campaign();
     let owner = ForceOwner::Player(0);
     c.military.peak_manpower.insert(owner, 600.);
     c.military.victories.insert(owner, 6);
-    c.economy.players[0].influence = 99.;
+    c.economy.players[0].influence = 499.;
     assert!(c.promote_military(0, MilitaryRank::Legate).is_err());
     assert!(c.promote_military(0, MilitaryRank::MilitaryTribune).is_err());
     assert_eq!(c.military.rank(owner), MilitaryRank::Centurion);
-    assert_eq!(c.economy.players[0].influence, 99.);
+    assert_eq!(c.economy.players[0].influence, 499.);
 
-    c.economy.players[0].influence = 600.;
+    c.economy.players[0].influence = 3500.;
     c.promote_military(0, MilitaryRank::MilitaryTribune).unwrap();
-    assert_eq!(c.economy.players[0].influence, 500.);
+    assert_eq!(c.economy.players[0].influence, 3000.);
     assert!(c.promote_military(0, MilitaryRank::MilitaryTribune).is_err());
     c.promote_military(0, MilitaryRank::Legate).unwrap();
     c.promote_military(0, MilitaryRank::Imperator).unwrap();
@@ -1188,6 +1532,160 @@ fn military_promotions_require_order_milestones_and_spend_influence_once() {
             .count(),
         3
     );
+    assert_eq!(
+        c.notifications
+            .history_for(1)
+            .filter(|notice| notice.kind == NoticeKind::MilitaryRankIncreased)
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn every_player_hears_about_military_and_political_promotions() {
+    use crate::game::politics::{senate::SenateEvent, PoliticalRank};
+    let mut c = campaign_with_players(3);
+    let owner = ForceOwner::Player(0);
+    c.military.peak_manpower.insert(owner, 600.0);
+    c.military.victories.insert(owner, 6);
+    c.economy.players[0].influence = 600.0;
+    c.promote_military(0, MilitaryRank::MilitaryTribune).unwrap();
+    c.record_senate_event(&SenateEvent::RankAdvanced(0, PoliticalRank::Aedile));
+    c.record_senate_event(&SenateEvent::RankAdvanced(1, PoliticalRank::Aedile));
+    for recipient in 0..3 {
+        let notices = c.notifications.drain_for(recipient);
+        let military =
+            notices.iter().find(|n| n.kind == NoticeKind::MilitaryRankIncreased).unwrap();
+        assert_eq!(military.action, NoticeAction::OpenMilitary);
+        assert!(military.title.contains("Tribune"));
+        if recipient != 0 {
+            assert!(military.title.contains("Player 1"));
+        }
+        assert_eq!(
+            notices.iter().filter(|n| n.kind == NoticeKind::SenateOfficeAppointed).count(),
+            2,
+            "different players' appointments in one month must remain distinct"
+        );
+    }
+}
+
+#[test]
+fn military_opportunities_require_every_milestone_and_rearm_without_repeating() {
+    let mut c = campaign();
+    let owner = ForceOwner::Player(0);
+    c.economy.players[0].influence = 500.0;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    c.military.peak_manpower.insert(owner, 200.0);
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    c.military.victories.insert(owner, 2);
+    c.economy.players[0].influence = 499.0;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    c.economy.players[0].influence = 500.0;
+    c.notify_rank_opportunities();
+    c.economy.players[0].influence = 499.0;
+    c.notify_rank_opportunities();
+    assert!(
+        c.notifications.drain_for(0).is_empty(),
+        "an undelivered opportunity must still be available"
+    );
+    c.economy.players[0].influence = 500.0;
+    c.notify_rank_opportunities();
+    let notices = c.notifications.drain_for(0);
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].kind, NoticeKind::MilitaryPromotionAvailable);
+    assert_eq!(notices[0].action, NoticeAction::OpenMilitary);
+    assert_eq!(notices[0].title, "You can become Tribune");
+    assert!(notices[0].body.is_empty());
+    assert!(
+        c.notifications.drain_for(1).is_empty(),
+        "opportunities belong only to the eligible player"
+    );
+    c.notify_rank_opportunities();
+    c.economy.month += 1;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "remaining eligible must not spam notices");
+    c.economy.players[0].influence = 0.0;
+    c.notify_rank_opportunities();
+    c.economy.players[0].influence = 3500.0;
+    c.notify_rank_opportunities();
+    assert_eq!(c.notifications.drain_for(0).len(), 1, "fresh eligibility should notify again");
+    c.military.peak_manpower.insert(owner, 600.0);
+    c.military.victories.insert(owner, 6);
+    c.promote_military(0, MilitaryRank::MilitaryTribune).unwrap();
+    c.notifications.drain_for(0);
+    c.notify_rank_opportunities();
+    let next = c.notifications.drain_for(0);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].title, "You can become Legate", "the next rank is a new opportunity");
+    c.promote_military(0, MilitaryRank::Legate).unwrap();
+    c.promote_military(0, MilitaryRank::Imperator).unwrap();
+    c.notifications.drain_for(0);
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "the top rank has no further promotion");
+}
+
+#[test]
+fn political_opportunities_follow_funds_support_monthly_limits_and_consul_rules() {
+    use crate::game::politics::PoliticalRank;
+    let mut c = campaign_with_players(3);
+    c.economy.players[0].influence = 1000.0;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    for senator in &mut c.senate.senators {
+        senator.allegiance = Some(0);
+    }
+    c.economy.players[0].influence = 499.0;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    c.economy.players[0].influence = 500.0;
+    c.notify_rank_opportunities();
+    let notice = c.notifications.drain_for(0).pop().unwrap();
+    assert_eq!(notice.kind, NoticeKind::PoliticalPromotionAvailable);
+    assert_eq!(notice.action, NoticeAction::OpenSenate);
+    assert_eq!(notice.title, "You can become Aedile");
+    assert!(notice.body.is_empty());
+    assert!(c.notifications.drain_for(1).is_empty());
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty());
+    c.senate.promote(0, &mut c.actors, &c.senate_config).unwrap();
+    c.push_wallets();
+    c.economy.players[0].influence = 5000.0;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "one political promotion per month");
+    c.senate.month += 1;
+    c.notify_rank_opportunities();
+    assert_eq!(c.notifications.drain_for(0).pop().unwrap().title, "You can become Praetor");
+    // A lost and regained opportunity in the same month remains a fresh notice.
+    for senator in &mut c.senate.senators {
+        senator.allegiance = None;
+    }
+    c.notify_rank_opportunities();
+    for senator in &mut c.senate.senators {
+        senator.allegiance = Some(0);
+    }
+    c.notify_rank_opportunities();
+    assert_eq!(c.notifications.drain_for(0).len(), 1);
+    c.actors[0].rank = PoliticalRank::Censor;
+    c.actors[1].rank = PoliticalRank::Consul;
+    c.actors[2].rank = PoliticalRank::Consul;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "occupied Consul seats block eligibility");
+    c.actors[2].rank = PoliticalRank::Proconsul;
+    c.actors[0].consul_again_at = c.senate.month + 1;
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "Consul cooldown blocks eligibility");
+    c.senate.month += 1;
+    c.notify_rank_opportunities();
+    assert_eq!(c.notifications.drain_for(0).pop().unwrap().title, "You can become Consul");
+    c.defeated[0] = true;
+    c.notify_rank_opportunities();
+    c.defeated[0] = false;
+    c.senate.winner = Some(1);
+    c.notify_rank_opportunities();
+    assert!(c.notifications.drain_for(0).is_empty(), "finished campaigns offer no promotions");
 }
 
 #[test]

@@ -1,5 +1,76 @@
 use super::*;
 
+#[path = "egui_capture.rs"]
+mod revolt_capture;
+
+#[test]
+fn slave_revolt_toasts_are_critical_illustrated_and_navigate_to_the_province() {
+    let mut campaign = super::super::campaign::Campaign::default();
+    campaign.notifications.province_notice(
+        0,
+        3,
+        7,
+        NoticeSeverity::Warning,
+        NoticeKind::SlaveRevolt,
+        "Slave revolt in Africa Proconsularis",
+        "All 30000 slaves have risen and formed 1000 light infantry cohorts. The rebel light infantry is fighting your army.",
+    );
+    let notice = campaign.notifications.drain_for(0).pop().unwrap();
+    let context = egui::Context::default();
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420., 180.))),
+            ..Default::default()
+        },
+        |ui| {
+            super::super::campaign_notices::card(ui, &notice, 1.0);
+        },
+    );
+    revolt_capture::Capture::default().frame(&context, &output, "slave-revolt-alert");
+    output.textures_delta.clear();
+    assert!(output
+        .shapes
+        .iter()
+        .any(|shape| matches!(&shape.shape, egui::Shape::LineSegment { stroke, .. }
+            if stroke.color == egui::Color32::from_rgb(176, 45, 35))));
+    assert_eq!(
+        super::super::campaign_notices::notice_symbol(&notice),
+        super::super::campaign_widgets::Icon::Slaves
+    );
+    assert_eq!(super::super::campaign_notices::province_section(notice.kind), 3);
+    let toast = Toast::from_notice(notice);
+    assert_eq!(toast.level, ToastLevel::Error);
+    assert_eq!(toast.action, Some(ToastAction::OpenProvince(3)));
+    assert!(toast.seconds_left > TOAST_SECONDS);
+    assert!(toast.text.contains("Africa Proconsularis"));
+    let mut queue = ToastQueue::default();
+    queue.push(toast);
+    assert_eq!(queue.1, [false, false, true]);
+}
+
+#[test]
+fn a_slave_revolt_alert_survives_a_batch_of_routine_notices() {
+    let mut campaign = super::super::campaign::Campaign::default();
+    campaign.notifications.province_notice(
+        0,
+        3,
+        7,
+        NoticeSeverity::Warning,
+        NoticeKind::SlaveRevolt,
+        "Slave revolt in Africa Proconsularis",
+        "A hostile rebel army now stands in the province.",
+    );
+    let mut queue = ToastQueue::default();
+    queue.push(Toast::from_notice(campaign.notifications.drain_for(0).pop().unwrap()));
+    for _ in 0..MAX_TOASTS * 2 {
+        queue.push(Toast::info("Construction completed"));
+        queue.push(Toast::warning("Food stores low"));
+    }
+    assert_eq!(queue.0.len(), MAX_TOASTS);
+    assert_eq!(queue.0[0].level, ToastLevel::Error);
+    assert_eq!(queue.0[0].action, Some(ToastAction::OpenProvince(3)));
+}
+
 fn resource(amount: f64, monthly_delta: f64) -> HudResource {
     HudResource {
         amount,
@@ -77,9 +148,8 @@ fn unhappy_classes_record_the_source_province_for_navigation_and_history() {
     let mut watch = WarningWatch::default();
     let mut toasts = ToastQueue::default();
     let resources = [resource(100.0, 1.0); 7];
-    let happiness = std::array::from_fn(|class| {
-        resource(campaign.economy.player_happiness(0, class).0, 0.0)
-    });
+    let happiness =
+        std::array::from_fn(|class| resource(campaign.economy.player_happiness(0, class).0, 0.0));
     watch.observe(0, resources, happiness, &mut campaign, &mut toasts);
 
     let notices = campaign.notifications.history_for(0).collect::<Vec<_>>();
@@ -106,6 +176,21 @@ fn queued_toasts_request_one_sound_per_severity() {
     assert_eq!(toasts.1, [true, true, true]);
     toasts.clear();
     assert_eq!(toasts.1, [false; 3]);
+}
+
+#[test]
+fn switching_viewers_keeps_newly_delivered_notices_through_the_warning_watch() {
+    let mut watch = WarningWatch::default();
+    let mut toasts = ToastQueue::default();
+    let mut campaign = super::super::campaign::Campaign::default();
+    let resources = [resource(100.0, 1.0); 7];
+    let happiness = [resource(50.0, 0.0); 4];
+    watch.observe(0, resources, happiness, &mut campaign, &mut toasts);
+    toasts.set_player(1);
+    toasts.push(Toast::info("Player 1 promoted to Tribune"));
+    watch.observe(1, resources, happiness, &mut campaign, &mut toasts);
+    assert_eq!(toasts.0.len(), 1);
+    assert_eq!(toasts.0[0].text, "Player 1 promoted to Tribune");
 }
 
 #[test]

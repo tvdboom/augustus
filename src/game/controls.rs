@@ -227,15 +227,18 @@ pub(super) fn advance_game_time(
     mut campaign: ResMut<campaign::Campaign>,
 ) {
     if !paused.0 && matches!(*state.get(), AppState::Map | AppState::EmptyScreen) {
-        let months = clock.advance(time.delta_secs());
-        if months > 0 {
-            if campaign.active {
-                for _ in 0..months {
-                    campaign.advance_month();
+        if campaign.active {
+            let ticks = clock
+                .advance_timeline(time.delta_secs(), campaign.military.config.rounds_per_month);
+            for monthly in ticks {
+                campaign.advance_live_combat();
+                if monthly {
+                    campaign.advance_live_month();
                 }
-            } else {
-                resources.advance(months, &mut ownership, *game == ActiveGame::LocalPractice);
             }
+        } else {
+            let months = clock.advance(time.delta_secs());
+            resources.advance(months, &mut ownership, *game == ActiveGame::LocalPractice);
         }
     }
 }

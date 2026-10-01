@@ -1,24 +1,23 @@
-//! Parchment-styled Senate controls and a precisely one-hundred-seat chamber.
-
-use super::campaign_widgets::{icon, sestertius_unit, stat, Icon};
-
-use crate::game::politics::espionage::{
-    EspionageConfig, EspionageState, ScandalKind, ScandalTarget, Severity,
-};
+//! Political career cards, faction approval badges and an interactive Senate chamber.
+use super::campaign_widgets::{paint_purchase_background, Icon};
+use super::province_panel::{PAPER, RULE};
+use crate::game::politics::espionage::{EspionageConfig, EspionageState};
 use crate::game::politics::senate::{
-    Bloc, PoliticalProfile, SenateConfig, SenateState, SupportReason,
+    Bloc, PoliticalProfile, SenateConfig, SenateState, SenatorAction, SupportReason,
 };
-use crate::game::politics::{PoliticalPlayer, PoliticalRank};
+use crate::game::politics::{Currency, PoliticalPlayer, PoliticalRank};
 use bevy_egui::egui;
 
 const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
 const UNDECIDED: egui::Color32 = egui::Color32::from_rgb(145, 143, 134);
+const POSITIVE: egui::Color32 = egui::Color32::from_rgb(32, 116, 58);
+const NEGATIVE: egui::Color32 = egui::Color32::from_rgb(166, 44, 34);
 
 #[cfg(test)]
 #[path = "../../tests/unit/senate_ui.rs"]
 mod tests;
 
-/// Show persistent loyalties, office requirements and faction-specific political tools.
+/// Two sections: paid political promotions, then public approval and personal actions.
 pub(in crate::app) fn show(
     ui: &mut egui::Ui,
     senate: &mut SenateState,
@@ -30,218 +29,776 @@ pub(in crate::app) fn show(
     espionage_config: &EspionageConfig,
     player_colors: &[egui::Color32],
 ) -> Option<String> {
-    let actor = players.get(player)?;
+    players.get(player)?;
+    let scale = super::viewport_ui_scale(ui.ctx().content_rect().size());
     let mut message = None;
-    ui.horizontal_wrapped(|ui| {
-        icon(ui, Icon::Nobles, 24.0);
-        ui.strong(actor.rank.label()).on_hover_text("Quaestor → Aedile → Praetor → Censor → Consul → Augustus. Each promotion costs Influence and requires loyal senators. Only one promotion per month.");
-        stat(ui, Icon::Influence, &format!("+{:.0}/mo", config.rank_income(actor.rank)), "Monthly Influence from your current office.");
-        if let Some(until) = actor.consul_until {
-            ui.small(format!("{} months left", until.saturating_sub(senate.month)))
-                .on_hover_text("Consuls serve 24 months, then become Proconsuls. Every departing Consul waits 12 months before seeking office again.");
-        } else if actor.consul_again_at > senate.month {
-            ui.small(format!("Return in {} months", actor.consul_again_at - senate.month));
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        stat(ui, Icon::Coin, &format!("{:.0}", actor.coin), "Available sestertii.");
-        stat(ui, Icon::Influence, &format!("{:.0}", actor.influence), "Available Influence.");
-        stat(ui, Icon::Nobles, &format!("{} senators", senate.support(player)), "Senators in your color support you. Their loyalties are compared against every player's performance each month.");
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.strong("Consuls");
-        for (id, actor) in
-            players.iter().enumerate().filter(|(_, p)| p.rank == PoliticalRank::Consul)
-        {
-            ui.colored_label(
-                player_color(player_colors, id),
-                format!(
-                    "P{} · {} mo",
-                    id + 1,
-                    actor.consul_until.unwrap_or(senate.month).saturating_sub(senate.month)
-                ),
-            );
-        }
-        let seats = players.iter().filter(|p| p.rank == PoliticalRank::Consul).count();
-        if seats < 2 {
-            ui.small(format!("{} vacant", 2 - seats));
-        }
-    });
-    let retention = config.retention_support(players.len());
-    ui.small(format!("Consuls need {retention} loyal senators to retain office."))
-        .on_hover_text(format!("Below {retention} supporters for {} consecutive months forces resignation. An exposed scandal forces resignation at the next monthly review if support is below {retention}. Every departure imposes a {}-month return cooldown.", config.loss_grace_months, config.consul_cooldown));
+    super::policy_widgets::section(ui, scale, "POLITICAL RANK");
+    rank_ladder(ui, senate, players, config, player, scale, &mut message);
+    ui.add_space(10.0 * scale);
+    super::policy_widgets::section(ui, scale, "SENATE");
     if let Some(winner) = senate.winner {
         ui.heading(format!("Player {} is Augustus · victory", winner + 1));
-    } else if let Some(requirement) = config.requirements(players[player].rank, players.len()) {
-        ui.horizontal_wrapped(|ui| {
-            let eligibility = senate.promotion_eligibility(player, players, config);
-            let explanation = eligibility.as_ref().err().map_or_else(
-                || "Appoint immediately. Influence is spent once; your senators remain loyal until their next monthly review.".to_owned(),
-                ToString::to_string,
-            );
-            if ui.add_enabled(eligibility.is_ok(), egui::Button::new(format!("Become {}", requirement.rank.label())))
-                .on_hover_text(&explanation).on_disabled_hover_text(&explanation).clicked() {
-                message = Some(match senate.promote(player, players, config) {
-                    Ok(_) => format!("Appointed {}.", requirement.rank.label()), Err(error) => error.to_string(),
-                });
-            }
-            stat(ui, Icon::Influence, &format!("{:.0}", requirement.influence), "Influence required for this promotion.");
-            ui.label(format!("{}/{} senators", senate.support(player), requirement.senators));
-        });
     }
-    ui.separator();
+    let profile = profiles.get(player).cloned().unwrap_or_default();
+    faction_badges(ui, senate, players, &profile, config, player, scale);
+    if let Some((id, anchor)) = draw_chamber(ui, senate, config, player, player_colors) {
+        let selection_key = ui.id().with(("senator-selection", player));
+        let mut open = true;
+        egui::Popup::from_response(&anchor)
+            .id(selection_key.with("actions"))
+            .open_bool(&mut open)
+            .close_behavior(if anchor.clicked() {
+                egui::PopupCloseBehavior::IgnoreClicks
+            } else {
+                egui::PopupCloseBehavior::CloseOnClickOutside
+            })
+            .width(650.0 * scale)
+            .frame(
+                egui::Frame::popup(ui.style())
+                    .fill(PAPER)
+                    .stroke(egui::Stroke::new(scale, RULE))
+                    .corner_radius(8.0 * scale)
+                    .inner_margin(egui::Margin::same((12.0 * scale) as i8)),
+            )
+            .show(|ui| {
+                senator_actions(
+                    ui,
+                    senate,
+                    players,
+                    config,
+                    player,
+                    id,
+                    espionage,
+                    espionage_config,
+                    player_colors,
+                    scale,
+                    &mut message,
+                );
+            });
+        if !open {
+            ui.ctx().data_mut(|d| d.remove::<usize>(selection_key));
+        }
+    }
+    ui.add_space(10.0 * scale);
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 30.0 * scale;
         color_key(
             ui,
             UNDECIDED,
             &format!(
-                "Neutral {}",
+                "Neutral ({})",
                 senate.senators.iter().filter(|s| s.allegiance.is_none()).count()
             ),
+            scale,
         );
         for id in 0..players.len() {
             color_key(
                 ui,
                 player_color(player_colors, id),
-                &format!(
-                    "P{}{} · {}",
-                    id + 1,
-                    if id == player {
-                        " (you)"
-                    } else {
-                        ""
-                    },
-                    senate.support(id)
-                ),
+                &format!("{} ({})", player_name(id), senate.support(id)),
+                scale,
             );
-        }
-    });
-    draw_chamber(ui, senate, players, profiles, config, player, player_colors);
-    ui.small("Five faction sections · hover a section or senator to inspect preferences.");
-    for bloc in Bloc::ALL {
-        let reasons = senate.reasons(
-            player,
-            bloc,
-            &players[player],
-            &profiles.get(player).cloned().unwrap_or_default(),
-            config,
-        );
-        ui.horizontal_wrapped(|ui| {
-            icon(ui, bloc_identity(bloc), 20.0);
-            ui.strong(format!("{} · {}/{}", bloc.label(), senate.bloc_support(player, bloc), config.bloc_sizes[bloc.index()]))
-                .on_hover_ui(|ui| { show_reasons(ui, bloc, &reasons); });
-            let mut preview = senate.clone();
-            let mut wallets = players.to_vec();
-            let court = preview.court(player, bloc, &mut wallets, config);
-            let court_tip = court.as_ref().err().map_or_else(
-                || format!("{:.0} Influence: +{:.0} attraction points fading over {} months. Does not stack. Loyal senators choose at the next monthly review.", config.court_cost, config.court_bonus, config.court_months),
-                ToString::to_string,
-            );
-            if ui.add_enabled(court.is_ok(), egui::Button::new("Court")).on_hover_text(&court_tip).on_disabled_hover_text(&court_tip).clicked() {
-                message = Some(match senate.court(player, bloc, players, config) { Ok(()) => format!("Outreach to {} begins; loyalties update next month.", bloc.label()), Err(e) => e.to_string() });
-            }
-            let quote = senate.bribe_quote(player, bloc, players, config);
-            let affordable = quote.as_ref().is_ok_and(|cost| players[player].coin >= *cost);
-            let bribe_tip = quote.as_ref().map_or_else(ToString::to_string, |cost|
-                format!("{cost:.0} {}: buy one senator's loyalty immediately for {} months. At most {} active bribes. Cost rises by 20 sestertii per active bribe. One bribe per faction per month. Creates discoverable corruption evidence; exposure cancels all your bribes.", sestertius_unit(*cost), config.bribe_months, config.bribe_cap));
-            if ui.add_enabled(affordable, egui::Button::new("Bribe"))
-                .on_hover_text(&bribe_tip).on_disabled_hover_text(if affordable || quote.is_err() { bribe_tip.clone() } else { format!("{bribe_tip}\nInsufficient sestertii.") }).clicked() {
-                message = Some(match senate.bribe(player, bloc, players, config) {
-                    Ok(id) => {
-                        espionage.record_action(player, None, ScandalKind::PoliticalBribery, Severity::Medium, senate.month, espionage_config);
-                        format!("Senator {} supports you for {} months. Bribery is discoverable.", id + 1, config.bribe_months)
-                    }, Err(e) => e.to_string(),
-                });
-            }
-        });
-    }
-    ui.separator();
-    ui.collapsing("Office requirements", |ui| {
-        for rank in [PoliticalRank::Quaestor, PoliticalRank::Aedile, PoliticalRank::Praetor, PoliticalRank::Censor, PoliticalRank::Consul] {
-            let r = config.requirements(rank, players.len()).unwrap();
-            ui.label(format!("{} · {:.0} Influence · {} senators", r.rank.label(), r.influence, r.senators));
-        }
-        ui.small("Requirements scale with player count. Augustus always needs an absolute majority and an active Consul seat.");
-    });
-    ui.collapsing("Evidence and accusations", |ui| {
-        let evidence: Vec<_> = espionage.scandals.iter().filter(|s| s.holder == player && s.expires > senate.month && !s.reserved_for_motion).cloned().collect();
-        if evidence.is_empty() { ui.small("Spy networks uncover misconduct from actual foreign actions."); }
-        for scandal in evidence {
-            ui.horizontal_wrapped(|ui| {
-                let target = match scandal.target { ScandalTarget::Player(id) => format!("P{}", id + 1), ScandalTarget::Province(id) => format!("Province {}", id + 1) };
-                ui.label(format!("{target} · {}", scandal.kind.label())).on_hover_text(format!("{:?} · {} months until evidence expires.", scandal.severity, scandal.expires.saturating_sub(senate.month)));
-                if matches!(scandal.target, ScandalTarget::Player(id) if id != player)
-                    && ui.button("Expose").on_hover_text("Consumes this evidence. Applies a faction-specific attraction penalty fading over 12 months and cancels the target's bribes. Senators may switch to you, another player or neutral at the next monthly review. An incumbent with insufficient support is forcibly demoted.").clicked() {
-                        message = Some(match senate.expose_scandal(player, scandal.id, players, espionage, config) { Ok(target) => format!("Exposed Player {}'s {}. Senate reviews loyalties next month.", target + 1, scandal.kind.label()), Err(e) => e.to_string() });
-                }
-            });
-        }
-        for accusation in &senate.accusations {
-            ui.small(format!("P{} under scrutiny · {} months", accusation.target + 1, accusation.until.saturating_sub(senate.month)));
         }
     });
     message
 }
-fn player_color(colors: &[egui::Color32], player: usize) -> egui::Color32 {
-    colors.get(player).copied().unwrap_or(egui::Color32::from_rgb(162, 115, 56))
-}
-fn bloc_identity(bloc: Bloc) -> Icon {
-    match bloc {
-        Bloc::Aristocrats => Icon::Nobles,
-        Bloc::Merchants => Icon::Trade,
-        Bloc::Provincials => Icon::Province,
-        Bloc::Populares => Icon::Plebeians,
-        Bloc::Military => Icon::MilitaryPower,
-    }
-}
-fn color_key(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
+
+fn senator_actions(
+    ui: &mut egui::Ui,
+    senate: &mut SenateState,
+    players: &mut [PoliticalPlayer],
+    config: &SenateConfig,
+    player: usize,
+    id: usize,
+    espionage: &mut EspionageState,
+    espionage_config: &EspionageConfig,
+    colors: &[egui::Color32],
+    scale: f32,
+    message: &mut Option<String>,
+) {
+    let seat = &senate.senators[id];
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 5.5, color);
-        ui.label(label);
+        let (rect, _) =
+            ui.allocate_exact_size(egui::Vec2::splat(44.0 * scale), egui::Sense::hover());
+        paint_faction_icon(ui.painter(), seat.bloc, rect.shrink(4.0 * scale));
+        ui.vertical(|ui| {
+            ui.heading(format!("Senator {}", id + 1));
+            ui.label(seat.bloc.label());
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (color, label) = seat.allegiance.map_or((UNDECIDED, "Neutral".to_owned()), |p| {
+                (player_color(colors, p), player_name(p))
+            });
+            color_key(ui, color, &label, scale);
+        });
     });
-}
-fn show_reasons(ui: &mut egui::Ui, bloc: Bloc, reasons: &[SupportReason]) {
-    ui.strong(bloc.label());
-    ui.label(bloc.preferences());
-    for reason in reasons {
-        ui.label(format!("{}: {:+.1} attraction points", reason.label, reason.points));
+    let arrangement = seat.arrangement;
+    if let Some(a) = arrangement {
+        if a.action == SenatorAction::Lobby {
+            ui.small(format!(
+                "Lobbying for {} · {:.0} Influence/month",
+                player_name(a.player),
+                config.senator_outreach_upkeep
+            ));
+        } else {
+            ui.small(format!(
+                "{} · {} · {} months remaining",
+                a.action.label(),
+                player_name(a.player),
+                a.until.saturating_sub(senate.month)
+            ));
+        }
     }
-    ui.small("Each senator weighs these factors differently. A player must clear their personal threshold; an incumbent retains loyalty until a rival leads by more than 2 points. Equal best scores stay neutral.");
+    ui.add_space(5.0 * scale);
+    ui.separator();
+    ui.add_space(5.0 * scale);
+    let gap = 8.0 * scale;
+    let columns = if ui.available_width() >= 560.0 * scale {
+        3
+    } else {
+        2
+    };
+    let size = egui::vec2(
+        (ui.available_width() - (columns - 1) as f32 * gap) / columns as f32,
+        72.0 * scale,
+    );
+    let rows = SenatorAction::ALL.len().div_ceil(columns);
+    let (grid, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), rows as f32 * (size.y + gap) - gap),
+        egui::Sense::hover(),
+    );
+    for (index, action) in SenatorAction::ALL.into_iter().enumerate() {
+        let quote = senate.senator_action_quote(player, id, action, players, config);
+        let currency = if action.currency() == Currency::Coin {
+            Icon::Coin
+        } else {
+            Icon::Influence
+        };
+        let mut costs = vec![(currency, format!("{:.0}", config.action_costs[action as usize]))];
+        if action == SenatorAction::Lobby {
+            costs.push((Icon::Influence, format!("{:.0}/mo", config.senator_outreach_upkeep)));
+        }
+        let (title, icon) = action_presentation(action);
+        let rect = egui::Rect::from_min_size(
+            grid.min
+                + egui::vec2(
+                    (index % columns) as f32 * (size.x + gap),
+                    (index / columns) as f32 * (size.y + gap),
+                ),
+            size,
+        );
+        let response = super::campaign_panel::diplomacy_action_card(
+            ui,
+            rect,
+            ui.id().with(("senator-action", id, action as usize)),
+            title,
+            icon,
+            &costs,
+            quote.is_ok(),
+            scale,
+        );
+        let clicked = response.clicked();
+        response.on_hover_ui(|ui| {
+            ui.strong(action.label());
+            ui.label(action.description());
+            let unit = if action.currency() == Currency::Coin {
+                "sestertii"
+            } else {
+                "Influence"
+            };
+            ui.small(format!("Upfront: {:.0} {unit}", config.action_costs[action as usize]));
+            if action == SenatorAction::Lobby {
+                ui.small(format!("Monthly: {:.0} Influence", config.senator_outreach_upkeep));
+            }
+            let risk = config.action_risks[action as usize];
+            if risk > 0.0 {
+                ui.colored_label(NEGATIVE, format!("Chance of exposure: {:.0}%", risk * 100.0));
+            }
+            if let Err(error) = &quote {
+                ui.add_space(5.0 * scale);
+                super::campaign_widgets::unavailable_reason(ui, &error.to_string(), scale);
+            }
+        });
+        if clicked {
+            *message = Some(match senate.act_on_senator(player, id, action, players, config) {
+                Ok(outcome) => {
+                    if let Some((kind, severity)) = outcome.misconduct {
+                        espionage.record_action(
+                            player,
+                            None,
+                            kind,
+                            severity,
+                            senate.month,
+                            espionage_config,
+                        );
+                    }
+                    if outcome.caught {
+                        format!(
+                            "{} exposed! Your faction confidence drops immediately; {}.",
+                            action.label(),
+                            outcome.misconduct.unwrap().1.label()
+                        )
+                    } else if action == SenatorAction::Assassinate {
+                        format!("Senator {} was replaced. This seat is neutral; every player's confidence was removed.", id + 1)
+                    } else {
+                        format!("{}: Senator {}. {}", action.label(), id + 1, action.description())
+                    }
+                },
+                Err(error) => error.to_string(),
+            });
+        }
+    }
+    if arrangement.is_some_and(|a| a.player == player && a.action == SenatorAction::Lobby) {
+        ui.add_space(gap);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 72.0 * scale),
+            egui::Sense::hover(),
+        );
+        if super::campaign_panel::diplomacy_action_card(
+            ui,
+            rect,
+            ui.id().with(("end-lobbying", id)),
+            "End senator lobbying",
+            Icon::Cancel,
+            &[],
+            true,
+            scale,
+        )
+        .clicked()
+        {
+            *message = Some(match senate.end_outreach(player, id) {
+                Ok(()) => "Senator lobbying ended. Monthly payments stop.".to_owned(),
+                Err(error) => error.to_string(),
+            });
+        }
+    }
 }
 
-/// Each angular section contains only its own faction; larger circles show actual
-/// persistent allegiances. Background sections remain hoverable between the seats.
-fn draw_chamber(
+fn action_presentation(action: SenatorAction) -> (&'static str, Icon) {
+    match action {
+        SenatorAction::Petition => ("Petition", Icon::Diplomacy),
+        SenatorAction::Gift => ("Send a gift", Icon::Happiness),
+        SenatorAction::Patronage => ("Patronage", Icon::Nobles),
+        SenatorAction::Bribe => ("Bribe", Icon::BribeNobles),
+        SenatorAction::Threaten => ("Threaten", Icon::SpyUndermineOpponents),
+        SenatorAction::Assassinate => ("Murder", Icon::Attack),
+        SenatorAction::Banquet => ("Public banquet", Icon::Food),
+        SenatorAction::Discredit => ("Discredit patron", Icon::SpyDiscreditRivals),
+        SenatorAction::Lobby => ("Lobby senator", Icon::SpyImproveRelations),
+    }
+}
+
+fn player_name(player: usize) -> String {
+    format!("Player {}", player + 1)
+}
+
+fn rank_ladder(
+    ui: &mut egui::Ui,
+    senate: &mut SenateState,
+    players: &mut [PoliticalPlayer],
+    config: &SenateConfig,
+    player: usize,
+    scale: f32,
+    message: &mut Option<String>,
+) {
+    let current = players[player].rank;
+    let next = config.requirements(current, players.len()).map(|r| r.rank);
+    let eligibility = senate.promotion_eligibility(player, players, config);
+    let key = egui::Id::new("senate-rank-textures");
+    let mut textures = ui
+        .ctx()
+        .data(|d| d.get_temp::<[Option<egui::TextureHandle>; 6]>(key))
+        .unwrap_or_else(|| std::array::from_fn(|_| None));
+    ui.columns(6, |columns| {
+        for (index, (ui, rank)) in columns
+            .iter_mut()
+            .zip([
+                PoliticalRank::Quaestor,
+                PoliticalRank::Aedile,
+                PoliticalRank::Praetor,
+                PoliticalRank::Censor,
+                PoliticalRank::Consul,
+                PoliticalRank::Augustus,
+            ])
+            .enumerate()
+        {
+            let available = next == Some(rank) && eligibility.is_ok();
+            let emphasized = available || index == current.ladder_index();
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 78.0 * scale),
+                if available {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            let response = response.on_hover_cursor(if available {
+                egui::CursorIcon::PointingHand
+            } else {
+                egui::CursorIcon::Default
+            });
+            if index == current.ladder_index() {
+                ui.painter().rect_filled(rect, 3.0 * scale, egui::Color32::from_rgb(218, 198, 162));
+            } else {
+                paint_purchase_background(
+                    ui,
+                    rect,
+                    available,
+                    response.hovered(),
+                    response.is_pointer_button_down_on(),
+                    3.0 * scale,
+                    scale,
+                );
+            }
+            let texture = super::rank_hud::rank_texture(ui.ctx(), &mut textures, index);
+            ui.painter().image(
+                texture.id(),
+                egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 27.0 * scale),
+                    egui::Vec2::splat(38.0 * scale),
+                ),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::from_white_alpha(if emphasized {
+                    255
+                } else {
+                    217
+                }),
+            );
+            ui.painter().text(
+                egui::pos2(rect.center().x, rect.top() + 57.0 * scale),
+                egui::Align2::CENTER_CENTER,
+                if rank == PoliticalRank::Consul && current == PoliticalRank::Proconsul {
+                    "Proconsul"
+                } else {
+                    rank.label()
+                },
+                egui::FontId::proportional(12.0 * scale),
+                if emphasized {
+                    INK
+                } else {
+                    super::campaign_widgets::UNAVAILABLE_PURCHASE_INK
+                },
+            );
+            if available && response.clicked() {
+                *message = Some(match senate.promote(player, players, config) {
+                    Ok(_) => format!("Appointed {}.", rank.label()),
+                    Err(e) => e.to_string(),
+                });
+            }
+            response.on_hover_ui(|ui| {
+                let mut rows = Vec::new();
+                if rank != PoliticalRank::Quaestor {
+                    let previous = [
+                        PoliticalRank::Quaestor,
+                        PoliticalRank::Aedile,
+                        PoliticalRank::Praetor,
+                        PoliticalRank::Censor,
+                        PoliticalRank::Consul,
+                    ][index - 1];
+                    let req = config.requirements(previous, players.len()).unwrap();
+                    rows.extend([
+                        (
+                            index <= current.ladder_index() || next == Some(rank),
+                            format!("Previous rank: {}", previous.label()),
+                        ),
+                        (
+                            senate.support(player) >= req.senators,
+                            format!(
+                                "Approving senators: {}/{}",
+                                senate.support(player),
+                                req.senators
+                            ),
+                        ),
+                        (
+                            players[player].influence >= req.influence,
+                            format!(
+                                "Influence to pay: {}/{:.0}",
+                                players[player].influence.round() as u64,
+                                req.influence
+                            ),
+                        ),
+                    ]);
+                }
+                if next == Some(rank) {
+                    if let Err(error) = &eligibility {
+                        if !matches!(
+                            error,
+                            crate::game::politics::PoliticalError::InsufficientSupport
+                                | crate::game::politics::PoliticalError::InsufficientFunds
+                        ) {
+                            rows.push((false, error.to_string()));
+                        }
+                    }
+                }
+                super::campaign_widgets::rank_tooltip(
+                    ui,
+                    scale,
+                    &rows,
+                    &[format!("Influence: +{:.0} per month", config.rank_income(rank))],
+                );
+            });
+        }
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(key, textures));
+}
+
+fn faction_badges(
     ui: &mut egui::Ui,
     senate: &SenateState,
     players: &[PoliticalPlayer],
-    profiles: &[PoliticalProfile],
+    profile: &PoliticalProfile,
+    config: &SenateConfig,
+    player: usize,
+    scale: f32,
+) {
+    ui.columns(5, |columns| {
+        for (ui, bloc) in columns.iter_mut().zip(Bloc::ALL) {
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 76.0 * scale),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect_filled(
+                rect,
+                4.0 * scale,
+                INK.gamma_multiply(if response.hovered() {
+                    0.10
+                } else {
+                    0.045
+                }),
+            );
+            paint_faction_icon(
+                ui.painter(),
+                bloc,
+                egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.top() + 20.0 * scale),
+                    egui::Vec2::splat(28.0 * scale),
+                ),
+            );
+            ui.painter().text(
+                egui::pos2(rect.center().x, rect.top() + 43.0 * scale),
+                egui::Align2::CENTER_CENTER,
+                bloc.label(),
+                egui::FontId::proportional(12.0 * scale),
+                INK,
+            );
+            ui.painter().text(
+                egui::pos2(rect.center().x, rect.top() + 61.0 * scale),
+                egui::Align2::CENTER_CENTER,
+                format!(
+                    "{} / {}",
+                    senate.bloc_support(player, bloc),
+                    config.bloc_sizes[bloc.index()]
+                ),
+                egui::FontId::proportional(16.0 * scale),
+                INK,
+            );
+            if response.hovered() {
+                faction_tooltip(
+                    &response,
+                    bloc,
+                    senate.bloc_support(player, bloc),
+                    config.bloc_sizes[bloc.index()] as usize,
+                    &senate.reasons(player, bloc, &players[player], profile, config),
+                    scale,
+                );
+            }
+        }
+    });
+}
+
+/// Five purpose-built vector emblems: temple, coin, aqueduct, wheat, and crossed swords.
+fn paint_faction_icon(p: &egui::Painter, bloc: Bloc, rect: egui::Rect) {
+    let at = |x: f32, y: f32| rect.min + egui::vec2(x * rect.width(), y * rect.height());
+    let stroke = egui::Stroke::new(rect.width() * 0.065, INK);
+    let line = |a, b| p.line_segment([a, b], stroke);
+    match bloc {
+        Bloc::Aristocrats => {
+            p.add(egui::Shape::closed_line(
+                vec![at(0.08, 0.32), at(0.5, 0.08), at(0.92, 0.32)],
+                stroke,
+            ));
+            for x in [0.22, 0.5, 0.78] {
+                line(at(x, 0.4), at(x, 0.82));
+            }
+            line(at(0.08, 0.9), at(0.92, 0.9));
+            line(at(0.08, 0.38), at(0.92, 0.38));
+        },
+        Bloc::Merchants => {
+            p.circle_stroke(rect.center(), rect.width() * 0.4, stroke);
+            p.circle_stroke(
+                rect.center(),
+                rect.width() * 0.29,
+                egui::Stroke::new(rect.width() * 0.035, INK),
+            );
+            line(at(0.35, 0.34), at(0.63, 0.34));
+            line(at(0.35, 0.5), at(0.63, 0.5));
+            line(at(0.35, 0.66), at(0.63, 0.66));
+            line(at(0.4, 0.34), at(0.4, 0.66));
+            line(at(0.59, 0.34), at(0.59, 0.66));
+        },
+        Bloc::Provincials => {
+            line(at(0.08, 0.26), at(0.92, 0.26));
+            line(at(0.08, 0.85), at(0.92, 0.85));
+            for x in [0.12, 0.4, 0.68] {
+                p.add(egui::Shape::line(
+                    vec![
+                        at(x, 0.83),
+                        at(x, 0.47),
+                        at(x + 0.12, 0.35),
+                        at(x + 0.24, 0.47),
+                        at(x + 0.24, 0.83),
+                    ],
+                    stroke,
+                ));
+            }
+        },
+        Bloc::Populares => {
+            line(at(0.5, 0.9), at(0.5, 0.12));
+            for y in [0.28, 0.46, 0.64] {
+                line(at(0.5, y + 0.1), at(0.22, y - 0.08));
+                line(at(0.5, y + 0.1), at(0.78, y - 0.08));
+            }
+        },
+        Bloc::Military => {
+            line(at(0.17, 0.85), at(0.83, 0.15));
+            line(at(0.83, 0.85), at(0.17, 0.15));
+            line(at(0.13, 0.64), at(0.36, 0.85));
+            line(at(0.64, 0.85), at(0.87, 0.64));
+            line(at(0.72, 0.13), at(0.86, 0.13));
+            line(at(0.86, 0.13), at(0.86, 0.28));
+            line(at(0.14, 0.13), at(0.28, 0.13));
+            line(at(0.14, 0.13), at(0.14, 0.28));
+        },
+    }
+}
+
+fn player_color(colors: &[egui::Color32], player: usize) -> egui::Color32 {
+    colors.get(player).copied().unwrap_or(egui::Color32::from_rgb(162, 115, 56))
+}
+fn color_key(ui: &mut egui::Ui, color: egui::Color32, label: &str, scale: f32) {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(14.0 * scale),
+        INK,
+    );
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + 21.0 * scale, galley.size().y.max(16.0 * scale)),
+        egui::Sense::hover(),
+    );
+    ui.painter().circle_filled(
+        egui::pos2(rect.left() + 6.0 * scale, rect.center().y),
+        5.5 * scale,
+        color,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 21.0 * scale, rect.center().y - galley.size().y * 0.5),
+        galley,
+        INK,
+    );
+}
+
+fn faction_tooltip(
+    response: &egui::Response,
+    bloc: Bloc,
+    supporters: usize,
+    members: usize,
+    reasons: &[SupportReason],
+    scale: f32,
+) {
+    let ctx = &response.ctx;
+    let id = response.id.with("faction-tooltip");
+    let tooltip = egui::Area::new(id)
+        .order(egui::Order::Debug)
+        .interactable(false)
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 8.0 * scale))
+        .constrain_to(ctx.content_rect().shrink(8.0 * scale))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(PAPER)
+                .stroke(egui::Stroke::new(scale, RULE))
+                .corner_radius(9.0 * scale)
+                .inner_margin(egui::Margin::same((12.0 * scale) as i8))
+                .show(ui, |ui| {
+                    ui.set_width(460.0 * scale);
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::Vec2::splat(38.0 * scale),
+                            egui::Sense::hover(),
+                        );
+                        paint_faction_icon(ui.painter(), bloc, rect.shrink(3.0 * scale));
+                        ui.vertical(|ui| {
+                            ui.heading(bloc.label());
+                            ui.label(format!("{supporters} / {members} senators approve"));
+                        });
+                    });
+                    ui.add_space(5.0 * scale);
+                    ui.separator();
+                    ui.add_space(5.0 * scale);
+                    show_reasons(ui, bloc, reasons, scale);
+                });
+        });
+    // The decorative standard uses Debug too. A sublayer keeps the badge card
+    // above the flag regardless of the order in which the HUD systems paint.
+    ctx.set_sublayer(
+        egui::LayerId::new(egui::Order::Debug, egui::Id::new("augustus_map_standard_flag")),
+        tooltip.response.layer_id,
+    );
+}
+
+/// Rules are always visible; live recurring effects are marked active without revealing points.
+fn show_reasons(ui: &mut egui::Ui, bloc: Bloc, reasons: &[SupportReason], scale: f32) {
+    let (positive, negative): (&[&str], &[&str]) = match bloc {
+        Bloc::Aristocrats => (
+            &[
+                "Happy nobles",
+                "Noble population",
+                "Political office",
+                "Forums and completed wonders",
+            ],
+            &["Unhappy nobles", "Coercion of senators", "Exposed corruption, smears or murder"],
+        ),
+        Bloc::Merchants => (
+            &["Active fulfilled trade routes", "Profitable income", "Urban Markets"],
+            &[
+                "Active wars",
+                "Unfulfilled trade commitments",
+                "Resource shortages",
+                "Loss-making economy",
+                "Broken routes or exposed corruption",
+            ],
+        ),
+        Bloc::Provincials => (
+            &["Happy free populations", "Friendly, stable vassals", "Provincial trade"],
+            &[
+                "Unhappy populations or hostile vassals",
+                "High tribute",
+                "Active wars",
+                "Exposed famine, abuse or treaty violations",
+            ],
+        ),
+        Bloc::Populares => (
+            &[
+                "Happy citizens and plebeians",
+                "Generous food policy",
+                "Reliable food supply",
+                "Public banquets",
+            ],
+            &[
+                "Unhappy citizens and plebeians",
+                "Restricted food supply or famine",
+                "High taxes",
+                "Harsh slave labor",
+                "Coercion or exposed abuse",
+            ],
+        ),
+        Bloc::Military => (
+            &[
+                "Effective army strength",
+                "High military rank",
+                "Recent victories",
+                "Controlled provinces",
+            ],
+            &["Recent defeats", "Exposed military incompetence or senator murder"],
+        ),
+    };
+    let inner_width = (ui.available_width() - ui.spacing().item_spacing.x) * 0.5 - 16.0 * scale;
+    let content_height = [positive, negative]
+        .into_iter()
+        .map(|rules| {
+            ui.text_style_height(&egui::TextStyle::Body)
+                + 4.0 * scale
+                + rules
+                    .iter()
+                    .map(|rule| {
+                        ui.painter()
+                            .layout(
+                                format!("• {rule}"),
+                                egui::FontId::proportional(13.0 * scale),
+                                INK,
+                                inner_width,
+                            )
+                            .size()
+                            .y
+                            + ui.spacing().item_spacing.y
+                    })
+                    .sum::<f32>()
+        })
+        .fold(0.0_f32, f32::max);
+    ui.columns(2, |columns| {
+        for (column, (title, color, rules)) in columns.iter_mut().zip([
+            ("Positive effects", POSITIVE, positive),
+            ("Negative effects", NEGATIVE, negative),
+        ]) {
+            egui::Frame::new()
+                .fill(color.gamma_multiply(0.06))
+                .corner_radius(5.0 * scale)
+                .inner_margin(egui::Margin::same((8.0 * scale) as i8))
+                .show(column, |ui| {
+                    ui.set_min_size(egui::vec2(inner_width, content_height));
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.colored_label(color, egui::RichText::new(title).strong());
+                        ui.add_space(4.0 * scale);
+                        for rule in rules {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("• {rule}"))
+                                        .size(13.0 * scale)
+                                        .color(INK),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    });
+                });
+        }
+    });
+    let active: Vec<_> = reasons.iter().filter(|r| r.points.abs() > 1e-9).collect();
+    if !active.is_empty() {
+        ui.separator();
+        ui.strong("Active monthly effects");
+        for reason in active {
+            ui.colored_label(
+                if reason.points > 0.0 {
+                    POSITIVE
+                } else {
+                    NEGATIVE
+                },
+                format!(
+                    "{} {}",
+                    if reason.points > 0.0 {
+                        "+"
+                    } else {
+                        "−"
+                    },
+                    reason.label
+                ),
+            );
+        }
+    }
+}
+
+/// Each angular section contains only its own faction; larger circles show actual
+/// persistent allegiances. Only individual seats are interactive in the chamber.
+fn draw_chamber(
+    ui: &mut egui::Ui,
+    senate: &SenateState,
     config: &SenateConfig,
     player: usize,
     colors: &[egui::Color32],
-) {
+) -> Option<(usize, egui::Response)> {
     let width = ui.available_width().min(590.0);
     let height = width * 0.56;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let center = egui::pos2(rect.center().x, rect.bottom() - 6.0);
     let outer = width * 0.47;
     let radius = (width / 75.0).clamp(3.0, 8.0);
-    let pointer = ui.input(|i| i.pointer.hover_pos());
-    let hover_angle = pointer.and_then(|p| {
-        let d = p - center;
-        (d.y <= 0.0 && d.length() <= outer + radius * 2.0 && d.length() > outer * 0.30)
-            .then(|| (-d.y).atan2(-d.x))
-    });
     let mut start = 0.0;
-    let mut hovered_bloc = None;
-    let mut hovered_senator = None;
+    let selection_key = ui.id().with(("senator-selection", player));
+    let mut selected = ui.ctx().data(|d| d.get_temp::<usize>(selection_key));
+    let mut anchor = None;
     for bloc in Bloc::ALL {
         let arc = std::f32::consts::PI * config.bloc_sizes[bloc.index()] as f32 / 100.0;
-        let hovered = hover_angle.is_some_and(|a| a >= start && a < start + arc);
-        if hovered {
-            hovered_bloc = Some(bloc);
-        }
         let mut points = vec![center];
         for step in 0..=12 {
             let a = start + arc * step as f32 / 12.0;
@@ -251,11 +808,7 @@ fn draw_chamber(
         }
         ui.painter().add(egui::Shape::convex_polygon(
             points,
-            INK.gamma_multiply(if hovered {
-                0.12
-            } else {
-                0.045
-            }),
+            INK.gamma_multiply(0.045),
             egui::Stroke::NONE,
         ));
         let divider =
@@ -279,15 +832,26 @@ fn draw_chamber(
                 radius,
                 egui::Stroke::new(0.8, INK.gamma_multiply(0.65)),
             );
-            if senator.bribe.is_some() {
+            if senator.arrangement.is_some() || selected == Some(senator.id) {
                 ui.painter().circle_stroke(
                     point,
                     radius + 1.8,
                     egui::Stroke::new(1.3, egui::Color32::from_rgb(184, 135, 52)),
                 );
             }
-            if pointer.is_some_and(|p| p.distance(point) < radius + 2.0) {
-                hovered_senator = Some(*senator);
+            let seat_response = ui
+                .interact(
+                    egui::Rect::from_center_size(point, egui::Vec2::splat((radius + 2.0) * 2.0)),
+                    ui.id().with(("senator-seat", senator.id)),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if seat_response.clicked() {
+                selected = Some(senator.id);
+                ui.ctx().data_mut(|d| d.insert_temp(selection_key, senator.id));
+            }
+            if selected == Some(senator.id) {
+                anchor = Some((senator.id, seat_response));
             }
         }
         let angle = start + arc * 0.5;
@@ -308,6 +872,11 @@ fn draw_chamber(
         );
         start += arc;
     }
+    let right_divider = center + egui::vec2(outer + radius, 0.0);
+    ui.painter().line_segment(
+        [center + (right_divider - center) * 0.32, right_divider],
+        egui::Stroke::new(1.0, INK.gamma_multiply(0.25)),
+    );
     ui.painter().text(
         center - egui::vec2(0.0, 12.0),
         egui::Align2::CENTER_BOTTOM,
@@ -315,34 +884,5 @@ fn draw_chamber(
         egui::FontId::proportional((width / 36.0).clamp(10.0, 17.0)),
         INK,
     );
-    if let Some(bloc) = hovered_bloc {
-        response.on_hover_ui(|ui| {
-            if let Some(s) = hovered_senator {
-                ui.strong(format!(
-                    "Senator {} · {}",
-                    s.id + 1,
-                    s.allegiance.map_or("Neutral".to_owned(), |p| format!("Player {}", p + 1))
-                ));
-                if let Some(bribe) = s.bribe {
-                    ui.label(format!(
-                        "Bribed · {} months remaining",
-                        bribe.until.saturating_sub(senate.month)
-                    ));
-                }
-            }
-            let reasons = senate.reasons(
-                player,
-                bloc,
-                &players[player],
-                &profiles.get(player).cloned().unwrap_or_default(),
-                config,
-            );
-            show_reasons(ui, bloc, &reasons);
-            ui.label(format!(
-                "Your supporters: {} of {}",
-                senate.bloc_support(player, bloc),
-                config.bloc_sizes[bloc.index()]
-            ));
-        });
-    }
+    anchor
 }

@@ -1,6 +1,11 @@
 //! Aggregate sestertius income and outflow for the local map HUD.
 
 use super::{campaign::Campaign, flow_panel, ProvinceOwnership};
+use crate::game::politics::senate::SenatorAction;
+
+#[cfg(test)]
+#[path = "../../tests/unit/senate_flow_ui.rs"]
+mod tests;
 use bevy_egui::egui;
 
 pub(in crate::app) fn show(
@@ -57,12 +62,15 @@ pub(in crate::app) fn show(
     });
     let recruitment = campaign.map_or(0.0, |campaign| campaign.recruitment_effort_cost(player));
     let spy_upkeep = campaign.map_or(0.0, |campaign| campaign.spy_upkeep(player));
+    let senator_bribery =
+        campaign.map_or(0.0, |campaign| campaign.senate.spent_on(player, SenatorAction::Bribe));
     let outflow = [
         ("Noble wages", noble_wages),
         ("Army wages", army_wages),
         ("Civic spending", civic),
         ("Recruitment effort", recruitment),
         ("Spy upkeep", spy_upkeep),
+        ("Senator bribery", senator_bribery),
         ("Trade deals", 0.0),
     ];
     flow_panel::show(

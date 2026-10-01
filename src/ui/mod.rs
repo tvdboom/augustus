@@ -5,6 +5,8 @@ use super::*;
 
 #[path = "audio_controls.rs"]
 pub(super) mod audio_controls;
+#[path = "battle_audio.rs"]
+pub(super) mod battle_audio;
 #[path = "campaign_confirmation.rs"]
 pub(super) mod campaign_confirmation;
 #[path = "campaign_economy.rs"]
@@ -21,6 +23,8 @@ pub(super) mod campaign_panel;
 pub(super) mod campaign_policies;
 #[path = "campaign_politics.rs"]
 pub(super) mod campaign_politics;
+#[path = "campaign_scandals.rs"]
+pub(super) mod campaign_scandals;
 #[path = "campaign_trade.rs"]
 pub(super) mod campaign_trade;
 #[path = "campaign_widgets.rs"]
@@ -53,6 +57,8 @@ pub(super) mod province_intelligence;
 pub(super) mod province_panel;
 #[path = "rank_hud.rs"]
 pub(super) mod rank_hud;
+#[path = "rank_promotion.rs"]
+pub(super) mod rank_promotion;
 #[path = "resource_hud.rs"]
 pub(super) mod resource_hud;
 #[path = "resource_panel.rs"]

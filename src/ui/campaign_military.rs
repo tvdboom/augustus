@@ -11,10 +11,16 @@ use super::campaign_widgets::{
 use super::resource_hud::format_food_demand;
 use bevy::prelude::*;
 use bevy_egui::egui;
-use bevy_egui::EguiContexts;
 
 use crate::game::economy::{BuildingType, EconomyWorld};
 use crate::game::military::*;
+
+#[path = "military_battle.rs"]
+mod battle_panel;
+#[path = "military_orders.rs"]
+mod orders;
+pub(in crate::app) use battle_panel::{draw_battle_panel, open_battle_panel, selected_battle};
+pub(in crate::app) use orders::draw_orders_menu;
 
 /// One player intent dispatched by the campaign bridge after rendering.
 pub(in crate::app) enum MilitaryUiAction {
@@ -41,7 +47,6 @@ pub(in crate::app) enum MilitaryUiAction {
         plan: BattlePlan,
     },
     /// Move a unique selection using a snapshot of the displayed plan.
-    #[allow(dead_code)] // Movement orders are intentionally deferred in the panel.
     Move {
         /// Final province destination.
         destination: usize,
@@ -50,6 +55,20 @@ pub(in crate::app) enum MilitaryUiAction {
         /// Every ordered adjacent crossing, already previewed for the player.
         route: Vec<ProvinceId>,
         /// Formation/tactic captured for the route.
+        plan: BattlePlan,
+    },
+    /// Declare hostility and march along the previewed invasion route.
+    Attack {
+        destination: usize,
+        units: Vec<UnitId>,
+        route: Vec<ProvinceId>,
+        plan: BattlePlan,
+    },
+    /// Enter an independent province and exert limited non-combat control.
+    Pressure {
+        destination: usize,
+        units: Vec<UnitId>,
+        route: Vec<ProvinceId>,
         plan: BattlePlan,
     },
     /// Request retreat at the next round boundary.
@@ -109,6 +128,7 @@ pub(super) fn selected_army_province(ctx: &egui::Context) -> Option<usize> {
 }
 
 fn set_selected_army(ctx: &egui::Context, selected: Option<ArmyPanelSelection>) {
+    orders::clear(ctx);
     ctx.data_mut(|data| {
         data.remove::<ArmyTitleSearch>(egui::Id::new(ARMY_TITLE_SEARCH_ID));
         if let Some(selected) = selected {
@@ -121,6 +141,9 @@ fn set_selected_army(ctx: &egui::Context, selected: Option<ArmyPanelSelection>) 
 
 /// Escape closes the independent army window before the game menu is opened.
 pub(in crate::app) fn dismiss_army_panel(ctx: &egui::Context) -> bool {
+    if orders::dismiss(ctx) || battle_panel::dismiss(ctx) {
+        return true;
+    }
     if selected_army(ctx).is_none() {
         return false;
     }
@@ -135,6 +158,7 @@ pub(in crate::app) fn open_army_panel(
     player: usize,
     movement: Option<u64>,
 ) {
+    battle_panel::dismiss(ctx);
     set_selected_army(
         ctx,
         Some(ArmyPanelSelection {
@@ -152,6 +176,7 @@ pub(in crate::app) fn toggle_map_army_panel(
     player: usize,
     movement: Option<u64>,
 ) {
+    battle_panel::dismiss(ctx);
     toggle_army_panel(
         ctx,
         province,
@@ -269,22 +294,28 @@ fn rank_ladder(
         ]) {
             let index = rank as usize;
             let requirements = rank.promotion_requirements();
-            let previous_met = requirements.is_some_and(|req| current == req.previous);
-            let milestones_met = requirements.is_some_and(|req| {
-                peak >= req.peak_manpower && wins >= req.victories && influence >= req.influence
-            });
-            let available = previous_met && milestones_met;
+            let available = world.promotion_eligibility(owner, rank, influence).is_ok();
+            let emphasized = available || rank == current;
             let (rect, response) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), 78. * scale),
-                if index > current as usize { egui::Sense::click() } else { egui::Sense::hover() },
+                if available {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
             );
+            let response = response.on_hover_cursor(if available {
+                egui::CursorIcon::PointingHand
+            } else {
+                egui::CursorIcon::Default
+            });
             if rank == current {
                 ui.painter().rect_filled(rect, 3. * scale, egui::Color32::from_rgb(218, 198, 162));
             } else {
                 paint_purchase_background(
                     ui,
                     rect,
-                    index < current as usize || available,
+                    available,
                     response.hovered(),
                     response.is_pointer_button_down_on(),
                     3. * scale,
@@ -292,121 +323,69 @@ fn rank_ladder(
                 );
             }
             let center = rect.center().x;
-            paint_icon(
+            super::campaign_widgets::paint_raster_icon(
                 ui,
                 Icon::MilitaryRank(rank),
                 egui::Rect::from_center_size(
                     egui::pos2(center, rect.top() + 27. * scale),
                     egui::vec2(38. * scale, 38. * scale),
                 ),
+                egui::Color32::from_white_alpha(if emphasized {
+                    255
+                } else {
+                    217
+                }),
             );
             ui.painter().text(
                 egui::pos2(center, rect.top() + 57. * scale),
                 egui::Align2::CENTER_CENTER,
                 rank.name(),
                 egui::FontId::proportional(14. * scale),
-                super::province_panel::INK,
+                if emphasized {
+                    super::province_panel::INK
+                } else {
+                    super::campaign_widgets::UNAVAILABLE_PURCHASE_INK
+                },
             );
             if available && response.clicked() {
                 *promotion = Some(rank);
             }
             response.on_hover_ui(|ui| {
-                ui.strong(if rank == current { "Current rank" } else { rank.name() });
+                let mut rows = Vec::new();
                 if let Some(req) = requirements {
-                    let met = egui::Color32::from_rgb(32, 116, 58);
-                    let missing = egui::Color32::from_rgb(166, 44, 34);
-                    for (ok, label) in [
-                        (current == req.previous || index < current as usize,
-                            format!("Previous rank: {}", req.previous.name())),
-                        (peak >= req.peak_manpower,
-                            format!("Peak combined army manpower: {:.0} / {:.0}", peak, req.peak_manpower)),
-                        (wins >= req.victories,
-                            format!("Battles won: {wins} / {}", req.victories)),
-                        (influence >= req.influence,
-                            format!("Influence to pay: {:.0} / {:.0}", influence, req.influence)),
-                    ] {
-                        ui.colored_label(if ok { met } else { missing }, format!("• {label}"));
-                    }
+                    rows.extend([
+                        (
+                            current == req.previous || index < current as usize,
+                            format!("Previous rank: {}", req.previous.name()),
+                        ),
+                        (
+                            peak >= req.peak_manpower,
+                            format!(
+                                "Army manpower: {}/{:.0}",
+                                peak.round() as u64,
+                                req.peak_manpower
+                            ),
+                        ),
+                        (wins >= req.victories, format!("Battles won: {wins}/{}", req.victories)),
+                        (
+                            influence >= req.influence,
+                            format!(
+                                "Influence to pay: {}/{:.0}",
+                                influence.round() as u64,
+                                req.influence
+                            ),
+                        ),
+                    ]);
                 }
-                ui.separator();
-                ui.small(format!(
-                    "Monthly recovery: {:.1}% manpower and {:.1} morale · combat morale: +{:.0} · garrison Control: ×{:.2} · Military bloc support: +{}",
-                    world.config.rank_recovery[index],
-                    world.config.rank_recovery[index],
-                    world.config.rank_morale[index],
-                    world.config.rank_control[index],
-                    index * 3,
-                ));
+                super::campaign_widgets::rank_tooltip(
+                    ui,
+                    scale,
+                    &rows,
+                    &[format!("Influence: +{:.0} per month", world.config.rank_influence[index])],
+                );
             });
         }
     });
-}
-
-/// Brief promotion reveal above the map, using the newly earned rank artwork.
-pub(in crate::app) fn draw_promotion(
-    mut contexts: EguiContexts,
-    state: Res<State<super::AppState>>,
-    game: Res<super::ActiveGame>,
-    view: Res<super::campaign_panel::CampaignUi>,
-) {
-    if *state.get() != super::AppState::Map || *game != super::ActiveGame::LocalPractice {
-        return;
-    }
-    let Some((rank, started_at)) = view.promotion_started else {
-        return;
-    };
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-    let elapsed = (ctx.input(|input| input.time) - started_at).max(0.0) as f32;
-    if elapsed >= 2.8 {
-        return;
-    }
-    let scale = super::viewport_ui_scale(ctx.content_rect().size());
-    let fade = (elapsed / 0.3).min(1.0).min((2.8 - elapsed) / 0.5).clamp(0.0, 1.0);
-    let grow = (0.82 + (elapsed / 0.4).min(1.0) * 0.18) * scale;
-    let center = ctx.content_rect().center();
-    let rect = egui::Rect::from_center_size(center, egui::vec2(250., 210.) * grow);
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::new("military-rank-promotion"),
-    ));
-    painter.rect_filled(
-        rect,
-        10. * scale,
-        egui::Color32::from_rgb(53, 46, 35).gamma_multiply(fade),
-    );
-    painter.rect_stroke(
-        rect,
-        10. * scale,
-        egui::Stroke::new(2. * scale, egui::Color32::from_rgb(211, 165, 77).gamma_multiply(fade)),
-        egui::StrokeKind::Inside,
-    );
-    let art = egui::Rect::from_center_size(
-        center - egui::vec2(0., 22. * grow),
-        egui::vec2(100., 100.) * grow,
-    );
-    painter.image(
-        super::campaign_widgets::texture(ctx, Icon::MilitaryRank(rank)),
-        art,
-        super::campaign_widgets::icon_uv(Icon::MilitaryRank(rank)),
-        egui::Color32::WHITE.gamma_multiply(fade),
-    );
-    painter.text(
-        center + egui::vec2(0., 55. * grow),
-        egui::Align2::CENTER_CENTER,
-        "CONGRATULATIONS",
-        egui::FontId::proportional(14. * grow),
-        egui::Color32::from_rgb(232, 204, 148).gamma_multiply(fade),
-    );
-    painter.text(
-        center + egui::vec2(0., 77. * grow),
-        egui::Align2::CENTER_CENTER,
-        format!("Promoted to {}", rank.name()),
-        egui::FontId::proportional(19. * grow),
-        egui::Color32::WHITE.gamma_multiply(fade),
-    );
-    ctx.request_repaint_after(std::time::Duration::from_millis(16));
 }
 
 /// National military career and separate owned and visiting army ledgers.
@@ -1303,7 +1282,7 @@ fn stationary_army_panel(
     let mergeable = UnitType::ALL.into_iter().any(|kind| {
         let matching: Vec<_> = army.iter().filter(|unit| unit.unit_type == kind).collect();
         let people: u64 = matching.iter().map(|unit| unit.people()).sum();
-        matching.len() > ((people + 999) / 1_000) as usize
+        matching.len() > people.div_ceil(1_000) as usize
     });
     let disband = if in_battle {
         Err("Disband is unavailable during battle.")

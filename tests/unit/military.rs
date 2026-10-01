@@ -1,6 +1,69 @@
 //! Invariant and balance regression coverage for irreversible military changes.
 
 use super::*;
+
+#[test]
+fn d6_rounds_are_seeded_shared_and_record_actual_simultaneous_losses() {
+    let config = MilitaryConfig::default();
+    let make = || {
+        Battle::new(
+            41,
+            0,
+            None,
+            None,
+            MilitaryTerrain::Plains,
+            0,
+            side(vec![unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry)], 4, &config),
+            side(vec![unit(2, ForceOwner::Player(1), UnitType::HeavyInfantry)], 4, &config),
+            177,
+        )
+    };
+    let mut a = make();
+    let mut b = make();
+    a.advance_month(&config);
+    for _ in 0..config.rounds_per_month {
+        b.advance_timed_round(&config);
+    }
+    assert_eq!(a.months, b.months);
+    assert_eq!(a.rounds.len(), config.rounds_per_month);
+    for (left, right) in a.rounds.iter().zip(&b.rounds) {
+        assert_eq!(left.dice, right.dice);
+        assert!(left.dice.iter().all(|roll| (1..=6).contains(roll)));
+        assert_eq!(left.dice_multipliers, left.dice.map(|roll| dice_multiplier(roll, &config)));
+        assert_eq!(left.casualties, right.casualties);
+    }
+    let attacker_lost: u64 = a.rounds.iter().map(|r| r.casualties[0]).sum();
+    let defender_lost: u64 = a.rounds.iter().map(|r| r.casualties[1]).sum();
+    assert_eq!(attacker_lost, 1_000 - a.attackers.units.iter().map(Unit::people).sum::<u64>());
+    assert_eq!(defender_lost, 1_000 - a.defenders.units.iter().map(Unit::people).sum::<u64>());
+    assert_eq!(dice_multiplier(1, &config), config.random_range[0]);
+    assert_eq!(dice_multiplier(6, &config), config.random_range[1]);
+}
+
+#[test]
+fn timed_combat_deadline_matches_monthly_resolution() {
+    let mut config = MilitaryConfig::default();
+    config.base_manpower_damage = 0.;
+    config.base_morale_damage = 0.;
+    let mut battle = Battle::new(
+        1,
+        1,
+        None,
+        Some(0),
+        MilitaryTerrain::Plains,
+        0,
+        side(vec![unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry)], 4, &config),
+        side(vec![unit(2, ForceOwner::Local(1), UnitType::HeavyInfantry)], 4, &config),
+        10,
+    );
+    let rounds = config.maximum_battle_months * config.rounds_per_month;
+    for tick in 1..=rounds {
+        battle.advance_timed_round(&config);
+        assert_eq!(battle.round, tick);
+        assert_eq!(battle.months, tick / config.rounds_per_month);
+        assert_eq!(battle.result, (tick == rounds).then_some(BattleResult::DefenderVictory));
+    }
+}
 use std::collections::{BTreeMap, BTreeSet};
 
 fn graph() -> Vec<MilitaryProvince> {
@@ -34,6 +97,28 @@ fn side(units: Vec<Unit>, width: usize, config: &MilitaryConfig) -> BattleSide {
     let plans = units.iter().map(|u| (u.owner, BattlePlan::default())).collect();
     let ranks = units.iter().map(|u| (u.owner, MilitaryRank::Centurion)).collect();
     BattleSide::new(units, plans, ranks, width, config)
+}
+
+#[test]
+fn population_forces_scale_with_residents_and_preserve_partial_cohorts() {
+    for (population, cohorts, food) in
+        [(12.0, 2, 1.8), (120.0, 12, 18.0), (300_000.0, 30_000, 45_000.0)]
+    {
+        let mut world = MilitaryWorld::new(1);
+        let owner = ForceOwner::Local(0);
+        assert_eq!(
+            world.seed_population_force(0, owner, UnitType::LightInfantry, population).unwrap(),
+            cohorts
+        );
+        assert_eq!(world.total_manpower(owner), population);
+        assert_eq!(world.peak_manpower[&owner], population);
+        assert!((world.food_demand(owner) - food).abs() < 1e-8);
+        assert!(world.provinces[0].forces[&owner].iter().all(|unit| {
+            unit.max_manpower == 10.0
+                && unit.current_manpower <= unit.max_manpower
+                && unit.people() > 0
+        }));
+    }
 }
 
 #[test]

@@ -339,18 +339,27 @@ impl GameClock {
     }
 
     fn advance(&mut self, seconds: f32) -> usize {
-        let mut elapsed_months = 0;
-        self.month_progress += seconds * self.speed();
-        while self.month_progress >= SECONDS_PER_MONTH {
-            self.month_progress -= SECONDS_PER_MONTH;
-            self.month += 1;
-            elapsed_months += 1;
-            if self.month == MONTH_NAMES.len() {
-                self.month = 0;
-                self.year += 1;
+        self.advance_timeline(seconds, 1).len()
+    }
+
+    // Ordered combat ticks, with true marking a monthly movement/economy boundary.
+    fn advance_timeline(&mut self, seconds: f32, rounds_per_month: usize) -> Vec<bool> {
+        let rounds = rounds_per_month.max(1);
+        let total = self.month_progress + seconds.max(0.) * self.speed();
+        let first = (self.month_progress / SECONDS_PER_MONTH * rounds as f32).floor() as usize + 1;
+        let last = (total / SECONDS_PER_MONTH * rounds as f32).floor() as usize;
+        let ticks: Vec<_> = (first..=last).map(|step| step.is_multiple_of(rounds)).collect();
+        for &monthly in &ticks {
+            if monthly {
+                self.month += 1;
+                if self.month == MONTH_NAMES.len() {
+                    self.month = 0;
+                    self.year += 1;
+                }
             }
         }
-        elapsed_months
+        self.month_progress = total % SECONDS_PER_MONTH;
+        ticks
     }
 
     fn date_label(&self) -> String {
@@ -497,11 +506,15 @@ impl Plugin for AugustusPlugin {
                 EguiPrimaryContextPass,
                 draw_map.run_if(map_visible).after(draw_map_resources),
             )
+            .add_systems(
+                EguiPrimaryContextPass,
+                battle_audio::update.after(campaign_panel::draw_army_panel),
+            )
             .add_systems(EguiPrimaryContextPass, toasts::draw.after(draw_map_resources))
             .add_systems(EguiPrimaryContextPass, celebration::draw.after(toasts::draw))
             .add_systems(
                 EguiPrimaryContextPass,
-                campaign_military::draw_promotion.after(celebration::draw),
+                rank_promotion::draw.after(celebration::draw).after(spectator::draw_end_game),
             )
             .add_systems(
                 EguiPrimaryContextPass,

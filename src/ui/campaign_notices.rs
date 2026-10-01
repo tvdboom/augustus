@@ -2,7 +2,7 @@
 
 use super::campaign::Campaign;
 use super::campaign_notifications::{CampaignNotice, NoticeKind, NoticeSeverity};
-use super::campaign_widgets::{icon, paint_icon, Icon};
+use super::campaign_widgets::{paint_icon, texture, Icon};
 use super::province_panel::{INK, RULE, TABLE_STRIPE};
 use bevy_egui::egui;
 
@@ -46,9 +46,11 @@ fn category(kind: NoticeKind) -> usize {
         | MilitaryMovementStopped
         | GarrisonWeakened
         | MilitaryRankIncreased
+        | MilitaryPromotionAvailable
         | SlaveRevolt => 2,
         BuildingCompleted | WonderStarted | WonderCompleted => 3,
         SenateOfficeAppointed
+        | PoliticalPromotionAvailable
         | ConsulTermExpired
         | ConsulRemoved
         | AugustusVictory
@@ -74,19 +76,53 @@ fn filtered_history<'a>(
         .filter(move |notice| filters.enabled[category(notice.kind)])
 }
 
-pub(super) fn filters_row(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
+fn filters_row(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
     ui.add_space(4.0 * scale);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 3.0 * scale;
-        for (index, &(name, artwork)) in FILTER_CATEGORIES.iter().enumerate().rev() {
-            icon(ui, artwork, 18.0 * scale).on_hover_text(name);
-            ui.checkbox(&mut filters.enabled[index], "").on_hover_text(name);
-            if index > 0 {
-                ui.add_space(17.0 * scale);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0 * scale;
+            ui.spacing_mut().icon_spacing = 3.0 * scale;
+            for (index, &(name, artwork)) in FILTER_CATEGORIES.iter().enumerate().rev() {
+                let image =
+                    egui::Image::new((texture(ui.ctx(), artwork), egui::vec2(18.0, 18.0) * scale))
+                        .alt_text(name);
+                let response = ui.add(egui::Checkbox::new(&mut filters.enabled[index], image));
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Checkbox,
+                        ui.is_enabled(),
+                        filters.enabled[index],
+                        name,
+                    )
+                });
+                response.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand);
             }
-        }
-    });
+        },
+    );
     ui.separator();
+}
+
+/// Keep the compact filters fixed while only the notice cards scroll.
+pub(super) fn filtered_list<R>(
+    ui: &mut egui::Ui,
+    filters: &mut NoticeFilters,
+    scale: f32,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    render: impl FnOnce(&mut egui::Ui, &NoticeFilters) -> R,
+) -> R {
+    filters_row(ui, filters, scale);
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(ui.available_height())
+        .min_scrolled_height(0.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0 * scale;
+            render(ui, filters)
+        })
+        .inner
 }
 
 pub(super) fn allows(filters: &NoticeFilters, notice: &CampaignNotice) -> bool {
@@ -101,26 +137,26 @@ pub(in crate::app) fn overview(
     filters: &mut NoticeFilters,
     scale: f32,
 ) -> Option<CampaignNotice> {
-    filters_row(ui, filters, scale);
-    ui.spacing_mut().item_spacing.y = 8.0 * scale;
-    let mut navigation = None;
-    let mut any = false;
-    for notice in filtered_history(campaign, player, filters) {
-        any = true;
-        ui.push_id(notice.id, |ui| {
-            if card(ui, notice, scale).clicked() {
-                navigation = Some(notice.clone());
-            }
-        });
-    }
-    if !any {
-        ui.add_space(8.0 * scale);
-        ui.horizontal(|ui| {
-            ui.add_space(12.0 * scale);
-            ui.label("No notifications match these filters.");
-        });
-    }
-    navigation
+    filtered_list(ui, filters, scale, ("campaign_notices", player), |ui, filters| {
+        let mut navigation = None;
+        let mut any = false;
+        for notice in filtered_history(campaign, player, filters) {
+            any = true;
+            ui.push_id(notice.id, |ui| {
+                if card(ui, notice, scale).clicked() {
+                    navigation = Some(notice.clone());
+                }
+            });
+        }
+        if !any {
+            ui.add_space(8.0 * scale);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0 * scale);
+                ui.label("No notifications match these filters.");
+            });
+        }
+        navigation
+    })
 }
 
 #[cfg(test)]
@@ -201,8 +237,10 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | MilitaryMovementStopped
         | GarrisonWeakened
         | SlaveRevolt
-        | MilitaryRankIncreased => Icon::Attack,
+        | MilitaryRankIncreased
+        | MilitaryPromotionAvailable => Icon::Attack,
         SenateOfficeAppointed
+        | PoliticalPromotionAvailable
         | ConsulRemoved
         | ConsulTermExpired
         | AugustusVictory
@@ -239,7 +277,9 @@ pub(in crate::app) fn province_section(kind: NoticeKind) -> usize {
 
 /// Retain the event's original artwork even after its project has finished.
 pub(in crate::app) fn notice_symbol(notice: &CampaignNotice) -> Icon {
-    if let Some(building) = notice.building {
+    if notice.kind == NoticeKind::SlaveRevolt {
+        Icon::Slaves
+    } else if let Some(building) = notice.building {
         Icon::Building(building)
     } else if let Some(wonder) = notice.wonder {
         Icon::Wonder(wonder)
@@ -269,6 +309,7 @@ pub(in crate::app) fn card(
             body: &notice.body,
             month: notice.month,
             warning: notice.severity == NoticeSeverity::Warning,
+            critical: notice.kind == NoticeKind::SlaveRevolt,
             actionable: true,
         },
         scale,
@@ -282,6 +323,7 @@ pub(in crate::app) struct Message<'a> {
     pub body: &'a str,
     pub month: u32,
     pub warning: bool,
+    pub critical: bool,
     pub actionable: bool,
 }
 
@@ -300,21 +342,27 @@ pub(in crate::app) fn message_card(
         INK,
         title_width,
     );
-    let body = ui.painter().layout(
-        message.body.to_owned(),
-        egui::FontId::proportional(12.0 * scale),
-        INK,
-        (width - 2.0 * padding).max(1.0),
-    );
+    let body = (!message.body.is_empty()).then(|| {
+        ui.painter().layout(
+            message.body.to_owned(),
+            egui::FontId::proportional(12.0 * scale),
+            INK,
+            (width - 2.0 * padding).max(1.0),
+        )
+    });
     let header_height = title.size().y.max(30.0 * scale);
-    let height = 2.0 * padding + header_height + 6.0 * scale + body.size().y;
+    let height = 2.0 * padding
+        + header_height
+        + body.as_ref().map_or(0.0, |body| 6.0 * scale + body.size().y);
     let sense = if message.actionable {
         egui::Sense::click()
     } else {
         egui::Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
-    let accent = if message.warning {
+    let accent = if message.critical {
+        egui::Color32::from_rgb(176, 45, 35)
+    } else if message.warning {
         egui::Color32::from_rgb(176, 117, 49)
     } else {
         RULE
@@ -358,11 +406,13 @@ pub(in crate::app) fn message_card(
         egui::FontId::proportional(10.0 * scale),
         egui::Color32::from_rgb(112, 91, 71),
     );
-    ui.painter().galley(
-        rect.min + egui::vec2(padding, padding + header_height + 6.0 * scale),
-        body,
-        INK,
-    );
+    if let Some(body) = body {
+        ui.painter().galley(
+            rect.min + egui::vec2(padding, padding + header_height + 6.0 * scale),
+            body,
+            INK,
+        );
+    }
     // A thin inner accent marks severity without competing with the type icon.
     ui.painter().line_segment(
         [

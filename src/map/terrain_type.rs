@@ -44,8 +44,9 @@ pub(crate) fn for_province(name: &str) -> TerrainType {
         | "Venetia"
         | "Africa Proconsularis"
         | "Asia" => Farmland,
-        "Britannia" | "Belgica" | "Germania Superior" | "Lugdunensis" | "Aquitania"
-        | "Dacia" => Forest,
+        "Britannia" | "Belgica" | "Germania Superior" | "Lugdunensis" | "Aquitania" | "Dacia" => {
+            Forest
+        },
         "Alpes Graiae"
         | "Alpes Cottiae"
         | "Alpes Maritimae"

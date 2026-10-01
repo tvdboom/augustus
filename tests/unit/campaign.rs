@@ -50,10 +50,12 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                     p.name
                 );
                 assert!(
-                    production[0] - food_need <= 225.0,
-                    "{} still has excessive opening Food surplus: {}",
-                    p.name,
-                    production[0] - food_need
+                    (campaign.projected_food_delta(player, &campaign.inputs())
+                        - (production[0] - food_need))
+                        .abs()
+                        < 1e-8,
+                    "{} must report its worker-based Food surplus accurately",
+                    p.name
                 );
                 assert!(coin_income > 0.0, "{} has no coin income", p.name);
                 assert!(influence_income > 0.0, "{} has no influence income", p.name);
@@ -608,12 +610,37 @@ fn senate_merchant_inputs_follow_delivered_trade_and_failure() {
     assert_eq!(c.profiles[0].trade_volume, 42.);
     assert_eq!(c.profiles[0].provincial_trade, 42.);
     assert_eq!(c.profiles[0].trade_reliability, 0.85);
+    assert_eq!(c.profiles[0].active_trade_routes, 0.0);
     assert_eq!(c.profiles[1].trade_volume, 0.);
+    c.economy.trades[0].last_fulfillment = 1.0;
+    c.refresh_profiles();
+    assert_eq!(c.profiles[0].active_trade_routes, 1.0);
     c.economy.month = 4;
     c.economy.trades[0].status = TradeStatus::Suspended;
     c.refresh_profiles();
     assert_eq!(c.profiles[0].trade_volume, 0.);
     assert_eq!(c.profiles[0].trade_reliability, 0.);
+    assert_eq!(c.profiles[0].active_trade_routes, 0.0);
+}
+
+#[test]
+fn senator_outreach_is_charged_to_the_authoritative_wallet_and_monthly_report() {
+    use crate::game::politics::senate::SenatorAction;
+    let mut c = atlas_campaign();
+    c.economy.players[0].coin = 1000.0;
+    c.economy.players[0].influence = 1000.0;
+    c.pull_wallets();
+    c.senate.act_on_senator(0, 0, SenatorAction::Lobby, &mut c.actors, &c.senate_config).unwrap();
+    c.push_wallets();
+    let before = c.economy.players[0].influence;
+    c.advance_month();
+    assert_eq!(c.senate.senators[0].arrangement.unwrap().paid_at, Some(0));
+    assert!(
+        (c.economy.players[0].influence - before - c.economy.last_report.player_delta[0][4]).abs()
+            < 1e-8
+    );
+    assert_eq!(c.actors[0].influence, c.economy.players[0].influence);
+    assert_eq!(c.senate.outreach_upkeep(0, &c.senate_config), 4.0);
 }
 
 #[test]
@@ -630,9 +657,9 @@ fn censor_income_is_added_once_to_the_authoritative_wallet() {
         .filter(|(p, _)| p.owner == Some(0))
         .map(|(_, r)| r.influence_income)
         .sum();
-    assert!((c.economy.players[0].influence - before - domestic - 3.).abs() < 1e-8);
+    assert!((c.economy.players[0].influence - before - domestic - 15.).abs() < 1e-8);
     assert_eq!(c.actors[0].influence, c.economy.players[0].influence);
-    assert!((c.economy.last_report.player_delta[0][4] - domestic - 3.).abs() < 1e-8);
+    assert!((c.economy.last_report.player_delta[0][4] - domestic - 15.).abs() < 1e-8);
 }
 
 #[test]

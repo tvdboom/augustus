@@ -110,15 +110,12 @@ impl EconomicProvince {
         }
         let allocation = weights.map(|weight| labor * weight / denominator);
         let effects = self.building_effects(config);
-        let mut production = std::array::from_fn(|i| {
+        let production = std::array::from_fn(|i| {
             allocation[i]
                 * self.potential[i]
                 * (1.0 + effects.production[i]).max(0.0)
                 * config.production_scale[i]
         });
-        if config.food_output_saturation > 0.0 {
-            production[0] /= 1.0 + production[0] / config.food_output_saturation;
-        }
         (allocation, production)
     }
 

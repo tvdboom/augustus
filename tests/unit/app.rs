@@ -15,7 +15,9 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
         .economy
         .provinces
         .iter()
-        .map(|province| (province.owner, province.population))
+        .map(|province| {
+            (province.owner, province.population, province.production(&campaign.economy.config).1)
+        })
         .collect();
 
     apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
@@ -35,7 +37,8 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
     assert_eq!(campaign.military.rank(owner), crate::game::military::MilitaryRank::Centurion);
     let boosted_resources = wallet.resources;
     assert_eq!(campaign.economy.players[1].practice_storage_bonus, [0.0; 3]);
-    for (province, (owner, population)) in campaign.economy.provinces.iter().zip(before_populations)
+    for (province, (owner, population, output)) in
+        campaign.economy.provinces.iter().zip(before_populations)
     {
         assert_eq!(
             province.population,
@@ -46,6 +49,16 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
                     1.0
                 })
         );
+        let factor = if owner == Some(0) {
+            10.0
+        } else {
+            1.0
+        };
+        for (actual, before) in
+            province.production(&campaign.economy.config).1.into_iter().zip(output)
+        {
+            assert!((actual - before * factor).abs() < actual.max(1.0) * 1e-12);
+        }
     }
     campaign.economy.recalculate_storage();
     campaign.economy.players[0].clamp_storage();
@@ -586,6 +599,25 @@ fn game_clock_advances_months_at_selected_speed() {
     assert_eq!(clock.speed(), 4.0);
     clock.advance(0.75);
     assert_eq!(clock.date_label(), "May, 60 AD");
+}
+
+#[test]
+fn combat_clock_emits_ordered_rounds_and_respects_speed() {
+    let mut clock = GameClock::default();
+    assert!(clock.advance_timeline(0.7, 4).is_empty());
+    assert_eq!(clock.advance_timeline(0.05, 4), [false]);
+    assert_eq!(clock.advance_timeline(2.25, 4), [false, false, true]);
+    assert_eq!(clock.date_label(), "Feb, 60 AD");
+    clock.change_speed(1);
+    assert_eq!(clock.advance_timeline(0.375, 4), [false]);
+    assert_eq!(
+        clock.advance_timeline(3., 4),
+        [false, false, true, false, false, false, true, false]
+    );
+    assert_eq!(clock.date_label(), "Apr, 60 AD");
+    assert!(clock.advance_timeline(0., 4).is_empty());
+    let mut arbitrary = GameClock::default();
+    assert_eq!(arbitrary.advance_timeline(3., 7), [false, false, false, false, false, false, true]);
 }
 
 #[test]

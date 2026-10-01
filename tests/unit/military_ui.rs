@@ -525,6 +525,98 @@ fn render_overview(
 }
 
 #[test]
+fn rank_hover_lists_requirements_and_readable_monthly_bonuses() {
+    let ctx = egui::Context::default();
+    let mut world = MilitaryWorld::new(1);
+    world.peak_manpower.insert(ForceOwner::Player(0), -0.0);
+    let draw = |time, events| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800., 600.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| rank_ladder(ui, &world, 0, 180., 1., &mut None),
+        );
+        output.textures_delta.clear();
+        output
+    };
+    let initial = draw(0., vec![]);
+    let position = text_position(&initial, "Tribune");
+    let mut found = false;
+    for frame in 1..=4 {
+        let output = draw(
+            frame as f64,
+            if frame == 1 {
+                vec![egui::Event::PointerMoved(position)]
+            } else {
+                vec![]
+            },
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !labels.contains(&"Requirements") {
+            continue;
+        }
+        found = true;
+        for expected in [
+            "Bonuses",
+            "• Previous rank: Centurion",
+            "• Army manpower: 0/200",
+            "• Battles won: 0/2",
+            "• Influence to pay: 180/500",
+            "• Influence: +5 per month",
+        ] {
+            assert!(labels.contains(&expected), "Missing {expected}: {labels:?}");
+        }
+        assert_eq!(labels.iter().filter(|label| **label == "Tribune").count(), 1);
+        for removed in [
+            "-0",
+            " / ",
+            "Peak combined",
+            "garrison",
+            "confidence improves",
+            "recovery",
+            "Combat morale",
+            "Senate military faction",
+            "One promotion",
+            "Support requirements",
+        ] {
+            assert!(!labels.iter().any(|label| label.contains(removed)));
+        }
+        let last_requirement = text_position(&output, "• Influence to pay: 180/500");
+        let bonuses = text_position(&output, "Bonuses");
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::LineSegment { points, .. } if points[0].y > last_requirement.y
+                && points[0].y < bonuses.y && (points[1].x - points[0].x).abs() > 50.)));
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.job.text.starts_with('•')
+                    || ["Requirements", "Bonuses"].contains(&text.galley.job.text.as_str())
+                {
+                    assert!(text.galley.job.sections.iter().all(|section| section
+                        .format
+                        .font_id
+                        .size
+                        == 14.));
+                }
+            }
+        }
+    }
+    assert!(found, "The rank card must show its tooltip on hover");
+}
+
+#[test]
 fn rank_cards_only_accept_the_next_fully_earned_promotion() {
     let ctx = egui::Context::default();
     let mut world = MilitaryWorld::new(1);
@@ -553,6 +645,8 @@ fn rank_cards_only_accept_the_next_fully_earned_promotion() {
 
     world.peak_manpower.insert(owner, 600.);
     world.victories.insert(owner, 6);
+    // Register the newly clickable card before egui hit-tests the next input frame.
+    draw(0.25, vec![], &world);
     draw(0.3, click_events(tribune, true), &world);
     assert_eq!(
         draw(0.4, click_events(tribune, false), &world).1,

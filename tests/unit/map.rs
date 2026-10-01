@@ -1,6 +1,106 @@
 use super::*;
 
 #[test]
+fn map_right_click_opens_province_orders_and_battle_badge_opens_combat() {
+    use crate::game::military::{ForceOwner, MilitaryTerrain, MilitaryWorld, UnitType};
+    let ctx = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let province = atlas().provinces.iter().position(|p| p.name == "Numidia").unwrap();
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
+    let mut campaign = crate::app::campaign::Campaign::default();
+    campaign.start(&ownership, 2);
+    campaign.military = MilitaryWorld::new(atlas().provinces.len());
+    campaign.military.seed_unit(province, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    campaign
+        .military
+        .seed_unit(province, ForceOwner::Local(province), UnitType::HeavyInfantry)
+        .unwrap();
+    let battle = campaign
+        .military
+        .start_battle(
+            province,
+            &[ForceOwner::Player(0)],
+            &[ForceOwner::Local(province)],
+            None,
+            None,
+            MilitaryTerrain::Desert,
+            0,
+            71,
+        )
+        .unwrap();
+    let texture = ctx.load_texture(
+        "test-map-icon",
+        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    let icons = [texture.clone(), texture.clone(), texture];
+    let mut view = MapView::default();
+    view.label_candidates = vec![vec![vec![]; atlas().provinces.len()]; LABEL_ZOOM_LEVELS];
+    let (center, _, _, fit) = map_geometry(rect, atlas());
+    let anchor = Projection {
+        origin: rect.center(),
+        scale: fit * view.zoom,
+        center,
+    }
+    .point(atlas().provinces[province].visual_center);
+    let mut frame = |position, button, pressed, time| {
+        let mut events = vec![egui::Event::PointerMoved(position)];
+        if let Some(button) = button {
+            events.push(egui::Event::PointerButton {
+                pos: position,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let mut detail = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                    let (bounds, response) =
+                        ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
+                    detail = paint_map(
+                        ui.painter(),
+                        bounds,
+                        &mut view,
+                        &ownership,
+                        Some(&campaign),
+                        0,
+                        false,
+                        &icons,
+                        &response,
+                        &ButtonInput::default(),
+                        0.016,
+                        true,
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+        detail
+    };
+    frame(anchor, None, false, 0.);
+    frame(anchor, Some(egui::PointerButton::Secondary), true, 0.1);
+    frame(anchor, Some(egui::PointerButton::Secondary), false, 0.2);
+    let order = take_province_order_click(&ctx).expect("right click must reach province orders");
+    assert_eq!(order.province, province);
+    assert!(order.position.distance(anchor) < 0.01);
+    assert!(take_province_order_click(&ctx).is_none(), "orders are consumed once");
+    let badge = anchor + egui::vec2(0., -8. * MIN_ZOOM * 0.65);
+    frame(badge, Some(egui::PointerButton::Primary), true, 0.3);
+    assert!(frame(badge, Some(egui::PointerButton::Primary), false, 0.4).is_none());
+    assert_eq!(take_battle_click(&ctx), Some(battle));
+    assert!(take_battle_click(&ctx).is_none());
+}
+
+#[test]
 fn wave_crests_disappear_before_reforming_with_a_new_shape() {
     let duration = 5.0;
     let quiet = 7.0;
