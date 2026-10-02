@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn map_right_click_opens_province_orders_and_battle_badge_opens_combat() {
+fn map_right_click_opens_province_orders_and_battle_troops_open_combat() {
     use crate::game::military::{ForceOwner, MilitaryTerrain, MilitaryWorld, UnitType};
     let ctx = egui::Context::default();
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
@@ -11,6 +11,7 @@ fn map_right_click_opens_province_orders_and_battle_badge_opens_combat() {
     let mut campaign = crate::app::campaign::Campaign::default();
     campaign.start(&ownership, 2);
     campaign.military = MilitaryWorld::new(atlas().provinces.len());
+    campaign.military.config.sprite_zoom_threshold = 0.0;
     campaign.military.seed_unit(province, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
     campaign
         .military
@@ -35,8 +36,10 @@ fn map_right_click_opens_province_orders_and_battle_badge_opens_combat() {
         egui::TextureOptions::LINEAR,
     );
     let icons = [texture.clone(), texture.clone(), texture];
-    let mut view = MapView::default();
-    view.label_candidates = vec![vec![vec![]; atlas().provinces.len()]; LABEL_ZOOM_LEVELS];
+    let mut view = MapView {
+        label_candidates: vec![vec![vec![]; atlas().provinces.len()]; LABEL_ZOOM_LEVELS],
+        ..Default::default()
+    };
     let (center, _, _, fit) = map_geometry(rect, atlas());
     let anchor = Projection {
         origin: rect.center(),
@@ -93,11 +96,121 @@ fn map_right_click_opens_province_orders_and_battle_badge_opens_combat() {
     assert_eq!(order.province, province);
     assert!(order.position.distance(anchor) < 0.01);
     assert!(take_province_order_click(&ctx).is_none(), "orders are consumed once");
-    let badge = anchor + egui::vec2(0., -8. * MIN_ZOOM * 0.65);
-    frame(badge, Some(egui::PointerButton::Primary), true, 0.3);
-    assert!(frame(badge, Some(egui::PointerButton::Primary), false, 0.4).is_none());
+    let troop = ctx
+        .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+        .unwrap()
+        .into_iter()
+        .find(|hit| hit.province == province && hit.owner == ForceOwner::Player(0))
+        .expect("Battle troops publish their actual map hit targets");
+    let position = troop.rect.center();
+    frame(position, Some(egui::PointerButton::Primary), true, 0.3);
+    assert!(frame(position, Some(egui::PointerButton::Primary), false, 0.4).is_none());
     assert_eq!(take_battle_click(&ctx), Some(battle));
     assert!(take_battle_click(&ctx).is_none());
+}
+
+#[test]
+fn rome_image_and_latium_land_have_separate_click_and_attack_targets() {
+    let ctx = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED]);
+    let mut campaign = crate::app::campaign::Campaign::default();
+    campaign.start(&ownership, 1);
+    let rome = campaign.rome_location().unwrap();
+    let latium = atlas().provinces.iter().position(|p| p.name == "Latium").unwrap();
+    // Test the geographic hit targets independently of troop sprites.
+    campaign.military = crate::game::military::MilitaryWorld::new(campaign.politics.len());
+    let texture = ctx.load_texture(
+        "test-city",
+        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    let icons = [texture.clone(), texture.clone(), texture.clone()];
+    let mut view = MapView {
+        zoom: 4.0,
+        target_zoom: 4.0,
+        city_textures: vec![texture.clone(), texture],
+        label_candidates: vec![vec![vec![]; atlas().provinces.len()]; LABEL_ZOOM_LEVELS],
+        ..Default::default()
+    };
+    let (center, _, _, fit) = map_geometry(rect, atlas());
+    let projected = Projection {
+        origin: rect.center(),
+        scale: fit * view.zoom,
+        center,
+    };
+    let pan = rect.center() - projected.point(CITIES[0].position);
+    view.pan = Vec2::new(pan.x, pan.y);
+    let projection = Projection {
+        origin: rect.center() + pan,
+        scale: fit * view.zoom,
+        center,
+    };
+    let city_point = projection.point(CITIES[0].position);
+    let land_point = projection.point(atlas().provinces[latium].visual_center);
+    let city = layout_cities(&projection, rect, view.zoom).into_iter().find(|c| c.is_rome).unwrap();
+    assert!(city.bounds.contains(city_point));
+    assert!(!city.bounds.contains(land_point));
+    let mut frame = |position, button, pressed, time| {
+        let mut events = vec![egui::Event::PointerMoved(position)];
+        if let Some(button) = button {
+            events.push(egui::Event::PointerButton {
+                pos: position,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let mut detail = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                    let (bounds, response) =
+                        ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
+                    detail = paint_map(
+                        ui.painter(),
+                        bounds,
+                        &mut view,
+                        &ownership,
+                        Some(&campaign),
+                        0,
+                        false,
+                        &icons,
+                        &response,
+                        &ButtonInput::default(),
+                        0.016,
+                        true,
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+        detail
+    };
+    frame(city_point, None, false, 0.0);
+    frame(city_point, Some(egui::PointerButton::Primary), true, 0.1);
+    assert_eq!(
+        frame(city_point, Some(egui::PointerButton::Primary), false, 0.2),
+        Some(MapDetail::City(rome))
+    );
+    frame(land_point, Some(egui::PointerButton::Primary), true, 0.3);
+    assert_eq!(
+        frame(land_point, Some(egui::PointerButton::Primary), false, 0.4),
+        Some(MapDetail::Province(latium))
+    );
+    frame(city_point, Some(egui::PointerButton::Secondary), true, 0.5);
+    frame(city_point, Some(egui::PointerButton::Secondary), false, 0.6);
+    assert_eq!(take_province_order_click(&ctx).unwrap().province, rome);
+    frame(land_point, Some(egui::PointerButton::Secondary), true, 0.7);
+    frame(land_point, Some(egui::PointerButton::Secondary), false, 0.8);
+    assert_eq!(take_province_order_click(&ctx).unwrap().province, latium);
 }
 
 #[test]
@@ -434,10 +547,10 @@ fn owned_population_reconciles_with_class_sources_and_famine_trend() {
 fn starting_provinces_are_non_rome_cities_varied_and_well_separated() {
     let atlas = atlas();
     let candidates = starting_candidates();
-    assert_eq!(candidates.len(), URBAN_PROVINCES.len() - 1);
+    assert_eq!(candidates.len(), URBAN_PROVINCES.len());
     assert!(candidates.iter().all(|&index| {
         let name = atlas.provinces[index].name.as_str();
-        URBAN_PROVINCES.contains(&name) && name != ROME_PROVINCE
+        URBAN_PROVINCES.contains(&name) && name != "Latium"
     }));
     for count in 1..=4 {
         let mut seen = std::collections::HashSet::new();
@@ -478,15 +591,29 @@ fn every_urban_province_has_its_city_name() {
 #[test]
 fn city_markers_target_their_provinces() {
     let atlas = atlas();
-    assert_eq!(CITIES.len(), URBAN_PROVINCES.len());
-    for city in CITIES {
+    assert_eq!(CITIES.len(), URBAN_PROVINCES.len() + 1);
+    for city in &CITIES[1..] {
         assert!(URBAN_PROVINCES.contains(&city.province));
         assert!(city_name_for_province(city.province).is_some());
         assert!(atlas.provinces.iter().any(|province| province.name == city.province));
     }
     let rome = &CITIES[0];
-    let latium = atlas.provinces.iter().find(|p| p.name == rome.province).unwrap();
-    assert!(latium.contains(rome.position), "Rome must be anchored inside Latium");
+    assert_eq!(rome.province, "Rome");
+    assert_eq!(city_name_for_province("Latium"), None);
+    for name in crate::game::military::ROME_APPROACHES {
+        let province = atlas.provinces.iter().find(|p| p.name == name).unwrap();
+        assert!(
+            province.parts.iter().any(|part| part.v.contains(&rome.position)),
+            "Rome must sit on the shared border of {name}"
+        );
+    }
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED]);
+    let mut campaign = crate::app::campaign::Campaign::default();
+    campaign.start(&ownership, 1);
+    assert_eq!(city_location(0, Some(&campaign)), campaign.rome_location());
+    assert_eq!(city_location(0, None), None);
+    assert!(campaign.rome_location().unwrap() >= atlas.provinces.len());
 }
 
 #[test]
@@ -554,8 +681,10 @@ fn trade_requires_a_shared_land_border_with_an_owned_province() {
     let aegyptus = find("Aegyptus");
     let cyrenaica = find("Cyrenaica");
     let syria = find("Syria");
-    let mut ownership = ProvinceOwnership::default();
-    ownership.owners = vec![None; provinces.len()];
+    let mut ownership = ProvinceOwnership {
+        owners: vec![None; provinces.len()],
+        ..Default::default()
+    };
     ownership.owners[aegyptus] = Some(0);
     assert!(ownership.can_trade_with(cyrenaica, 0));
     assert!(!ownership.can_trade_with(syria, 0));
@@ -1327,7 +1456,7 @@ fn all_ten_wonders_have_twelve_animated_frames_with_pixel_identical_architecture
         ),
     ]);
     assert_eq!(assets.len(), 10);
-    assert!(COUNT >= 12);
+    const { assert!(COUNT >= 12) };
     for (name, bytes) in assets {
         let sheet = image::load_from_memory(bytes).expect("construction art").to_rgba8();
         assert_eq!(sheet.dimensions(), (COLUMNS * SIZE, ROWS * SIZE), "{name} runtime geometry");

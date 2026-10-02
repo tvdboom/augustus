@@ -1,5 +1,6 @@
 //! Icon-led economy and construction tables for the parchment province panel.
 
+use super::spectator::InspectionHover;
 use crate::game::economy::*;
 use crate::game::military::MilitaryWorld;
 use bevy_egui::egui;
@@ -119,7 +120,7 @@ pub(super) fn overview_badge(
         egui::Align::Center,
     );
     if !tip.is_empty() {
-        ui.interact(rect, ui.id().with(caption), egui::Sense::hover()).on_hover_text(tip);
+        ui.interact(rect, ui.id().with(caption), egui::Sense::hover()).inspection_hover_text(tip);
     }
 }
 
@@ -169,9 +170,10 @@ pub(in crate::app) fn ledger_header(
         for (cell, &(symbol, tip)) in cells[1..].iter().zip(headers) {
             let rect = egui::Rect::from_center_size(cell.center(), egui::vec2(22.0, 22.0) * scale);
             paint_icon(ui, symbol, rect);
-            ui.interact(rect, ui.id().with((title, tip)), egui::Sense::hover()).on_hover_ui(|ui| {
-                ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Extend));
-            });
+            ui.interact(rect, ui.id().with((title, tip)), egui::Sense::hover())
+                .inspection_hover_ui(|ui| {
+                    ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Extend));
+                });
         }
     });
 }
@@ -194,7 +196,7 @@ pub(in crate::app) fn ledger_name(
         egui::vec2(icon_size, icon_size) * scale,
     );
     paint_icon(ui, symbol, image);
-    ui.interact(image, ui.id().with(name), egui::Sense::hover()).on_hover_text(name);
+    ui.interact(image, ui.id().with(name), egui::Sense::hover()).inspection_hover_text(name);
     let text = egui::Rect::from_min_max(
         egui::pos2(rect.left() + 39.0 * scale, rect.top()),
         rect.max - egui::vec2(4.0 * scale, 0.0),
@@ -223,7 +225,7 @@ pub(in crate::app) fn ledger_value(
         ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
         egui::Sense::hover(),
     )
-    .on_hover_text(tip);
+    .inspection_hover_text(tip);
 }
 
 /// Explain a provincial contribution with illustrated bullets instead of formulas.
@@ -249,7 +251,7 @@ fn ledger_breakdown_value(
         ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
         egui::Sense::hover(),
     )
-    .on_hover_ui(|ui| {
+    .inspection_hover_ui(|ui| {
         ui.strong(title);
         for (symbol, text) in entries {
             ui.horizontal(|ui| {
@@ -341,7 +343,7 @@ fn ledger_signed_breakdown_value(
         ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
         egui::Sense::hover(),
     )
-    .on_hover_ui(|ui| {
+    .inspection_hover_ui(|ui| {
         for &(label, amount) in entries {
             let (value, color) = signed_contribution(amount, decimals);
             tooltip_numeric_bullet(ui, label, &value, color, 0.0);
@@ -412,8 +414,8 @@ pub(in crate::app) fn overview_for_player(
         },
         scale,
     );
-    ui.interact(badge(0), ui.id().with("population-capacity"), egui::Sense::hover()).on_hover_ui(
-        |ui| {
+    ui.interact(badge(0), ui.id().with("population-capacity"), egui::Sense::hover())
+        .inspection_hover_ui(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0 * scale;
             ui.strong("Population capacity");
             tooltip_numeric_bullet(
@@ -451,8 +453,7 @@ pub(in crate::app) fn overview_for_player(
                 let (value, color) = signed_contribution(amount, 1);
                 tooltip_numeric_bullet(ui, label, &value, color, 0.0);
             }
-        },
-    );
+        });
     if show_food {
         let civilian_food = p.food_request(&world.config);
         let military_food: f64 = military
@@ -480,7 +481,7 @@ pub(in crate::app) fn overview_for_player(
             food_color,
             scale,
         );
-        ui.interact(badge(1), ui.id().with("food-demand-breakdown"), egui::Sense::hover()).on_hover_ui(
+        ui.interact(badge(1), ui.id().with("food-demand-breakdown"), egui::Sense::hover()).inspection_hover_ui(
         |ui| {
             ui.spacing_mut().item_spacing.y = 2.0 * scale;
             ui.strong("Food demand per month");
@@ -1046,6 +1047,7 @@ fn building_cell(
     scale: f32,
 ) -> Option<BuildingCellAction> {
     use super::province_panel::{INK, RULE};
+    let enabled = enabled && ui.is_enabled();
     let response = ui.interact(
         rect,
         ui.id().with(("building-cell", symbol)),
@@ -1151,7 +1153,7 @@ fn building_cell(
             format!("Build {name}, {level}, {stone:.0} Stone and {metal:.0} Metal"),
         )
     });
-    let response = response.on_hover_ui(|ui| {
+    let response = response.inspection_hover_ui(|ui| {
         let width = (440.0 * scale).min(ui.ctx().content_rect().width() - 24.0);
         ui.set_width(width.max(120.0));
         ui.horizontal_top(|ui| {
@@ -1170,7 +1172,8 @@ fn building_cell(
                         if cost == 0.0 {
                             continue;
                         }
-                        super::campaign_widgets::icon(ui, symbol, 28.0 * scale).on_hover_text(name);
+                        super::campaign_widgets::icon(ui, symbol, 28.0 * scale)
+                            .inspection_hover_text(name);
                         let cost = if !cost.is_finite() {
                             "—".into()
                         } else if cost >= 100_000.0 {
@@ -1249,14 +1252,19 @@ pub(in crate::app) fn construction_queue_view(
         let (art, name) = details(project);
         (
             art,
-            construction_completion(
-                ui,
-                project,
-                &world.config,
-                p.policies.construction,
-                province,
-                world.month,
-            ),
+            if p.occupied {
+                let (progress, required) = project.progress();
+                (progress / required.max(0.001)).clamp(0.0, 0.9999) as f32
+            } else {
+                construction_completion(
+                    ui,
+                    project,
+                    &world.config,
+                    p.policies.construction,
+                    province,
+                    world.month,
+                )
+            },
             format!(
                 "{name}, {} months left",
                 project.months_remaining(&world.config, p.policies.construction)
@@ -1275,10 +1283,14 @@ pub(in crate::app) fn construction_queue_view(
     work_queue(
         ui,
         egui::Id::new(("construction-queue", province)),
-        "In progress",
+        if p.occupied {
+            "Construction paused: enemy occupation"
+        } else {
+            "In progress"
+        },
         active,
         &queued,
-        owned,
+        owned && !p.occupied,
         false,
         scale,
     )
@@ -1387,7 +1399,7 @@ pub(in crate::app) fn buildings(
     scale: f32,
 ) -> Option<String> {
     let p = world.provinces.get(province)?.clone();
-    let owned = p.owner == Some(player);
+    let owned = p.can_administer(player);
     let definitions: Vec<_> =
         world.config.buildings.iter().filter(|d| !d.requires_city || p.has_city).cloned().collect();
     let wonders: Vec<_> = p
@@ -1424,7 +1436,9 @@ pub(in crate::app) fn buildings(
                 && quote.metal.is_finite()
                 && quote.required_progress.is_finite();
             let active = matches!(&p.construction, Some(ConstructionProject::Building(project)) if project.building == definition.building);
-            let reason = if !owned {
+            let reason = if p.occupied {
+                Some("Enemy occupation blocks construction.")
+            } else if !owned {
                 Some("Province not owned.")
             } else if p.construction_queue_full() {
                 Some("Construction queue is full (maximum 10 orders).")
@@ -1484,6 +1498,8 @@ pub(in crate::app) fn buildings(
             Some("Already built.")
         } else if active {
             Some("Being constructed.")
+        } else if p.occupied {
+            Some("Enemy occupation blocks construction.")
         } else if !owned {
             Some("Province not owned.")
         } else if p.completed_wonder.is_some() {
@@ -1582,7 +1598,7 @@ fn wonder_labor_controls(
 ) -> Option<String> {
     let (rect, _) = ui
         .allocate_exact_size(egui::vec2(ui.available_width(), 36.0 * scale), egui::Sense::hover());
-    let owned = world.provinces[province].owner == Some(player);
+    let owned = world.provinces[province].can_administer(player);
     let mut message = None;
     let icon_rect = egui::Rect::from_min_size(
         rect.min + egui::vec2(0.0, 6.0) * scale,
@@ -1605,7 +1621,7 @@ fn wonder_labor_controls(
                 egui::Slider::new(&mut assigned, 0.0..=world.provinces[province].population[3])
                     .custom_formatter(|value, _| super::resource_hud::format_population(value)),
             )
-            .on_hover_text(wonder_labor_tooltip(&world.config));
+            .inspection_hover_text(wonder_labor_tooltip(&world.config));
         if response.changed() {
             if let Err(error) = world.assign_wonder_slaves(player, province, assigned) {
                 message = Some(error);
@@ -1618,6 +1634,17 @@ fn wonder_labor_controls(
 /// Compact descriptions are generated from the actual configured benefits.
 fn building_effects_text(definition: &BuildingDefinition) -> String {
     let mut text = effects_text(&definition.effects);
+    let senate_support = match definition.building {
+        BuildingType::Forum => Some("Aristocrat support in the Senate"),
+        BuildingType::UrbanMarket => Some("Merchant support in the Senate"),
+        _ => None,
+    };
+    if let Some(support) = senate_support {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(support);
+    }
     if definition.building == BuildingType::Road {
         if !text.is_empty() {
             text.push('\n');
@@ -1704,7 +1731,7 @@ mod effect_text_tests {
     fn building_and_wonder_effects_show_compact_recurring_values() {
         assert_eq!(
             building_effects_text(&BuildingDefinition::for_type(BuildingType::Forum)),
-            "+1 Influence/month"
+            "+1 Influence/month\nAristocrat support in the Senate"
         );
         assert_eq!(
             building_effects_text(&BuildingDefinition::for_type(BuildingType::Baths)),
@@ -1716,7 +1743,7 @@ mod effect_text_tests {
         );
         assert_eq!(
             building_effects_text(&BuildingDefinition::for_type(BuildingType::UrbanMarket)),
-            "+10% attraction for incoming migrants"
+            "+10% attraction for incoming migrants\nMerchant support in the Senate"
         );
         assert_eq!(
             building_effects_text(&BuildingDefinition::for_type(BuildingType::CityHall)),

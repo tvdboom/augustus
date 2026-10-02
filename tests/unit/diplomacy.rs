@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn liberation_garrison_recovers_owned_control_without_transferring_ownership() {
+    let mut province = ProvincePolitics::owned(2, 0);
+    let config = DiplomacyConfig::default();
+    province.resolve_month(&[0., 100.], Some(1), 0., &config);
+    let occupied = province.control(0);
+    assert!(occupied < 100.);
+    province.resolve_month(&[100., 0.], None, 0., &config);
+    assert!(province.control(0) > occupied);
+    assert_eq!(
+        province.state,
+        PoliticalState::Owned {
+            owner: 0
+        }
+    );
+}
+
+#[test]
+fn a_returning_army_can_break_foreign_vassalization_and_reclaim_ownership() {
+    let mut province = ProvincePolitics::owned(2, 0);
+    let config = DiplomacyConfig::default();
+    province.gain_control_now(1, 60.).unwrap();
+    province.vassalize(1).unwrap();
+    assert!(matches!(
+        province.state,
+        PoliticalState::Vassal {
+            overlord: 1,
+            ..
+        }
+    ));
+    // The former owner's victorious army erodes the new overlord's hold.
+    for _ in 0..200 {
+        province.resolve_month(&[1000., 0.], Some(0), 0., &config);
+        if matches!(province.state, PoliticalState::Independent { .. }) {
+            break;
+        }
+        assert!(province.last_control_change.military < 0.);
+    }
+    assert!(matches!(province.state, PoliticalState::Independent { .. }));
+    for _ in 0..200 {
+        province.resolve_month(&[1000., 0.], Some(0), 0., &config);
+        if province.control(0) >= 100. - 1e-7 {
+            break;
+        }
+    }
+    province.take_ownership(0).unwrap();
+    assert_eq!(
+        province.state,
+        PoliticalState::Owned {
+            owner: 0
+        }
+    );
+}
+
+#[test]
 fn unequal_simultaneous_pressure_matches_spec() {
     let mut local = 10.0;
     let mut shares = [45.0, 45.0];
@@ -99,6 +153,42 @@ fn owned_province_can_be_influenced_without_transferring_ownership() {
             owner: 0
         }
     );
+}
+
+#[test]
+fn rebellion_control_loss_survives_monthly_and_immediate_rival_pressure() {
+    let mut province = ProvincePolitics::owned(2, 0);
+    province.apply_rebellion_control_loss(20.0).unwrap();
+    province.resolve_month(&[0.0; 2], None, 0.0, &DiplomacyConfig::default());
+    assert_eq!(province.control(0), 80.0);
+    assert_eq!(province.control(1), 0.0);
+    province.gain_control_now(1, 5.0).unwrap();
+    assert_eq!(province.control(0), 80.0, "Rival pressure first draws from rebel Control");
+    assert_eq!(province.control(1), 5.0);
+    province.queue_control_gain(1, 20.0).unwrap();
+    province.resolve_month(&[0.0; 2], None, 0.0, &DiplomacyConfig::default());
+    assert_eq!(province.control(0), 75.0);
+    assert_eq!(province.control(1), 25.0);
+}
+
+#[test]
+fn rebellion_releases_a_legacy_owned_province_without_restoring_full_control() {
+    let mut province = ProvincePolitics::independent(2);
+    province.state = PoliticalState::Owned {
+        owner: 0,
+    };
+    province.apply_rebellion_control_loss(5.0).unwrap();
+    assert_eq!(province.control(0), 95.0);
+    province.apply_rebellion_control_loss(100.0).unwrap();
+    province.resolve_month(&[0.0; 2], None, 0.0, &DiplomacyConfig::default());
+    assert!(matches!(
+        province.state,
+        PoliticalState::Independent {
+            local: 100.0,
+            ..
+        }
+    ));
+    assert_eq!(province.control(0), 0.0);
 }
 
 #[test]

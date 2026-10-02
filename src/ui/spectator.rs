@@ -1,24 +1,81 @@
-//! Terminal overlay and a read-only, fully informed map inspector.
+//! Terminal overlay and the shared inspectors' read-only spectator presentation.
 
 use super::*;
-use crate::game::economy::BuildingType;
-use crate::game::military::{ForceOwner, Unit};
 
-fn owner_name(owner: ForceOwner) -> String {
-    match owner {
-        ForceOwner::Player(player) => format!("Player {}", player + 1),
-        ForceOwner::Local(province) => format!("Local defenders of province {}", province + 1),
+const READ_ONLY_ID: &str = "augustus-spectator-read-only";
+
+pub(super) fn set_read_only(ctx: &egui::Context, read_only: bool) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(READ_ONLY_ID), read_only));
+}
+
+pub(super) fn read_only(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(egui::Id::new(READ_ONLY_ID)).unwrap_or(false))
+}
+
+/// Inspect from the province owner's perspective without changing the active player.
+pub(super) fn inspection_player(
+    campaign: &campaign::Campaign,
+    province: Option<usize>,
+    fallback: usize,
+) -> usize {
+    province
+        .and_then(|id| campaign.economy.provinces.get(id))
+        .and_then(|province| province.owner.or(province.overlord))
+        .unwrap_or(fallback)
+}
+
+/// Independent provinces expose the same complete sections as owned provinces.
+pub(super) fn domestic_view(ctx: &egui::Context, owned: bool) -> bool {
+    owned || read_only(ctx)
+}
+
+/// Disabled commands retain their information tooltips during inspection.
+pub(super) trait InspectionHover {
+    fn inspection_hover_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self;
+    fn inspection_hover_text(self, text: impl Into<egui::WidgetText>) -> Self;
+}
+
+impl InspectionHover for egui::Response {
+    fn inspection_hover_ui(self, contents: impl FnOnce(&mut egui::Ui)) -> Self {
+        if read_only(&self.ctx) && !self.enabled() {
+            self.on_disabled_hover_ui(contents)
+        } else {
+            self.on_hover_ui(contents)
+        }
+    }
+
+    fn inspection_hover_text(self, text: impl Into<egui::WidgetText>) -> Self {
+        self.inspection_hover_ui(|ui| {
+            ui.set_max_width(ui.spacing().tooltip_width);
+            ui.add(egui::Label::new(text));
+        })
     }
 }
 
-fn cohort_line(unit: &Unit) -> String {
-    format!(
-        "{} · {} soldiers · morale {:.0} · training {:.0}",
-        unit.unit_type.name(),
-        unit.people(),
-        unit.morale,
-        unit.training,
-    )
+/// Paint only the reference-style status text, without adding a clickable surface.
+fn status(ctx: &egui::Context) {
+    let screen = ctx.content_rect();
+    let scale = viewport_ui_scale(screen.size());
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("augustus_spectator_status"),
+    ));
+    let position = screen.right_bottom() - egui::vec2(16.0, 12.0) * scale;
+    let font = egui::FontId::proportional(16.0 * scale);
+    painter.text(
+        position + egui::vec2(1.0, 1.0) * scale,
+        egui::Align2::RIGHT_BOTTOM,
+        "Spectator",
+        font.clone(),
+        egui::Color32::from_black_alpha(180),
+    );
+    painter.text(
+        position,
+        egui::Align2::RIGHT_BOTTOM,
+        "Spectator",
+        font,
+        egui::Color32::from_rgb(255, 238, 210),
+    );
 }
 
 /// Fade the final result over the loaded map, matching the reference game's two choices.
@@ -106,197 +163,19 @@ pub(in crate::app) fn draw_end_game(
         });
 }
 
-/// Inspect authoritative province and army state without exposing command controls.
+/// Province and army inspection is handled by the regular campaign panels.
 pub(in crate::app) fn draw_spectator(
     mut contexts: EguiContexts,
     terminal: Res<TerminalPresentation>,
     campaign: Res<campaign::Campaign>,
-    mut detail: ResMut<ProvincePanelOpen>,
-    mut next: ResMut<NextState<AppState>>,
-    sound: Res<MenuAudio>,
-    audio: Res<Audio>,
-    assets: Res<AssetServer>,
 ) {
-    if !terminal.spectating || !campaign.active {
-        return;
-    }
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-    if let Some(hit) = crate::map::take_army_click(ctx) {
-        detail.0 = Some(MapDetail::Province(hit.province));
-    }
-    let scale = viewport_ui_scale(ctx.content_rect().size());
-    egui::Area::new(egui::Id::new("augustus_spectator_status"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(20.0, 16.0) * scale)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(province_panel::PAPER)
-                .stroke(egui::Stroke::new(scale, province_panel::RULE))
-                .corner_radius(5.0 * scale)
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong("Spectator Mode");
-                        ui.separator();
-                        if ui.button("Main Menu").clicked() {
-                            play_click(&sound, &audio, &assets);
-                            next.set(AppState::MainMenu);
-                        }
-                    });
-                });
-        });
-
-    let Some(selected) = detail.0 else {
-        return;
-    };
-    let province = match selected {
-        MapDetail::Province(id) | MapDetail::City(id) => id,
-    };
-    let Some(p) = campaign.economy.provinces.get(province) else {
-        detail.0 = None;
-        return;
-    };
-    let mut open = true;
-    egui::Window::new(format!("{} · Province {}", p.name, province + 1))
-        .id(egui::Id::new("augustus_spectator_inspector"))
-        .open(&mut open)
-        .resizable(false)
-        .collapsible(false)
-        .default_pos(ctx.content_rect().min + egui::vec2(30.0, 80.0) * scale)
-        .default_width(440.0 * scale)
-        .frame(
-            egui::Frame::new()
-                .fill(province_panel::PAPER)
-                .stroke(egui::Stroke::new(scale, province_panel::RULE)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(440.0 * scale);
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 145.0 * scale).max(120.0))
-                .show(ui, |ui| {
-                    ui.label(match (p.owner, p.overlord) {
-                        (Some(owner), _) => format!("Owned by Player {}", owner + 1),
-                        (None, Some(overlord)) => format!("Vassal of Player {}", overlord + 1),
-                        _ => "Independent".to_owned(),
-                    });
-                    ui.label(format!(
-                        "Terrain: {:?} · Population: {:.0}",
-                        p.terrain,
-                        p.total_population()
-                    ));
-                    ui.separator();
-                    ui.strong("Population and happiness");
-                    for (class, count) in
-                        ["Nobles", "Citizens", "Plebeians", "Slaves"].into_iter().zip(p.population)
-                    {
-                        let index = match class {
-                            "Nobles" => 0,
-                            "Citizens" => 1,
-                            "Plebeians" => 2,
-                            _ => 3,
-                        };
-                        ui.label(format!(
-                            "{class}: {count:.0} · happiness {:.0}",
-                            p.happiness[index]
-                        ));
-                    }
-                    let production = p.production(&campaign.economy.config).1;
-                    ui.separator();
-                    ui.strong("Economy");
-                    ui.label(format!(
-                        "Monthly output · Food {:.0} · Metal {:.0} · Stone {:.0}",
-                        production[0], production[1], production[2]
-                    ));
-                    ui.label(format!(
-                        "Food demand {:.0} · Tax income {:.0}",
-                        p.food_request(&campaign.economy.config),
-                        p.tax_income(&campaign.economy.config)
-                    ));
-                    let buildings: Vec<_> = p
-                        .buildings
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, level)| **level > 0)
-                        .filter_map(|(id, level)| {
-                            BuildingType::ALL
-                                .get(id)
-                                .map(|kind| format!("{} {}", kind.name(), level))
-                        })
-                        .collect();
-                    ui.label(if buildings.is_empty() {
-                        "Buildings: none".to_owned()
-                    } else {
-                        format!("Buildings: {}", buildings.join(", "))
-                    });
-                    if let Some(project) = &p.construction {
-                        ui.label(format!("Construction: {:?}", project));
-                    }
-                    ui.separator();
-                    ui.strong("Politics");
-                    for player in 0..campaign.actors.len() {
-                        ui.label(format!(
-                            "Player {} · Control {:.0} · Relation {:.0}",
-                            player + 1,
-                            campaign.politics[province].control(player),
-                            campaign.politics[province].relation(player)
-                        ));
-                    }
-                    ui.separator();
-                    ui.strong("Armies");
-                    let military = &campaign.military.provinces[province];
-                    if military.forces.values().all(Vec::is_empty)
-                        && !campaign.military.movements.iter().any(|order| {
-                            order.origin == province || order.destination() == Some(province)
-                        })
-                        && !campaign
-                            .military
-                            .battles
-                            .iter()
-                            .any(|battle| battle.province == province)
-                    {
-                        ui.label("No armies present or moving nearby.");
-                    }
-                    for (owner, units) in &military.forces {
-                        if units.is_empty() {
-                            continue;
-                        }
-                        ui.strong(owner_name(*owner));
-                        for unit in units {
-                            ui.label(cohort_line(unit));
-                        }
-                    }
-                    for order in &campaign.military.movements {
-                        if order.origin != province && order.destination() != Some(province) {
-                            continue;
-                        }
-                        let destination = order
-                            .route
-                            .last()
-                            .and_then(|id| campaign.economy.provinces.get(*id))
-                            .map(|p| p.name.as_str())
-                            .unwrap_or("unknown");
-                        ui.strong(format!(
-                            "{} marching toward {destination}",
-                            owner_name(order.owner)
-                        ));
-                        for unit in &order.units {
-                            ui.label(cohort_line(unit));
-                        }
-                    }
-                    for battle in &campaign.military.battles {
-                        if battle.province != province {
-                            continue;
-                        }
-                        ui.strong("Battle in progress");
-                        for unit in battle.attackers.units.iter().chain(&battle.defenders.units) {
-                            ui.label(format!("{} · {}", owner_name(unit.owner), cohort_line(unit)));
-                        }
-                    }
-                });
-        });
-    if !open {
-        detail.0 = None;
+    if terminal.spectating && campaign.active {
+        if let Ok(ctx) = contexts.ctx_mut() {
+            status(ctx);
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/spectator_ui.rs"]
+mod tests;

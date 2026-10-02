@@ -9,5 +9,9 @@ pub(crate) mod map;
 pub mod multiplayer;
 pub mod platform;
 
+#[cfg(test)]
+#[path = "../tests/unit/egui_capture.rs"]
+mod egui_capture;
+
 /// Human-readable application title used by native and browser builds.
 pub const TITLE: &str = "Augustus";

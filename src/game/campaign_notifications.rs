@@ -89,6 +89,8 @@ pub(crate) enum NoticeKind {
     SpyWithdrawn,
     /// The local player acquired a particular scandal.
     ScandalDiscovered,
+    /// A recurring senator bribe payment was publicly exposed.
+    SenatorBriberyExposed,
     /// One monthly summary of lost Vassal Control.
     VassalWeakened,
     /// Foreign interference reduced owned population happiness.
@@ -557,12 +559,14 @@ impl Campaign {
                             }
                         }
                     }
-                    let npc_defeated = result == BattleResult::AttackerVictory
-                        && outcome
-                            .defenders
-                            .plans
-                            .keys()
-                            .any(|owner| matches!(owner, ForceOwner::Local(_)));
+                    let defeated_side = match result {
+                        BattleResult::AttackerVictory => Some(&outcome.defenders),
+                        BattleResult::DefenderVictory => Some(&outcome.attackers),
+                        BattleResult::MutualRout => None,
+                    };
+                    let npc_defeated = defeated_side.is_some_and(|side| {
+                        side.plans.keys().any(|owner| matches!(owner, ForceOwner::Local(_)))
+                    });
                     let name = &self.economy.provinces[province].name;
                     for (player, won) in participants {
                         self.notifications.province_notice(player,province,month,if won{NoticeSeverity::Info}else{NoticeSeverity::Warning},NoticeKind::BattleResolved,
@@ -592,12 +596,26 @@ impl Campaign {
             }
         }
         let p = &self.economy.provinces[province];
+        let local_response =
+            p.owner.is_none() && battle.attackers.plans.contains_key(&ForceOwner::Local(province));
+        let body = if local_response {
+            "Local defenders attacked your visiting army because relations fell below 50. Battle plans are locked; retreat becomes available after the first full combat month."
+        } else {
+            "Hostile forces have engaged. Battle plans are locked; retreat becomes available after the first full combat month."
+        };
         if let Some(owner) = p.owner.or(p.overlord) {
             recipients.insert(owner);
         }
         for player in recipients {
-            self.notifications.province_notice(player,province,self.economy.month,NoticeSeverity::Warning,NoticeKind::InvasionBegins,
-                format!("Battle begins in {}",p.name),"Hostile forces have engaged. Battle plans are locked; retreat becomes available after the first full combat month.");
+            self.notifications.province_notice(
+                player,
+                province,
+                self.economy.month,
+                NoticeSeverity::Warning,
+                NoticeKind::InvasionBegins,
+                format!("Battle begins in {}", p.name),
+                body,
+            );
         }
     }
 
@@ -605,6 +623,15 @@ impl Campaign {
     fn notify_occupation(&mut self, province: usize, player: usize) {
         self.notifications.province_notice(player,province,self.economy.month,NoticeSeverity::Info,NoticeKind::OccupationEstablished,
             format!("Occupation established in {}",self.economy.provinces[province].name),"Surviving stationed strength can generate Control from the next monthly political tick, while occupation damages Relation. Ownership has not transferred.");
+        if let Some(owner) = self.economy.provinces[province].owner.filter(|owner| *owner != player)
+        {
+            self.notifications.province_notice(
+                owner, province, self.economy.month, NoticeSeverity::Warning,
+                NoticeKind::OccupationEstablished,
+                format!("{} is occupied", self.economy.provinces[province].name),
+                "The province remains yours, but enemy occupation blocks recruitment, construction, policies and provincial trade. Your Control will fall. Send an army to defeat the occupier and restore access.",
+            );
+        }
     }
 
     /// Compare access, occupation and real military support at completed-month boundaries.
@@ -780,7 +807,7 @@ impl Campaign {
                     if old_control >= 90.0 && new_control < 90.0 {
                         self.notifications.province_notice(*owner, province, month, NoticeSeverity::Warning, NoticeKind::OwnedControlThreatened,
                             format!("Control in {name} is slipping"),
-                            "Someone is gaining Control over your province. Open its overview to inspect your remaining Control.");
+                            "Your Control has fallen below 90. Rival political pressure and unopposed rebellions can reduce your share. Open the province overview to inspect your remaining Control.");
                     }
                 }
             }

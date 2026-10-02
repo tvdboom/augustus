@@ -65,10 +65,6 @@ pub struct MilitaryConfig {
     pub flank_priority: [UnitType; 11],
     /// Support deployment, highest priority first.
     pub support_priority: [UnitType; 3],
-    /// Terrain attack modifiers indexed terrain then unit type.
-    pub terrain_attack: [[f64; 11]; 7],
-    /// Defender-only terrain resistance.
-    pub terrain_defense: [f64; 7],
     /// Attack multiplier while protected behind the front.
     pub support_effectiveness: f64,
     /// Combat pressure multiplier when support is exposed.
@@ -151,8 +147,14 @@ pub struct MilitaryConfig {
     pub pressure_control_ceiling: f64,
     /// Maximum monthly control from pressure, reduced by local resistance.
     pub pressure_monthly_control: f64,
-    /// Monthly relation loss while coercive troops remain stationed.
-    pub pressure_relation_loss: f64,
+    /// Local defenders attack visiting armies below this relation, without a declaration.
+    pub npc_hostility_relation: f64,
+    /// Fraction of a revolting slave population that becomes fighting infantry.
+    pub slave_revolt_mobilization_fraction: f64,
+    /// Monthly Control lost per surviving rebel cohort when the owner has no local troops.
+    pub rebellion_control_loss_per_cohort: f64,
+    /// Maximum monthly Control loss from an unopposed rebellion.
+    pub maximum_rebellion_control_loss: f64,
     /// Province crossing cost by terrain.
     pub terrain_movement: [f64; 7],
     /// Additional road speed per level.
@@ -270,35 +272,9 @@ impl Default for MilitaryConfig {
                 row[fast] = 0.60;
             }
         }
-        let mut terrain_attack = [[1.; 11]; 7];
-        for t in [0, 1] {
-            for u in [3, 4, 6] {
-                terrain_attack[t][u] = 1.10;
-            }
-        }
-        for t in [2, 3] {
-            terrain_attack[t][2] = 1.10;
-            for u in [3, 4, 5, 7] {
-                terrain_attack[t][u] = 0.90;
-            }
-        }
-        terrain_attack[2][0] = 1.10;
-        terrain_attack[2][6] = 0.80;
-        terrain_attack[3][6] = 0.85;
-        for u in [3, 4, 5, 7] {
-            terrain_attack[4][u] = 0.75;
-            terrain_attack[6][u] = 0.75;
-        }
-        terrain_attack[4][6] = 0.60;
-        terrain_attack[4][8] = 0.90;
-        terrain_attack[6][6] = 0.60;
-        terrain_attack[5][7] = 1.20;
-        terrain_attack[5][3] = 1.05;
-        terrain_attack[5][1] = 0.95;
         Self {
             units,
             matchups,
-            terrain_attack,
             tactic_fit: [
                 [0.50, 0.30, 0.80, 0.60, 0.80, 0.50],
                 [1.00, 0.20, 0.20, 0.60, 1.00, 1.00],
@@ -350,7 +326,6 @@ impl Default for MilitaryConfig {
                 Catapult,
             ],
             support_priority: [Archers, Ballista, Catapult],
-            terrain_defense: [1., 1., 1.10, 1.10, 1.20, 1., 1.10],
             support_effectiveness: 0.50,
             exposed_support_casualties: 1.50,
             fort_defense_per_level: 0.05,
@@ -392,7 +367,10 @@ impl Default for MilitaryConfig {
             occupation_relation_loss: 2.,
             pressure_control_ceiling: 40.,
             pressure_monthly_control: 2.,
-            pressure_relation_loss: 3.,
+            npc_hostility_relation: 50.,
+            slave_revolt_mobilization_fraction: 0.75,
+            rebellion_control_loss_per_cohort: 0.25,
+            maximum_rebellion_control_loss: 5.,
             terrain_movement: [0.90, 1., 1.20, 1.25, 1.60, 1.30, 1.50],
             road_speed_bonus: 0.20,
             minimum_road_cost: 0.0,

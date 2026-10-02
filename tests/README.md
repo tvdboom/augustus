@@ -16,5 +16,10 @@ test bodies or test-only source files under `src/`.
 
 `tests/scripts/` contains the existing PowerShell and shell packaging checks.
 
-Run `just test` (all Rust targets) and `just packaging-check`. `just ci` includes
-formatting, Clippy, Rust tests, runtime-asset checks, wasm compilation and packaging checks.
+`tests/sql/verify-schema.mjs` verifies the lobby schema in a disposable PGlite database,
+including installation, row security, constraints, player-card permissions and cascading deletion.
+Its tooling lives under ignored `target/sql-verification/`; run it with `just sql-check`.
+
+Run `just test` (all Rust targets and features) and `just packaging-check`. `just ci` includes
+formatting, Clippy, asset generation, Rust and SQL tests, runtime-asset checks, wasm compilation
+and packaging checks, matching the GitHub quality workflow.

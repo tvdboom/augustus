@@ -4,10 +4,18 @@ use super::*;
 
 #[test]
 fn practice_boost_updates_campaign_balances_and_every_owned_province() {
+    use crate::game::military::{ForceOwner, UnitType};
+
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
     let mut campaign = campaign::Campaign::default();
     campaign.start(&ownership, 2);
+    let extra = campaign.economy.provinces.iter().position(|p| p.owner.is_none()).unwrap();
+    campaign.economy.provinces[extra].owner = Some(0);
+    campaign.politics[extra] = crate::game::politics::diplomacy::ProvincePolitics::owned(2, 0);
+    campaign.military.seed_unit(extra, ForceOwner::Player(0), UnitType::Archers).unwrap();
+    let before_forces: Vec<_> =
+        campaign.military.provinces.iter().map(|p| p.forces.clone()).collect();
     let mut resources = HudResources::default();
     resources.start_players(2, &ownership);
     let before_wallet = campaign.economy.players[0].clone();
@@ -32,14 +40,38 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
     assert_eq!(campaign.actors[0].coin, wallet.coin);
     assert_eq!(campaign.actors[0].influence, wallet.influence);
     let owner = crate::game::military::ForceOwner::Player(0);
-    assert_eq!(campaign.military.peak_manpower[&owner], 600.0);
+    assert!(campaign.military.peak_manpower[&owner] >= 600.0);
     assert_eq!(campaign.military.victories[&owner], 6);
     assert_eq!(campaign.military.rank(owner), crate::game::military::MilitaryRank::Centurion);
     let boosted_resources = wallet.resources;
     assert_eq!(campaign.economy.players[1].practice_storage_bonus, [0.0; 3]);
-    for (province, (owner, population, output)) in
-        campaign.economy.provinces.iter().zip(before_populations)
+    for (id, (province, (owner, population, output))) in
+        campaign.economy.provinces.iter().zip(before_populations).enumerate()
     {
+        let forces = &campaign.military.provinces[id].forces;
+        let player_owner = ForceOwner::Player(0);
+        if owner == Some(0) {
+            let units = &forces[&player_owner];
+            let previous = before_forces[id].get(&player_owner).cloned().unwrap_or_default();
+            assert!(units.starts_with(&previous));
+            let added = &units[previous.len()..];
+            assert_eq!(added.len(), 3 * UnitType::ALL.len());
+            for kind in UnitType::ALL {
+                assert_eq!(added.iter().filter(|unit| unit.unit_type == kind).count(), 3);
+            }
+            assert!(added.iter().all(|unit| {
+                unit.owner == player_owner
+                    && unit.current_manpower == unit.max_manpower
+                    && unit.max_manpower == campaign.military.config.unit(unit.unit_type).manpower
+            }));
+            for (other, previous) in &before_forces[id] {
+                if *other != player_owner {
+                    assert_eq!(forces.get(other), Some(previous));
+                }
+            }
+        } else {
+            assert_eq!(*forces, before_forces[id]);
+        }
         assert_eq!(
             province.population,
             population.map(|count| count
@@ -66,6 +98,107 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
 }
 
 #[test]
+fn practice_boost_makes_each_next_political_rank_affordable_and_supported() {
+    use crate::game::politics::PoliticalRank;
+
+    for count in [1, 2, 4] {
+        let mut ownership = ProvinceOwnership::default();
+        ownership.start_game(&vec![egui::Color32::RED; count]);
+        let mut campaign = campaign::Campaign::default();
+        campaign.start(&ownership, count);
+        let mut resources = HudResources::default();
+        resources.start_players(count, &ownership);
+        let player = count - 1;
+        for expected in [
+            PoliticalRank::Aedile,
+            PoliticalRank::Praetor,
+            PoliticalRank::Censor,
+            PoliticalRank::Consul,
+            PoliticalRank::Augustus,
+        ] {
+            let rank = campaign.actors[player].rank;
+            campaign.economy.players[player].influence = 0.0;
+            let other_wallets: Vec<_> =
+                campaign.economy.players[..player].iter().map(|wallet| wallet.balances()).collect();
+            apply_practice_boost(player, &mut campaign, &mut resources, &mut ownership);
+            let requirement = campaign
+                .senate
+                .promotion_eligibility(player, &campaign.actors, &campaign.senate_config)
+                .unwrap();
+            assert_eq!(requirement.rank, expected);
+            assert_eq!(campaign.actors[player].rank, rank);
+            assert_eq!(campaign.senate.support(player), requirement.senators);
+            assert_eq!(campaign.senate.senators.len(), 100);
+            campaign.notify_rank_opportunities();
+            assert!(campaign.notifications.drain_for(player).iter().any(|notice| {
+                notice.kind == campaign_notifications::NoticeKind::PoliticalPromotionAvailable
+                    && notice.title == format!("You can become {}", expected.label())
+            }));
+            for (wallet, before) in campaign.economy.players[..player].iter().zip(other_wallets) {
+                assert_eq!(wallet.balances(), before);
+            }
+            campaign.senate.promote(player, &mut campaign.actors, &campaign.senate_config).unwrap();
+            campaign.push_wallets();
+            assert_eq!(campaign.actors[player].rank, expected);
+        }
+        assert_eq!(campaign.senate.month, 0);
+        assert_eq!(campaign.senate.winner, Some(player));
+    }
+}
+
+#[test]
+fn practice_boost_uses_configured_costs_and_clears_consul_reappointment_cooldown() {
+    use crate::game::politics::PoliticalRank;
+
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
+    let mut campaign = campaign::Campaign::default();
+    campaign.start(&ownership, 2);
+    let mut resources = HudResources::default();
+    resources.start_players(2, &ownership);
+    campaign.actors[0].rank = PoliticalRank::Proconsul;
+    campaign.actors[0].consul_again_at = campaign.senate.month + 12;
+    campaign.actors[0].promoted_at = Some(campaign.senate.month);
+    campaign.senate_config.promotion_costs[3] = 12_000.0;
+    campaign.economy.players[0].influence = 0.0;
+
+    apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
+
+    assert_eq!(campaign.economy.players[0].influence, 12_000.0);
+    assert_eq!(
+        campaign
+            .senate
+            .promotion_eligibility(0, &campaign.actors, &campaign.senate_config)
+            .unwrap()
+            .rank,
+        PoliticalRank::Consul
+    );
+    let support = campaign.senate.support(0);
+    let province = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    let owner = crate::game::military::ForceOwner::Player(0);
+    let cohorts = campaign.military.provinces[province].forces[&owner].len();
+
+    apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
+
+    assert_eq!(campaign.economy.players[0].influence, 13_000.0);
+    assert_eq!(campaign.senate.support(0), support);
+    assert_eq!(campaign.military.provinces[province].forces[&owner].len(), cohorts + 33);
+    let ids: std::collections::BTreeSet<_> = campaign
+        .military
+        .provinces
+        .iter()
+        .flat_map(|p| p.forces.values().flatten().map(|unit| unit.id))
+        .collect();
+    let total: usize = campaign
+        .military
+        .provinces
+        .iter()
+        .map(|p| p.forces.values().map(Vec::len).sum::<usize>())
+        .sum();
+    assert_eq!(ids.len(), total);
+}
+
+#[test]
 fn practice_boost_updates_preview_balances_and_owned_population() {
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
@@ -77,8 +210,8 @@ fn practice_boost_updates_preview_balances_and_owned_population() {
 
     apply_practice_boost(0, &mut campaign::Campaign::default(), &mut resources, &mut ownership);
 
-    for index in 0..4 {
-        assert_eq!(resources.players[0][index].amount, before[index].amount + 5_000.0);
+    for (index, previous) in before.iter().enumerate().take(4) {
+        assert_eq!(resources.players[0][index].amount, previous.amount + 5_000.0);
     }
     assert_eq!(resources.players[0][4].amount, before[4].amount + 1_000.0);
     assert_eq!(ownership.population_for(0), before_population.map(|count| count * 10.0));
@@ -265,8 +398,8 @@ fn local_players_receive_only_their_provinces_monthly_resources() {
         (0..practice.players.len()).map(|player| resources.for_player(player)).collect();
     resources.advance(2, &mut ownership, true);
     for (player, previous) in after_one_month.into_iter().enumerate() {
-        for resource in 1..3 {
-            assert!(resources.for_player(player)[resource].amount >= previous[resource].amount);
+        for (resource, previous) in previous.iter().enumerate().take(3).skip(1) {
+            assert!(resources.for_player(player)[resource].amount >= previous.amount);
         }
     }
 }
@@ -556,11 +689,12 @@ fn escape_closes_army_window_before_opening_game_menu() {
     assert_eq!(app.world().resource::<ProvincePanelOpen>().0, None);
     assert!(matches!(app.world().resource::<NextState<AppState>>(), NextState::Unchanged));
 
-    let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-    keyboard.clear();
-    keyboard.release(KeyCode::Escape);
-    keyboard.press(KeyCode::Escape);
-    drop(keyboard);
+    {
+        let mut keyboard = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keyboard.clear();
+        keyboard.release(KeyCode::Escape);
+        keyboard.press(KeyCode::Escape);
+    }
     app.update();
     assert!(matches!(
         app.world().resource::<NextState<AppState>>(),

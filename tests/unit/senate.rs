@@ -39,6 +39,35 @@ fn pledge(state: &mut SenateState, player: usize, count: usize) {
     }
     state.review_allegiances();
 }
+
+#[test]
+fn practice_support_prefers_neutral_seats_and_keeps_existing_support() {
+    let mut senate = SenateState::new(1);
+    pledge(&mut senate, 0, 20);
+    senate.grant_practice_support(1, 10);
+    assert_eq!(senate.support(0), 20);
+    assert_eq!(senate.support(1), 10);
+    senate.grant_practice_support(1, 5);
+    assert_eq!(senate.support(1), 10);
+    senate.review_allegiances();
+    assert_eq!(senate.support(1), 10);
+}
+
+#[test]
+fn practice_support_transfers_full_confidence_when_all_seats_are_taken() {
+    let mut senate = SenateState::new(1);
+    pledge(&mut senate, 0, 100);
+    senate.grant_practice_support(1, 60);
+    assert_eq!(senate.support(0), 40);
+    assert_eq!(senate.support(1), 60);
+    for seat in &senate.senators {
+        assert!(seat.confidence.iter().sum::<f64>() <= senate.seat_confidence + 1e-9);
+    }
+    senate.review_allegiances();
+    assert_eq!(senate.support(1), 60);
+    assert_eq!(senate.senators.len(), 100);
+}
+
 fn points(state: &SenateState, player: usize, bloc: Bloc) -> f64 {
     state
         .senators
@@ -79,6 +108,181 @@ fn new_match_has_one_hundred_neutral_stable_seats_and_zero_confidence() {
         assert_eq!(seat.allegiance, None);
         assert_eq!(seat.bloc, Bloc::ALL[id / 20]);
         assert!(seat.confidence.is_empty());
+    }
+}
+
+#[test]
+fn subsistence_income_and_a_home_province_never_grant_passive_support() {
+    let config = SenateConfig::default();
+    for income in [0.0, 10.0, MERCHANT_INCOME_THRESHOLD] {
+        let mut senate = SenateState::new(1);
+        let mut players = actors(1);
+        let profile = PoliticalProfile {
+            nobles: 1000.0,
+            coin_income: income,
+            controlled_provinces: 1.0,
+            ..Default::default()
+        };
+        // Reproduce the 60 AD -> 73 AD idle opening, then keep waiting to
+        // ensure neutral conditions cannot quietly fill the chamber later.
+        for _ in 0..600 {
+            senate.advance_month(&mut players, std::slice::from_ref(&profile), &config);
+        }
+        for bloc in Bloc::ALL {
+            assert_eq!(points(&senate, 0, bloc), 0.0, "{bloc:?}, income {income}");
+            assert_eq!(senate.bloc_support(0, bloc), 0);
+        }
+    }
+}
+
+#[test]
+fn each_faction_earns_support_from_its_actual_positive_effects() {
+    let baseline = PoliticalProfile {
+        controlled_provinces: 1.0,
+        ..Default::default()
+    };
+    let mut cases = vec![];
+    macro_rules! effect {
+        ($bloc:ident, $field:ident, $value:expr) => {
+            cases.push((
+                Bloc::$bloc,
+                stringify!($field),
+                PoliticalProfile {
+                    $field: $value,
+                    ..baseline.clone()
+                },
+                PoliticalRank::Quaestor,
+            ));
+        };
+    }
+    effect!(Aristocrats, noble_happiness, 60.0);
+    effect!(Aristocrats, political_buildings, 1.0);
+    effect!(Aristocrats, wonders, 1.0);
+    cases.push((Bloc::Aristocrats, "higher office", baseline.clone(), PoliticalRank::Aedile));
+    effect!(Merchants, coin_income, 60.0);
+    effect!(Merchants, active_trade_routes, 1.0);
+    effect!(Merchants, markets, 1.0);
+    effect!(Provincials, vassal_count, 1.0);
+    effect!(Provincials, province_relation, 70.0);
+    effect!(Provincials, provincial_trade, 40.0);
+    effect!(Populares, citizen_happiness, 60.0);
+    effect!(Populares, plebeian_happiness, 60.0);
+    effect!(Populares, food_policy, 1.0);
+    effect!(Military, military_strength, 100.0);
+    effect!(Military, military_rank, 1.0);
+    effect!(Military, recent_victories, 1.0);
+    effect!(Military, controlled_provinces, 2.0);
+
+    let config = SenateConfig::default();
+    for (bloc, effect, profile, rank) in cases {
+        let mut senate = SenateState::new(1);
+        let mut players = actors(1);
+        players[0].rank = rank;
+        for _ in 0..120 {
+            senate.advance_month(&mut players, std::slice::from_ref(&profile), &config);
+        }
+        assert!(senate.bloc_support(0, bloc) > 0, "{bloc:?}: {effect}");
+        for other in Bloc::ALL.into_iter().filter(|other| *other != bloc) {
+            assert_eq!(points(&senate, 0, other), 0.0, "{other:?}: {effect}");
+        }
+    }
+}
+
+#[test]
+fn larger_noble_populations_only_amplify_happy_nobles() {
+    let actor = PoliticalPlayer::default();
+    let rate = |nobles, noble_happiness| {
+        structural_reasons(
+            Bloc::Aristocrats,
+            &PoliticalProfile {
+                nobles,
+                noble_happiness,
+                ..Default::default()
+            },
+            &actor,
+        )
+        .iter()
+        .map(|reason| reason.points)
+        .sum::<f64>()
+    };
+    assert_eq!(rate(100.0, 50.0), 0.0);
+    assert_eq!(rate(1000.0, 50.0), 0.0);
+    assert!(rate(1000.0, 60.0) > rate(100.0, 60.0));
+    assert!(rate(1000.0, 40.0) < 0.0);
+}
+
+#[test]
+fn generous_food_rewards_actual_supply_and_requires_a_governed_population() {
+    let actor = PoliticalPlayer::default();
+    let policy = |controlled_provinces, food_security| {
+        structural_reasons(
+            Bloc::Populares,
+            &PoliticalProfile {
+                controlled_provinces,
+                food_policy: 1.0,
+                food_security,
+                ..Default::default()
+            },
+            &actor,
+        )
+        .into_iter()
+        .find(|reason| reason.label == "Generous or restricted food policy")
+        .unwrap()
+        .points
+    };
+    assert_eq!(policy(0.0, 1.0), 0.0);
+    assert_eq!(policy(1.0, 0.0), 0.0);
+    assert_eq!(policy(1.0, 0.5), policy(1.0, 1.0) * 0.5);
+    assert!(policy(1.0, 1.0) > 0.0);
+}
+
+#[test]
+fn each_faction_loses_confidence_from_its_negative_conditions() {
+    let baseline = PoliticalProfile {
+        controlled_provinces: 1.0,
+        ..Default::default()
+    };
+    let mut cases = vec![];
+    macro_rules! effect {
+        ($bloc:ident, $field:ident, $value:expr) => {
+            cases.push((
+                Bloc::$bloc,
+                stringify!($field),
+                PoliticalProfile {
+                    $field: $value,
+                    ..baseline.clone()
+                },
+            ));
+        };
+    }
+    effect!(Aristocrats, noble_happiness, 40.0);
+    effect!(Merchants, coin_income, -10.0);
+    effect!(Merchants, trade_reliability, 0.0);
+    effect!(Merchants, resource_security, 0.0);
+    effect!(Merchants, active_wars, 1.0);
+    effect!(Provincials, province_relation, 30.0);
+    effect!(Provincials, high_tribute, 1.0);
+    effect!(Provincials, active_wars, 1.0);
+    effect!(Populares, citizen_happiness, 40.0);
+    effect!(Populares, plebeian_happiness, 40.0);
+    effect!(Populares, food_policy, -1.0);
+    effect!(Populares, food_security, 0.5);
+    effect!(Populares, famine, 1.0);
+    effect!(Populares, tax_pressure, 1.0);
+    effect!(Populares, harsh_policies, 1.0);
+    effect!(Military, recent_victories, -1.0);
+
+    let config = SenateConfig::default();
+    for (bloc, effect, profile) in cases {
+        let mut senate = SenateState::new(1);
+        let mut players = actors(1);
+        senate.ensure_players(1);
+        senate.gain_confidence(0, bloc, 10.0);
+        senate.review_allegiances();
+        assert_eq!(senate.bloc_support(0, bloc), 1);
+        senate.advance_month(&mut players, &[profile], &config);
+        assert!(points(&senate, 0, bloc) < 10.0, "{bloc:?}: {effect}");
+        assert_eq!(senate.bloc_support(0, bloc), 0, "{bloc:?}: {effect}");
     }
 }
 #[test]
@@ -227,6 +431,21 @@ fn confidence_losses_release_support_immediately_and_do_not_reapply() {
     assert!(s.accusations.is_empty());
 }
 #[test]
+fn exposed_population_unhappiness_hurts_populares_without_hurting_provincials() {
+    for kind in [ScandalKind::UnhappyCitizens, ScandalKind::UnhappyPlebeians] {
+        let config = SenateConfig::default();
+        let mut senate = SenateState::new(8);
+        let players = actors(2);
+        pledge(&mut senate, 1, 100);
+        let mut espionage = evidence(1, kind, Severity::Medium);
+        senate.expose_scandal(0, 1, &players, &mut espionage, &config).unwrap();
+        assert_eq!(senate.bloc_support(1, Bloc::Provincials), 20);
+        assert_eq!(senate.bloc_support(1, Bloc::Populares), 17);
+        assert_eq!(kind.bloc_penalties(Severity::Medium)[Bloc::Provincials.index()], 0.0);
+    }
+}
+
+#[test]
 fn three_severities_increase_immediate_losses_and_affect_at_most_two_factions() {
     for kind in [
         ScandalKind::Famine,
@@ -266,7 +485,7 @@ fn trade_breach_releases_one_merchant_seat_immediately() {
     assert_eq!(s.bloc_support(0, Bloc::Merchants), 2);
 }
 #[test]
-fn personal_actions_cost_funds_and_cannot_repeat_or_roll_when_invalid() {
+fn temporary_actions_charge_once_and_allow_same_month_competition() {
     let c = safe_config();
     let mut s = SenateState::new(1);
     let mut p = actors(2);
@@ -279,13 +498,92 @@ fn personal_actions_cost_funds_and_cannot_repeat_or_roll_when_invalid() {
     assert!(s.senators[0].confidence.is_empty());
     s.act_on_senator(0, 0, SenatorAction::Petition, &mut p, &c).unwrap();
     assert_eq!(p[0].influence, 4990.0);
-    assert_eq!(s.senators[0].confidence[0], 3.0);
-    assert_eq!(
-        s.act_on_senator(1, 0, SenatorAction::Bribe, &mut p, &c).unwrap_err(),
-        PoliticalError::AlreadyUsed
-    );
-    assert_eq!(p[1].coin, 10_000.0);
+    s.act_on_senator(0, 0, SenatorAction::Petition, &mut p, &c).unwrap();
+    s.act_on_senator(1, 0, SenatorAction::Gift, &mut p, &c).unwrap();
+    assert_eq!(s.month, 0);
+    assert_eq!(s.senators[0].confidence, vec![0.0, 0.0]);
+    assert_eq!(p[0].influence, 4980.0);
+    assert_eq!(p[1].coin, 9960.0);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(s.senators[0].confidence, vec![2.0, 1.25]);
+    assert_eq!(s.senators[0].allegiance, None);
 }
+#[test]
+fn ongoing_actions_are_exclusive_per_player_and_invalid_clicks_do_not_charge_or_roll() {
+    let c = safe_config();
+    for first in SenatorAction::ALL.into_iter().filter(|a| a.is_ongoing()) {
+        let mut s = SenateState::new(17);
+        let mut p = actors(2);
+        s.act_on_senator(0, 0, first, &mut p, &c).unwrap();
+        let balances: Vec<_> = p.iter().map(|actor| (actor.coin, actor.influence)).collect();
+        let confidence = s.senators[0].confidence.clone();
+        let mut expected_rng = s.rng.clone();
+        for repeat in SenatorAction::ALL.into_iter().filter(|a| a.is_ongoing()) {
+            assert_eq!(
+                s.act_on_senator(0, 0, repeat, &mut p, &c).unwrap_err(),
+                PoliticalError::SenatorArrangementActive {
+                    action: first,
+                    months_remaining: first.duration(),
+                },
+                "{first:?} must block another ongoing {repeat:?} by the same player"
+            );
+        }
+        assert_eq!(
+            p.iter().map(|actor| (actor.coin, actor.influence)).collect::<Vec<_>>(),
+            balances
+        );
+        assert_eq!(s.senators[0].confidence, confidence);
+        assert_eq!(s.rng.unit(), expected_rng.unit(), "Rejected clicks must not reroll exposure");
+        s.act_on_senator(1, 0, SenatorAction::Lobby, &mut p, &c).unwrap();
+        s.act_on_senator(0, 0, SenatorAction::Gift, &mut p, &c).unwrap();
+        s.act_on_senator(1, 0, SenatorAction::Petition, &mut p, &c).unwrap();
+        assert_eq!(s.senators[0].arrangement(0).unwrap().action, first);
+        assert_eq!(s.senators[0].arrangement(1).unwrap().action, SenatorAction::Lobby);
+        s.cancel_senator_action(0, 0).unwrap();
+        assert!(s.senators[0].arrangement(1).is_some());
+        assert!(s.senator_action_quote(0, 0, SenatorAction::Lobby, &p, &c).is_ok());
+    }
+}
+
+#[test]
+fn unavailable_senator_actions_explain_the_actual_allegiance_and_relationship() {
+    let c = safe_config();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    let neutral = s.senator_action_quote(0, 0, SenatorAction::Discredit, &p, &c).unwrap_err();
+    assert_eq!(neutral, PoliticalError::SenatorIsNeutral);
+    assert!(neutral.to_string().contains("neutral"));
+    assert!(neutral.to_string().contains("supports another player"));
+    pledge(&mut s, 0, 1);
+    let own_patron = s.senator_action_quote(0, 0, SenatorAction::Discredit, &p, &c).unwrap_err();
+    assert_eq!(own_patron, PoliticalError::RivalPatronRequired);
+    assert!(own_patron.to_string().contains("supports you"));
+    assert!(s.senator_action_quote(1, 0, SenatorAction::Discredit, &p, &c).is_ok());
+    assert!(s.senator_action_quote(0, 0, SenatorAction::Gift, &p, &c).is_ok());
+    assert!(s.senator_action_quote(0, 0, SenatorAction::Lobby, &p, &c).is_ok());
+    for active in SenatorAction::ALL.into_iter().filter(|a| a.is_ongoing()) {
+        let mut s = SenateState::new(1);
+        s.act_on_senator(0, 0, active, &mut p, &c).unwrap();
+        s.advance_month(&mut p, &[], &c);
+        for replacement in SenatorAction::ALL.into_iter().filter(|a| a.is_ongoing()) {
+            assert!(s.senator_action_quote(1, 0, replacement, &p, &c).is_ok());
+            let error = s.senator_action_quote(0, 0, replacement, &p, &c).unwrap_err();
+            assert_eq!(
+                error,
+                PoliticalError::SenatorArrangementActive {
+                    action: active,
+                    months_remaining: s.senators[0].arrangement(0).unwrap().until - s.month,
+                }
+            );
+            if active.upkeep(&c).is_some() {
+                assert!(error.to_string().contains("cross"));
+            } else {
+                assert!(error.to_string().contains("5 months remaining"));
+            }
+        }
+    }
+}
+
 #[test]
 fn patronage_and_threats_apply_monthly_for_exactly_six_months_and_cap_at_one_seat() {
     let c = safe_config();
@@ -297,14 +595,14 @@ fn patronage_and_threats_apply_monthly_for_exactly_six_months_and_cap_at_one_sea
     for _ in 0..6 {
         s.advance_month(&mut p, &[], &c);
     }
-    assert_eq!(s.senators[80].confidence[0], 10.0);
+    assert_eq!(s.senators[80].confidence[0], 9.5);
     // Coercion also reduces Aristocrat confidence during the arrangement.
     assert!(s.senators[0].confidence[0] < 6.0);
-    assert!(s.senators[0].arrangement.is_none());
-    assert!(s.senators[80].arrangement.is_none());
+    assert!(s.senators[0].arrangement(0).is_none());
+    assert!(s.senators[80].arrangement(0).is_none());
     let before = s.senators[80].confidence[0];
     s.advance_month(&mut p, &[], &c);
-    assert_eq!(s.senators[80].confidence[0], before);
+    assert_eq!(s.senators[80].confidence[0], before - c.personal_confidence_decay);
 }
 #[test]
 fn murder_resets_all_players_and_replacement_does_not_inherit_arrangements() {
@@ -312,6 +610,9 @@ fn murder_resets_all_players_and_replacement_does_not_inherit_arrangements() {
     let mut s = SenateState::new(1);
     let mut p = actors(2);
     s.ensure_players(2);
+    s.act_on_senator(0, 0, SenatorAction::Lobby, &mut p, &c).unwrap();
+    s.act_on_senator(1, 0, SenatorAction::Bribe, &mut p, &c).unwrap();
+    s.act_on_senator(1, 0, SenatorAction::Gift, &mut p, &c).unwrap();
     s.add_to_seat(0, 1, 10.0);
     s.add_to_seat(0, 0, 3.0);
     s.review_allegiances();
@@ -322,6 +623,8 @@ fn murder_resets_all_players_and_replacement_does_not_inherit_arrangements() {
     assert_eq!(s.senators[0].allegiance, None);
     assert_eq!(s.senators[0].generation, 1);
     assert_eq!(s.senators[0].id, 0);
+    assert!(s.senators[0].arrangements.is_empty());
+    assert!(s.senators[0].effects.is_empty());
     s.advance_month(&mut p, &[], &c);
     assert_eq!(s.senators[0].allegiance, None);
 }
@@ -353,18 +656,34 @@ fn detected_bribe_has_larger_immediate_losses_than_its_gain_and_is_seeded() {
     assert_eq!(run(), run());
 }
 #[test]
-fn banquet_and_discredit_are_targeted_and_do_not_create_free_currency() {
+fn banquet_and_discredit_apply_temporary_effects_only_to_the_selected_senator() {
     let c = safe_config();
     let mut s = SenateState::new(1);
     let mut p = actors(2);
     s.act_on_senator(0, 0, SenatorAction::Banquet, &mut p, &c).unwrap();
-    assert_eq!(s.senators[0].confidence[0], 5.0);
-    assert_eq!(points(&s, 0, Bloc::Populares), 5.0);
+    assert_eq!(s.senators[0].confidence[0], 0.0);
+    assert_eq!(points(&s, 0, Bloc::Populares), 0.0);
+    assert_eq!(s.support(0), 0);
     s.add_to_seat(1, 1, 10.0);
     s.review_allegiances();
     s.act_on_senator(0, 1, SenatorAction::Discredit, &mut p, &c).unwrap();
-    assert_eq!(s.senators[1].confidence[1], 5.0);
+    assert_eq!(s.senators[1].confidence[1], 10.0);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(s.senators[0].confidence[0], 1.5);
+    assert_eq!(s.senators[1].confidence[1], 9.0);
     assert_eq!(s.senators[1].allegiance, None);
+    assert_eq!(points(&s, 0, Bloc::Populares), 0.0);
+    for _ in 0..3 {
+        s.advance_month(&mut p, &[], &c);
+    }
+    assert_eq!(s.senators[0].confidence[0], 4.5);
+    assert_eq!(s.senators[1].confidence[1], 7.0);
+    assert!(s.senators[0].effects.is_empty());
+    for _ in 0..9 {
+        s.advance_month(&mut p, &[], &c);
+    }
+    assert_eq!(s.senators[0].confidence[0], 0.0);
+    assert_eq!(s.senators[1].confidence[1], 7.0);
     assert_eq!(p[0].coin, 9930.0);
     assert_eq!(p[0].influence, 4965.0);
 }
@@ -384,7 +703,7 @@ fn outreach_is_nonstacking_recurring_and_runs_for_exactly_six_months() {
 }
 
 #[test]
-fn lobbying_spends_only_influence_and_stops_monthly_payments_when_full() {
+fn lobbying_builds_and_maintains_support_until_cancelled_then_confidence_fades() {
     let c = safe_config();
     let mut s = SenateState::new(1);
     let mut p = actors(1);
@@ -394,20 +713,28 @@ fn lobbying_spends_only_influence_and_stops_monthly_payments_when_full() {
     assert_eq!(points(&s, 0, Bloc::Aristocrats), 0.0);
     assert_eq!(s.outreach_upkeep(0, &c), 4.0);
     assert_eq!(s.spent_on(0, SenatorAction::Lobby), 20.0);
-    for _ in 0..10 {
+    for _ in 0..20 {
         s.pay_outreach(&mut p, &c);
         let paid = p[0].influence;
         s.pay_outreach(&mut p, &c);
         assert_eq!(p[0].influence, paid, "Do not pay twice in one month");
         s.advance_month(&mut p, &[], &c);
     }
-    assert_eq!(p[0].influence, 4940.0);
+    assert_eq!(p[0].influence, 4900.0);
     assert_eq!(p[0].coin, 10_000.0);
     assert_eq!(s.senators[0].allegiance, Some(0));
-    assert!(s.senators[0].arrangement.is_none());
+    assert!(s.senators[0].arrangement(0).is_some());
+    assert_eq!(s.outreach_upkeep(0, &c), 4.0);
+    s.cancel_senator_action(0, 0).unwrap();
     assert_eq!(s.outreach_upkeep(0, &c), 0.0);
     s.pay_outreach(&mut p, &c);
-    assert_eq!(p[0].influence, 4940.0);
+    assert_eq!(p[0].influence, 4900.0);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(s.senators[0].allegiance, None);
+    for _ in 0..19 {
+        s.advance_month(&mut p, &[], &c);
+    }
+    assert_eq!(s.senators[0].confidence[0], 0.0);
 }
 
 #[test]
@@ -426,14 +753,89 @@ fn unpaid_lobbying_gives_no_favor_and_cancellation_removes_outflow() {
     s.advance_month(&mut p, &[], &c);
     assert_eq!(p[0].influence, 0.0);
     assert_eq!(points(&s, 0, Bloc::Aristocrats), 1.0);
-    assert_eq!(s.end_outreach(1, 0), Err(PoliticalError::Ineligible));
-    s.end_outreach(0, 0).unwrap();
+    assert_eq!(s.cancel_senator_action(1, 0), Err(PoliticalError::Ineligible));
+    s.cancel_senator_action(0, 0).unwrap();
     assert_eq!(s.outreach_upkeep(0, &c), 0.0);
     p[0].influence = 100.0;
     s.pay_outreach(&mut p, &c);
     s.advance_month(&mut p, &[], &c);
     assert_eq!(p[0].influence, 100.0);
-    assert_eq!(points(&s, 0, Bloc::Aristocrats), 1.0);
+    assert_eq!(points(&s, 0, Bloc::Aristocrats), 0.5);
+}
+
+#[test]
+fn recurring_bribes_build_faster_than_lobbying_and_unpaid_months_only_decay() {
+    let c = safe_config();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    s.act_on_senator(0, 0, SenatorAction::Bribe, &mut p, &c).unwrap();
+    s.act_on_senator(1, 0, SenatorAction::Lobby, &mut p, &c).unwrap();
+    assert_eq!(s.senators[0].confidence, vec![0.0, 0.0]);
+    assert_eq!(s.action_upkeep(0, SenatorAction::Bribe, &c), 8.0);
+    let payments = s.pay_outreach(&mut p, &c);
+    assert_eq!(payments.len(), 1);
+    assert!(!payments[0].caught);
+    assert_eq!(p[0].coin, 9912.0);
+    assert_eq!(p[1].influence, 4976.0);
+    let mut expected_rng = s.rng.clone();
+    assert!(s.pay_outreach(&mut p, &c).is_empty());
+    assert_eq!(p[0].coin, 9912.0);
+    assert_eq!(s.rng.unit(), expected_rng.unit());
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(s.senators[0].confidence, vec![2.0, 1.0]);
+    p[0].coin = 7.0;
+    s.pay_outreach(&mut p, &c);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(p[0].coin, 7.0);
+    assert_eq!(s.senators[0].confidence, vec![1.5, 1.5]);
+    p[0].coin = 1000.0;
+    for _ in 0..10 {
+        s.pay_outreach(&mut p, &c);
+        s.advance_month(&mut p, &[], &c);
+        let seat = &s.senators[0];
+        assert!(seat.confidence.iter().sum::<f64>() <= c.seat_confidence + 1e-9);
+        for player in 0..2 {
+            assert!(seat.personal_confidence[player] <= seat.confidence[player] + 1e-9);
+        }
+    }
+    s.cancel_senator_action(0, 0).unwrap();
+    assert!(s.senators[0].arrangement(1).is_some());
+    assert_eq!(s.action_upkeep(0, SenatorAction::Bribe, &c), 0.0);
+}
+
+#[test]
+fn recurring_bribe_exposure_ends_only_the_payers_action_and_returns_misconduct() {
+    let mut c = safe_config();
+    let mut s = SenateState::new(1);
+    let mut p = actors(2);
+    s.act_on_senator(0, 0, SenatorAction::Bribe, &mut p, &c).unwrap();
+    s.act_on_senator(1, 0, SenatorAction::Lobby, &mut p, &c).unwrap();
+    c.action_risks[SenatorAction::Bribe as usize] = 1.0;
+    let payments = s.pay_outreach(&mut p, &c);
+    assert_eq!(payments.len(), 1);
+    assert!(payments[0].caught);
+    assert_eq!(payments[0].player, 0);
+    assert_eq!(payments[0].senator, 0);
+    assert!(s.senators[0].arrangement(0).is_none());
+    assert!(s.senators[0].arrangement(1).is_some());
+    assert_eq!(s.accusations[0].target, 0);
+    s.advance_month(&mut p, &[], &c);
+    assert_eq!(s.senators[0].confidence, vec![0.0, 1.0]);
+}
+
+#[test]
+fn fading_personal_confidence_does_not_remove_structural_confidence() {
+    let c = safe_config();
+    let mut s = SenateState::new(1);
+    let mut p = actors(1);
+    s.ensure_players(1);
+    s.add_to_seat(0, 0, 5.0);
+    s.act_on_senator(0, 0, SenatorAction::Gift, &mut p, &c).unwrap();
+    for _ in 0..12 {
+        s.advance_month(&mut p, &[], &c);
+    }
+    assert_eq!(s.senators[0].personal_confidence[0], 0.0);
+    assert_eq!(s.senators[0].confidence[0], 5.0);
 }
 #[test]
 fn promotions_are_atomic_pay_once_and_never_consume_supporters() {
@@ -517,7 +919,7 @@ fn augustus_requires_active_consul_and_victory_stops_all_actions_and_ticks() {
     assert_eq!(s.month, 1);
     assert_eq!(
         s.act_on_senator(0, 99, SenatorAction::Assassinate, &mut p, &c).unwrap_err(),
-        PoliticalError::Ineligible
+        PoliticalError::CampaignFinished
     );
 }
 #[test]

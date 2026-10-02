@@ -45,6 +45,15 @@ const PANEL_ICONS: &[(&str, &str)] = &[
     ("images/icons/spy-support-revolt.png", "spy-support-revolt"),
     ("images/icons/spy-discredit-rivals.png", "spy-discredit-rivals"),
     ("images/icons/bribe-nobles.png", "bribe-nobles"),
+    ("images/icons/senator-petition.png", "senator-petition"),
+    ("images/icons/senator-gift.png", "senator-gift"),
+    ("images/icons/senator-patronage.png", "senator-patronage"),
+    ("images/icons/senator-bribe.png", "senator-bribe"),
+    ("images/icons/senator-threaten.png", "senator-threaten"),
+    ("images/icons/senator-murder.png", "senator-murder"),
+    ("images/icons/senator-banquet.png", "senator-banquet"),
+    ("images/icons/senator-discredit.png", "senator-discredit"),
+    ("images/icons/senator-lobby.png", "senator-lobby"),
     ("images/icons/insult-player.png", "insult-player"),
     ("images/icons/trade.png", "trade"),
     ("images/icons/control.png", "control"),
@@ -157,6 +166,12 @@ fn main() {
     // Like the existing embedded panel art, normalize animation sources at build
     // time so opening a map panel never performs a large Lanczos resample.
     let animation_root = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("animations");
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    let jobs = std::env::var("NUM_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(available)
+        .clamp(1, available);
     for (folder, width, height) in [
         ("military", 768, 768),
         ("military/idle", 768, 768),
@@ -170,38 +185,63 @@ fn main() {
         let output = animation_root.join(folder);
         std::fs::create_dir_all(&output).expect("create animation output directory");
         println!("cargo:rerun-if-changed={}", input.display());
+        let mut paths = Vec::new();
         for entry in std::fs::read_dir(input).expect("animation source directory") {
             let path = entry.expect("animation source entry").path();
             if path.extension().and_then(|s| s.to_str()) != Some("png") {
                 continue;
             }
             println!("cargo:rerun-if-changed={}", path.display());
-            let target = output.join(path.file_name().unwrap());
-            if folder == "wonders/construction" {
-                let workers = source_root.join("images/wonders/construction-workers.png");
-                println!("cargo:rerun-if-changed={}", workers.display());
-                wonder_construction::build(&path, &workers, &target);
-            } else if folder == "military/idle" {
-                military_animation::build(&path, &target, military_animation::Motion::Idle);
-            } else if folder == "military" {
-                // Panel icons retain their original four-by-four source layout.
-                normalize_animation_size(&path, &target, width, height);
-                for (state, motion) in [
-                    ("movement", military_animation::Motion::Movement),
-                    ("combat", military_animation::Motion::Combat),
-                ] {
-                    let output = output.join(state);
-                    std::fs::create_dir_all(&output).expect("create military cycle directory");
-                    military_animation::build(
-                        &path,
-                        &output.join(path.file_name().unwrap()),
-                        motion,
-                    );
-                }
-            } else {
-                normalize_animation_size(&path, &target, width, height);
-            }
+            paths.push(path);
         }
+        if folder == "wonders/construction" {
+            println!(
+                "cargo:rerun-if-changed={}",
+                source_root.join("images/wonders/construction-workers.png").display()
+            );
+        }
+        // Each sheet has independent input and output paths. Bound parallel
+        // preparation by Cargo's requested jobs and the host's available cores.
+        std::thread::scope(|scope| {
+            for chunk in paths.chunks(paths.len().div_ceil(jobs).max(1)) {
+                let output = &output;
+                let source_root = &source_root;
+                scope.spawn(move || {
+                    for path in chunk {
+                        let target = output.join(path.file_name().unwrap());
+                        if folder == "wonders/construction" {
+                            let workers =
+                                source_root.join("images/wonders/construction-workers.png");
+                            wonder_construction::build(path, &workers, &target);
+                        } else if folder == "military/idle" {
+                            military_animation::build(
+                                path,
+                                &target,
+                                military_animation::Motion::Idle,
+                            );
+                        } else if folder == "military" {
+                            // Panel icons retain their original four-by-four source layout.
+                            normalize_animation_size(path, &target, width, height);
+                            for (state, motion) in [
+                                ("movement", military_animation::Motion::Movement),
+                                ("combat", military_animation::Motion::Combat),
+                            ] {
+                                let output = output.join(state);
+                                std::fs::create_dir_all(&output)
+                                    .expect("create military cycle directory");
+                                military_animation::build(
+                                    path,
+                                    &output.join(path.file_name().unwrap()),
+                                    motion,
+                                );
+                            }
+                        } else {
+                            normalize_animation_size(path, &target, width, height);
+                        }
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -269,7 +309,7 @@ fn normalize_animation_size(
     height: u32,
 ) {
     let mut rgba = image::open(source).expect("animation PNG must be valid").to_rgba8();
-    // Four generated icon cells contain a detached spear tip or plume from the
+    // Some generated icon cells contain a detached spear tip or plume from the
     // animation row below. Keep the connected icon before downsampling, so the
     // panel icon UVs cannot show that neighboring-frame debris.
     let clean_icon = if source
@@ -280,7 +320,11 @@ fn normalize_animation_size(
         && matches!(
             source.file_name().and_then(|name| name.to_str()),
             Some(
-                "light-cavalry.png" | "heavy-cavalry.png" | "war-camels.png" | "heavy-infantry.png"
+                "light-infantry.png"
+                    | "light-cavalry.png"
+                    | "heavy-cavalry.png"
+                    | "war-camels.png"
+                    | "heavy-infantry.png"
             )
         ) {
         let mut icon =

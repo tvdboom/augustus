@@ -73,11 +73,13 @@ fn has_amount_at(output: &egui::FullOutput, amount: &str, y: f32) -> bool {
 
 #[test]
 fn influence_flow_shows_political_and_military_rank_income() {
-    let mut c = Campaign::default();
-    c.actors = vec![PoliticalPlayer {
-        rank: crate::game::politics::PoliticalRank::Praetor,
+    let mut c = Campaign {
+        actors: vec![PoliticalPlayer {
+            rank: crate::game::politics::PoliticalRank::Praetor,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
     c.military.ranks.insert(
         crate::game::military::ForceOwner::Player(0),
         crate::game::military::MilitaryRank::Legate,
@@ -94,12 +96,14 @@ fn influence_flow_shows_political_and_military_rank_income() {
 
 #[test]
 fn senate_flows_show_bribery_in_coin_and_lobbying_only_in_influence() {
-    let mut c = Campaign::default();
-    c.actors = vec![PoliticalPlayer {
-        coin: 1000.0,
-        influence: 1000.0,
+    let mut c = Campaign {
+        actors: vec![PoliticalPlayer {
+            coin: 1000.0,
+            influence: 1000.0,
+            ..Default::default()
+        }],
         ..Default::default()
-    }];
+    };
     c.senate_config.action_risks = [0.0; 9];
     c.senate.act_on_senator(0, 0, SenatorAction::Bribe, &mut c.actors, &c.senate_config).unwrap();
     c.senate.act_on_senator(0, 1, SenatorAction::Lobby, &mut c.actors, &c.senate_config).unwrap();
@@ -108,7 +112,8 @@ fn senate_flows_show_bribery_in_coin_and_lobbying_only_in_influence() {
     let coin = hover(&ctx, &c, false);
     let y = label_y(&coin, "Senator bribery");
     assert!(y > label_y(&coin, "OUTFLOW"));
-    assert!(has_amount_at(&coin, "-80", y));
+    assert!(has_amount_at(&coin, "-8", y));
+    assert!(has_amount_at(&coin, "-80", label_y(&coin, "Senator bribery (upfront)")));
     assert!(!coin.shapes.iter().any(
         |s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.job.text.contains("lobbying"))
     ));

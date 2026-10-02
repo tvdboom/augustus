@@ -15,8 +15,10 @@ fn fixture(city: bool) -> Campaign {
     );
     province.owner = Some(0);
     province.wonder_sites = vec![0];
-    let mut campaign = Campaign::default();
-    campaign.economy = EconomyWorld::new(2, vec![province], vec![vec![]]);
+    let mut campaign = Campaign {
+        economy: EconomyWorld::new(2, vec![province], vec![vec![]]),
+        ..Default::default()
+    };
     campaign.economy.players[0].resources = [1_000_000.0; 3];
     campaign
 }
@@ -545,7 +547,7 @@ fn image_name_level_and_empty_cell_space_all_start_the_quoted_upgrade_once() {
 
 #[test]
 fn unavailable_cells_keep_effect_tooltips_and_do_not_build() {
-    for reason in [0, 1, 3, 4, 5, 6] {
+    for reason in [0, 1, 3, 4, 5, 6, 7] {
         let ctx = egui::Context::default();
         super::super::campaign_widgets::configure_cursor(&ctx);
         let mut campaign = fixture(reason != 3);
@@ -560,6 +562,7 @@ fn unavailable_cells_keep_effect_tooltips_and_do_not_build() {
             },
             4 => campaign.economy.players[0].resources[2] = 0.0,
             5 => campaign.economy.players[0].resources[1] = 0.0,
+            7 => campaign.economy.provinces[0].occupied = true,
             _ => {
                 campaign.economy.start_building(0, 0, BuildingType::Granary).unwrap();
                 campaign.economy.players[0].resources = [0.0; 3];
@@ -624,12 +627,13 @@ fn unavailable_cells_keep_effect_tooltips_and_do_not_build() {
             3 => "Already built.",
             4 => "Not enough Stone.",
             5 => "Not enough Metal.",
+            7 => "Enemy occupation blocks construction.",
             _ => "Not enough Stone and Metal.",
         };
         assert!(tooltip.contains(expected), "Hover must explain availability: {tooltip}");
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text == expected
-                && text.galley.job.sections[0].format.color == egui::Color32::from_rgb(170, 45, 35))));
+                && text.galley.job.sections[0].format.color == egui::Color32::from_rgb(145, 35, 26))));
         assert!(
             !tooltip.contains("Direct ownership required")
                 && !tooltip.contains("Only the direct owner")

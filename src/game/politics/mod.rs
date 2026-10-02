@@ -118,6 +118,19 @@ pub enum PoliticalError {
     Ineligible,
     /// An action limited by its cooldown has already been performed.
     AlreadyUsed,
+    /// The campaign has already been won.
+    CampaignFinished,
+    /// Discrediting needs an existing rival patron; neutral senators have none.
+    SenatorIsNeutral,
+    /// Discrediting cannot target a senator's allegiance to the acting player.
+    RivalPatronRequired,
+    /// A player can maintain only one ongoing action on each senator.
+    SenatorArrangementActive {
+        /// Existing relationship blocking the requested action.
+        action: senate::SenatorAction,
+        /// Number of months left; ignored for ongoing lobbying.
+        months_remaining: u32,
+    },
     /// Both Consul seats are occupied at the time of appointment.
     NoConsulSeat,
     /// This action requires unexpired evidence against the target.
@@ -131,12 +144,37 @@ pub enum PoliticalError {
 impl std::fmt::Display for PoliticalError {
     /// Render an actionable explanation suitable for disabled-button tooltips.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Self::SenatorArrangementActive {
+            action,
+            months_remaining,
+        } = self
+        {
+            return if *action == senate::SenatorAction::Lobby {
+                f.write_str("You are already lobbying this senator. Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.")
+            } else if *action == senate::SenatorAction::Bribe {
+                f.write_str("You are already bribing this senator. Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.")
+            } else {
+                let months = if *months_remaining == 1 {
+                    "month"
+                } else {
+                    "months"
+                };
+                write!(f, "You already have an active {} arrangement with this senator ({months_remaining} {months} remaining). Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.", match action {
+                    senate::SenatorAction::Patronage => "patronage",
+                    _ => "coercion",
+                })
+            };
+        }
         f.write_str(match self {
             Self::InvalidAmount => "Choose a finite, nonnegative amount.",
             Self::InsufficientFunds => "Insufficient funds for this action.",
             Self::MissingTarget => "The selected target no longer exists.",
             Self::Ineligible => "The current office or province state does not permit this action.",
             Self::AlreadyUsed => "This action is still on cooldown.",
+            Self::CampaignFinished => "The campaign has ended. Senator actions are no longer available.",
+            Self::SenatorIsNeutral => "This senator is neutral and has no patron to discredit. Select a senator who supports another player.",
+            Self::RivalPatronRequired => "This senator supports you. Select a senator who supports another player to weaken their patron.",
+            Self::SenatorArrangementActive { .. } => unreachable!(),
             Self::NoConsulSeat => "Both Consul seats are occupied.",
             Self::ScandalRequired => "An unexpired scandal against this player is required.",
             Self::InsufficientSupport => {

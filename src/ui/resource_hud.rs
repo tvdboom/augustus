@@ -3,6 +3,7 @@
 use super::*;
 
 const POPULATION_HUD_ICON_SIZE: f32 = 26.0;
+const RESOURCE_HUD_ICON_SIZE: f32 = 38.0;
 
 pub(in crate::app) fn load_hud_resource_icon(
     ctx: &egui::Context,
@@ -121,6 +122,7 @@ pub(in crate::app) fn paint_hud_resources(
     scale: f32,
     date_left: f32,
     resources: &[HudResource; 7],
+    storage: Option<&[f64; 3]>,
     icons: &[egui::TextureHandle; 7],
 ) {
     let p = |x: f32, y: f32| origin + egui::vec2(x, y) * scale;
@@ -130,49 +132,73 @@ pub(in crate::app) fn paint_hud_resources(
     for index in [4, 3, 0, 1, 2, 5] {
         let resource = &resources[index];
         let x = positions[index];
-        if x + HUD_RESOURCE_WIDTH > date_left - HUD_RESOURCE_GROUP_PADDING {
+        let width = hud_resource_width(index);
+        if x + width > date_left - HUD_RESOURCE_GROUP_PADDING {
             break;
         }
-        let amount = format_hud_number(resource.amount);
-        let delta = format_hud_delta(resource.monthly_delta);
-        let gap = 4.0 * scale;
-        let min_icon_size = if index == 5 {
-            POPULATION_HUD_ICON_SIZE
+        let capacity = storage.and_then(|limits| limits.get(index));
+        let at_capacity = capacity.is_some_and(|limit| resource.amount >= *limit);
+        let ink = hud_delta_color(0.0);
+        let amount_color = if at_capacity {
+            hud_delta_color(-1.0)
         } else {
-            20.0
+            ink
         };
-        let max_text_width = (HUD_RESOURCE_WIDTH - 16.0 - 4.0 - min_icon_size) * scale;
-        let fit = |label: String, size: f32, color: egui::Color32| {
-            let mut font_size = size * scale;
-            loop {
-                let galley = painter.layout_no_wrap(
-                    label.clone(),
-                    egui::FontId::proportional(font_size),
-                    color,
-                );
-                if galley.size().x <= max_text_width {
-                    break galley;
-                }
-                font_size *= 0.98 * max_text_width / galley.size().x;
-            }
-        };
-        let amount_color = egui::Color32::from_rgb(35, 35, 32);
-        let delta_color = hud_delta_color(if index == 5 {
-            resource.monthly_delta.floor()
+        let amount = capacity.map_or_else(
+            || format_hud_number(resource.amount),
+            |capacity| {
+                format!("{} / {}", format_hud_number(resource.amount), format_hud_number(*capacity))
+            },
+        );
+        // Full storage cannot gain more stock, but consumption can still drain it.
+        let monthly_delta = if at_capacity {
+            resource.monthly_delta.min(0.0)
         } else {
             resource.monthly_delta
-        });
-        let amount_galley = fit(amount, 19.0, amount_color);
-        let delta_galley = fit(delta, 14.5, delta_color);
-        let text_width = delta_galley.size().x.max(amount_galley.size().x);
-        let icon_size = if index == 5 {
-            POPULATION_HUD_ICON_SIZE * scale
-        } else {
-            ((HUD_RESOURCE_WIDTH - 16.0) * scale - gap - text_width)
-                .clamp(20.0 * scale, 38.0 * scale)
         };
-        let icon_left =
-            p(x + HUD_RESOURCE_WIDTH * 0.5, 0.0).x - (icon_size + gap + text_width) * 0.5;
+        let delta = format_hud_delta(monthly_delta);
+        let gap = 4.0 * scale;
+        let icon_size = if index == 5 {
+            POPULATION_HUD_ICON_SIZE
+        } else {
+            RESOURCE_HUD_ICON_SIZE
+        } * scale;
+        let max_text_width = (width - 16.0) * scale - gap - icon_size;
+        let fit = |mut job: egui::text::LayoutJob| loop {
+            let galley = painter.layout_job(job.clone());
+            if galley.size().x <= max_text_width {
+                break galley;
+            }
+            let shrink = 0.98 * max_text_width / galley.size().x;
+            for section in &mut job.sections {
+                section.format.font_id.size *= shrink;
+            }
+        };
+        let delta_color = hud_delta_color(if index == 5 {
+            monthly_delta.floor()
+        } else {
+            monthly_delta
+        });
+        let amount_job = egui::text::LayoutJob::simple(
+            amount,
+            egui::FontId::proportional(19.0 * scale),
+            amount_color,
+            f32::INFINITY,
+        );
+        let amount_galley = if index < 3 {
+            // Wider stock slots retain the same type size as the civic currencies.
+            painter.layout_job(amount_job)
+        } else {
+            fit(amount_job)
+        };
+        let delta_galley = fit(egui::text::LayoutJob::simple(
+            delta,
+            egui::FontId::proportional(14.5 * scale),
+            delta_color,
+            f32::INFINITY,
+        ));
+        let text_width = delta_galley.size().x.max(amount_galley.size().x);
+        let icon_left = p(x + width * 0.5, 0.0).x - (icon_size + gap + text_width) * 0.5;
         let text_right = icon_left + icon_size + gap + text_width;
         painter.image(
             icons[index].id(),
@@ -210,14 +236,22 @@ pub(in crate::app) fn paint_hud_resources(
     }
 }
 
+pub(in crate::app) fn hud_resource_width(index: usize) -> f32 {
+    if index < 3 {
+        HUD_STOCK_RESOURCE_WIDTH
+    } else {
+        HUD_RESOURCE_WIDTH
+    }
+}
+
 pub(in crate::app) fn hud_resource_positions() -> [f32; 6] {
     let first = MAP_RESOURCE_STRIP_LEFT;
     let second = first + HUD_FIRST_GROUP_WIDTH;
     let third = second + HUD_SECOND_GROUP_WIDTH;
     [
         second + HUD_RESOURCE_GROUP_PADDING,
-        second + HUD_RESOURCE_GROUP_PADDING + HUD_RESOURCE_WIDTH,
-        second + HUD_RESOURCE_GROUP_PADDING + HUD_RESOURCE_WIDTH * 2.0,
+        second + HUD_RESOURCE_GROUP_PADDING + HUD_STOCK_RESOURCE_WIDTH,
+        second + HUD_RESOURCE_GROUP_PADDING + HUD_STOCK_RESOURCE_WIDTH * 2.0,
         first + HUD_RESOURCE_GROUP_PADDING + HUD_RESOURCE_WIDTH,
         first + HUD_RESOURCE_GROUP_PADDING,
         third + HUD_RESOURCE_GROUP_PADDING,
@@ -286,7 +320,10 @@ pub(in crate::app) fn draw_map_resources(
             resources.famine_months.get(player).copied().unwrap_or(0),
         );
     }
-    paint_hud_resources(&painter, screen.min, scale, date_left, &displayed, icons);
+    let storage = (*game == ActiveGame::LocalPractice && campaign.active)
+        .then(|| campaign.economy.players.get(player).map(|wallet| &wallet.storage))
+        .flatten();
+    paint_hud_resources(&painter, screen.min, scale, date_left, &displayed, storage, icons);
     if *game == ActiveGame::LocalPractice {
         let pop_icons = pop_textures.get_or_insert_with(|| {
             std::array::from_fn(|index| load_pop_class_icon(context, index))

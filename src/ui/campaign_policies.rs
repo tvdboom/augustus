@@ -75,7 +75,7 @@ fn card<T: Copy + PartialEq>(
             descriptions[index].split("; ").flat_map(|effect| effect.split(". ")).collect();
         policy_widgets::hover_effects(response, scale, &effects);
     }
-    if !ui.is_enabled() {
+    if !ui.is_enabled() && !super::spectator::read_only(ui.ctx()) {
         painter.rect_filled(rect, 2.0 * scale, PAPER.gamma_multiply(0.55));
     }
     ui.add_space(8.0 * scale);
@@ -105,7 +105,7 @@ pub(in crate::app) fn province(
             76.0 * scale,
         );
         ui.add_space(8.0 * scale);
-        ui.add_enabled_ui(p.owner == Some(player), |ui| {
+        ui.add_enabled_ui(p.can_administer(player), |ui| {
         policy_widgets::section(ui, scale, "ECONOMY & WORKS");
         let weights = config.focus_weights[p.policies.focus as usize];
         let descriptions: Vec<_> = config.focus_weights.iter().map(|w| format!("Food labor weight: {}; Metal labor weight: {}; Stone labor weight: {}", compact_decimal(w[0]), compact_decimal(w[1]), compact_decimal(w[2]))).collect();
@@ -164,7 +164,9 @@ pub(in crate::app) fn province(
             &[(Icon::Attack, format!("×{}", speed_multiplier(config.recruitment_speed[effort]))), (Icon::Coin, monthly_cost(effort)), (Icon::Happiness, signed_decimal(config.recruitment_happiness[effort]))],
             &descriptions, scale);
         });
-    if p.owner != Some(player) {
+    if p.occupied {
+        ui.small("Enemy occupation blocks province policies. Defeat the occupying army to regain access.");
+    } else if p.owner != Some(player) {
         ui.small("Only the direct owner can change province policies.");
     }
     });

@@ -1,7 +1,6 @@
 use super::*;
 
-#[path = "egui_capture.rs"]
-mod revolt_capture;
+use crate::egui_capture as revolt_capture;
 
 #[test]
 fn slave_revolt_toasts_are_critical_illustrated_and_navigate_to_the_province() {
@@ -87,8 +86,8 @@ fn happiness_warnings_use_strict_class_thresholds() {
     happiness[2].amount = 20.0;
     happiness[3].amount = 10.0;
     assert_eq!(warning_conditions(resources, happiness), [false; 6]);
-    for class in 0..4 {
-        happiness[class].amount -= 0.1;
+    for class in &mut happiness {
+        class.amount -= 0.1;
     }
     assert_eq!(warning_conditions(resources, happiness), [true, true, true, true, false, false]);
 }

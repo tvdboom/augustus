@@ -845,13 +845,86 @@ fn guaranteed_detection_creates_real_player_evidence_before_discovery() {
 }
 
 #[test]
-fn detection_formula_matches_spec_and_scandals_have_distinct_bloc_effects() {
+fn detection_formula_uses_reduced_monthly_risk_and_scandals_have_distinct_bloc_effects() {
     let config = EspionageConfig::default();
-    assert!((detection_chance(50.0, &config) - 0.06).abs() < 1e-9);
+    for (happiness, risk) in
+        [(-10.0, 0.01), (0.0, 0.01), (50.0, 0.04), (100.0, 0.07), (110.0, 0.07)]
+    {
+        assert!((detection_chance(happiness, &config) - risk).abs() < 1e-9);
+    }
     let famine = ScandalKind::Famine.bloc_penalties(Severity::Medium);
     let bribery = ScandalKind::PoliticalBribery.bloc_penalties(Severity::Medium);
     assert!(famine[3] > famine[0]);
     assert!(bribery[0] > bribery[3]);
+}
+
+#[test]
+fn monthly_detection_outcomes_match_the_displayed_risk_across_assignments() {
+    const SAMPLES: u64 = 20_000;
+    for config in [
+        EspionageConfig {
+            detection_range: [0.02, 0.10],
+            ..Default::default()
+        },
+        EspionageConfig::default(),
+    ] {
+        let risk = detection_chance(50.0, &config);
+        for assignment in [
+            SpyAssignment::GainControl,
+            SpyAssignment::ImproveRelations,
+            SpyAssignment::DiscoverScandals,
+            SpyAssignment::UndermineOpponents,
+            SpyAssignment::SupportRevolt,
+            SpyAssignment::DiscreditRivals,
+        ] {
+            let mut caught_by_month = [0; 3];
+            for seed in 0..SAMPLES {
+                let mut state = EspionageState::new(seed);
+                let mut players = vec![PoliticalPlayer {
+                    coin: 100.0,
+                    influence: 100.0,
+                    ..Default::default()
+                }];
+                let mut politics = vec![ProvincePolitics::independent(1)];
+                let provinces = [SpyProvince {
+                    owner: None,
+                    noble_happiness: 50.0,
+                    conditions: vec![],
+                }];
+                state
+                    .deploy_assignment(0, 0, &mut players, &politics, &config, assignment, Some(1))
+                    .unwrap();
+                for month in 1..=3 {
+                    state.advance_month(month, &mut players, &provinces, &mut politics, &config);
+                    let coin = players[0].coin;
+                    assert!(state
+                        .advance_month(month, &mut players, &provinces, &mut politics, &config)
+                        .is_empty());
+                    assert_eq!(
+                        players[0].coin, coin,
+                        "duplicate ticks cannot charge or roll again"
+                    );
+                    if state.missions.is_empty() {
+                        caught_by_month[(month - 1) as usize] += 1;
+                    }
+                }
+            }
+            for (index, caught) in caught_by_month.into_iter().enumerate() {
+                let months = (index + 1) as i32;
+                let expected = 1.0 - (1.0 - risk).powi(months);
+                let observed = f64::from(caught) / SAMPLES as f64;
+                assert!(
+                    (observed - expected).abs() < 0.01,
+                    "{assignment:?}, {risk:.4} monthly risk over {months} months: expected {expected}, observed {observed}"
+                );
+                if months == 3 {
+                    eprintln!(
+                        "{assignment:?}: monthly risk {risk:.4}, caught within 3 months {observed:.4} (expected {expected:.4})"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -57,7 +57,7 @@ fn cursor_only_points_on_explicit_foreground_actions() {
         for destination in [blank, egui::pos2(230.0, 95.0)] {
             assert_eq!(
                 render(&ctx, egui::pos2(100.0, 95.0), cursor).platform_output.cursor_icon,
-                egui::CursorIcon::PointingHand
+                cursor.unwrap_or(egui::CursorIcon::Default)
             );
             assert_eq!(
                 render(&ctx, destination, cursor).platform_output.cursor_icon,

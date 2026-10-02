@@ -17,7 +17,7 @@ mod military_integration_tests;
 mod integration_tests;
 
 /// Campaign authority; UI/HUD and map ownership are projections of these rules.
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub(crate) struct Campaign {
     pub active: bool,
     pub governance: Vec<Governance>,
@@ -67,7 +67,7 @@ pub(super) fn sync_campaign(
     toasts.set_player(practice.active_player);
     campaign.reconcile_provinces();
     campaign.notify_rank_opportunities();
-    for (id, p) in campaign.economy.provinces.iter().enumerate() {
+    for (id, p) in campaign.economy.provinces.iter().enumerate().filter(|(_, p)| p.name != "Rome") {
         ownership.sync_campaign_province(
             id,
             p.owner,
@@ -167,7 +167,7 @@ impl Campaign {
         self.military_pressure.clear();
         *self = Self::default();
         let seeds = ownership.campaign_seeds();
-        let provinces = seeds
+        let mut provinces: Vec<_> = seeds
             .iter()
             .map(|seed| {
                 // The atlas's desert portrait covers the Nile; its inhabited economic
@@ -191,37 +191,41 @@ impl Campaign {
                     seed.population,
                     count,
                 );
-                province.owner = if seed.name == "Latium" {
-                    None
-                } else {
-                    seed.owner
-                };
+                province.owner = seed.owner;
                 province.wonder_sites = seed.wonder_sites.clone();
                 province
             })
             .collect();
-        self.economy = EconomyWorld::new(
+        // Append the capital after the geographic provinces, preserving every atlas ID.
+        // It has no provincial population, production, or economic trade routes.
+        let rome = provinces.len();
+        provinces.push(EconomicProvince::new(
+            "Rome",
+            0.0,
+            Terrain::Plains,
+            true,
+            [0.0; 3],
+            [0.0; 4],
             count,
-            provinces,
-            seeds.iter().map(|p| p.neighbors.clone()).collect(),
-        );
+        ));
+        let mut adjacency: Vec<_> = seeds.iter().map(|p| p.neighbors.clone()).collect();
+        adjacency.push(vec![]);
+        self.economy = EconomyWorld::new(count, provinces, adjacency);
         self.politics = seeds
             .iter()
             .map(|p| {
-                if p.name == "Latium" {
-                    return ProvincePolitics::rome(count);
-                }
                 p.owner.map_or_else(
                     || ProvincePolitics::independent(count),
                     |o| ProvincePolitics::owned(count, o),
                 )
             })
             .collect();
+        self.politics.push(ProvincePolitics::rome(count));
         self.actors = vec![PoliticalPlayer::default(); count];
         self.governance = (0..count).map(|player| ownership.governance_for(player)).collect();
         self.profiles = vec![PoliticalProfile::default(); count];
         self.wars = vec![vec![false; count]; count];
-        self.npc_wars = vec![vec![false; seeds.len()]; count];
+        self.npc_wars = vec![vec![false; self.politics.len()]; count];
         self.invitations = vec![vec![false; count]; count];
         self.defeated = vec![false; count];
         self.recent_victories = vec![0.0; count];
@@ -243,12 +247,27 @@ impl Campaign {
                 neighbors: p.neighbors.clone(),
             })
             .collect();
-        self.military = MilitaryWorld::new(seeds.len());
+        let approaches: Vec<_> = seeds
+            .iter()
+            .enumerate()
+            .filter_map(|(id, p)| ROME_APPROACHES.contains(&p.name.as_str()).then_some(id))
+            .collect();
+        for &id in &approaches {
+            self.graph[id].neighbors.push(rome);
+        }
+        self.graph.push(MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 0.1,
+            road_level: 0,
+            neighbors: approaches,
+        });
+        self.military = MilitaryWorld::new(self.politics.len());
         for (id, p) in seeds.iter().enumerate() {
-            if p.owner.is_none() || self.politics[id].state == PoliticalState::Rome {
+            if p.owner.is_none() {
                 let _ = self.military.seed_local_defenders(id, &p.name);
             }
         }
+        let _ = self.military.seed_local_defenders(rome, "Rome");
         let seed = rand::random::<u64>();
         self.diplomacy_rng = PoliticalRng::new(seed ^ 0xB12BE);
         self.senate = SenateState::with_config(seed, &self.senate_config);
@@ -267,6 +286,11 @@ impl Campaign {
             actor.coin = wallet.coin;
             actor.influence = wallet.influence;
         }
+    }
+
+    /// Stable campaign location of the city; it has no geographic province polygon.
+    pub(crate) fn rome_location(&self) -> Option<usize> {
+        self.economy.provinces.iter().position(|p| p.name == "Rome")
     }
 
     /// Domestic Relation follows the people living in each owned province.
@@ -552,8 +576,20 @@ impl Campaign {
         {
             return Err("The selected route no longer reaches the destination.".into());
         }
+        if self.rome_location() == Some(destination)
+            && (kind != ArmyOrderKind::Attack
+                || route != [destination]
+                || !self
+                    .economy
+                    .provinces
+                    .get(province)
+                    .is_some_and(|p| ROME_APPROACHES.contains(&p.name.as_str())))
+        {
+            return Err("Attack Rome with an army stationed in Etruria, Latium, or Samnium.".into());
+        }
         if kind == ArmyOrderKind::Attack
             && self.economy.provinces[destination].owner == Some(player)
+            && !self.military.province_occupied_by_enemy(destination, ForceOwner::Player(player))
         {
             return Err("Use Move for your own province.".into());
         }
@@ -570,8 +606,12 @@ impl Campaign {
         let access = self.access_snapshot();
         let attacked_owner = self.economy.provinces[destination].owner;
         let permission = |owner: ForceOwner, id: ProvinceId| {
+            if id != destination && self.rome_location() == Some(id) {
+                return MilitaryAccess::Blocked;
+            }
             if kind == ArmyOrderKind::Attack
                 && attacked_owner.is_some()
+                && attacked_owner != Some(player)
                 && self.economy.provinces[id].owner == attacked_owner
             {
                 return MilitaryAccess::Invasion;
@@ -701,6 +741,9 @@ impl Campaign {
         {
             return Err(MilitaryError::NotDirectlyOwned);
         }
+        if self.military.province_occupied_by_enemy(province, ForceOwner::Player(host)) {
+            return Err(MilitaryError::Occupied);
+        }
         if self.wars[host][guest] {
             return Err(MilitaryError::InvalidBattle);
         }
@@ -812,7 +855,7 @@ impl Campaign {
         Ok(())
     }
 
-    /// Declare hostility explicitly; peaceful stationing never grants political power.
+    /// Declare hostility explicitly, ending peaceful military pressure.
     pub fn declare_hostility(&mut self, player: usize, province: usize) {
         self.military_pressure.remove(&(player, province));
         let target = self.economy.provinces[province]
@@ -884,6 +927,30 @@ impl Campaign {
         if self.military.provinces[province].forces.get(&attacker).is_none_or(|u| u.is_empty()) {
             return;
         }
+        let local_response = !self.npc_wars[player][province]
+            && matches!(
+                self.politics[province].state,
+                PoliticalState::Independent { .. } | PoliticalState::Vassal { .. }
+            )
+            && self.politics[province].relation(player)
+                < self.military.config.npc_hostility_relation
+            && (self.military.provinces[province]
+                .forces
+                .get(&ForceOwner::Local(province))
+                .is_some_and(|units| units.iter().any(|unit| unit.current_manpower > 0.))
+                || self.military.battles.iter().any(|battle| {
+                    battle.province == province
+                        && battle.attackers.units.iter().chain(&battle.defenders.units).any(
+                            |unit| {
+                                unit.owner == ForceOwner::Local(province)
+                                    && unit.current_manpower > 0.
+                            },
+                        )
+                }));
+        if local_response {
+            self.npc_wars[player][province] = true;
+            self.military_pressure.remove(&(player, province));
+        }
         if let Some(battle) = self.military.battles.iter().find(|b| b.province == province) {
             let hostile = |owner: &ForceOwner| self.forces_hostile(attacker, *owner);
             let against_attackers = battle.attackers.plans.keys().any(hostile);
@@ -918,7 +985,10 @@ impl Campaign {
                 ..
             } => self.npc_wars[player][province],
         };
-        if hostile_territory && self.military.provinces[province].occupation != Some(attacker) {
+        if hostile_territory
+            && !local_response
+            && self.military.provinces[province].occupation != Some(attacker)
+        {
             if self.politics[province].relation(player) > 10.0 {
                 self.senate.record_unjustified_attack(player, &self.senate_config);
             }
@@ -973,7 +1043,7 @@ impl Campaign {
         let uprising = p.owner == Some(player)
             && defenders.len() == 1
             && defenders[0] == ForceOwner::Local(province);
-        let (attacking, defending) = if uprising {
+        let (attacking, defending) = if uprising || local_response {
             (defenders.as_slice(), &[attacker][..])
         } else {
             (&[attacker][..], defenders.as_slice())
@@ -985,7 +1055,11 @@ impl Campaign {
             p.owner,
             origin,
             self.graph[province].terrain,
-            p.level(BuildingType::CityWalls),
+            if local_response {
+                0
+            } else {
+                p.level(BuildingType::CityWalls)
+            },
             u64::from(self.economy.month) * 179 + province as u64 + 1,
         );
         if let Ok(battle_id) = started {
@@ -1029,6 +1103,20 @@ impl Campaign {
             self.graph[id].road_level = self.economy.provinces[id].level(BuildingType::Road);
         }
         for (id, state) in self.military.provinces.iter_mut().enumerate() {
+            if let Some(occupier) = state.occupation {
+                let stationed = state
+                    .forces
+                    .get(&occupier)
+                    .is_some_and(|units| units.iter().any(|unit| unit.current_manpower > 0.));
+                let fighting = self.military.battles.iter().any(|battle| {
+                    battle.province == id
+                        && (battle.attackers.plans.contains_key(&occupier)
+                            || battle.defenders.plans.contains_key(&occupier))
+                });
+                if !stationed && !fighting {
+                    state.occupation = None;
+                }
+            }
             if let Some(ForceOwner::Player(occupier)) = state.occupation {
                 if self.politics.get(id).is_some_and(|politics| {
                     matches!(politics.state,
@@ -1039,7 +1127,40 @@ impl Campaign {
                     state.occupation = None;
                 }
             }
+            self.economy.provinces[id].occupied =
+                self.economy.provinces[id].owner.is_some_and(|owner| {
+                    state.occupation.is_some_and(|occupier| occupier != ForceOwner::Player(owner))
+                });
         }
+        // Relation changes can happen in UI actions or mid-month. Engage on this
+        // frame's reconciliation, without waiting for the next monthly boundary.
+        let visitors: Vec<_> = self
+            .military
+            .provinces
+            .iter()
+            .enumerate()
+            .flat_map(|(id, state)| {
+                state.forces.keys().filter_map(move |&owner| match owner {
+                    ForceOwner::Player(player) => Some((id, player)),
+                    ForceOwner::Local(_) => None,
+                })
+            })
+            .filter(|&(id, player)| {
+                matches!(
+                    self.politics[id].state,
+                    PoliticalState::Independent { .. } | PoliticalState::Vassal { .. }
+                ) && !self.npc_wars[player][id]
+                    && self.politics[id].relation(player)
+                        < self.military.config.npc_hostility_relation
+            })
+            .collect();
+        if self.active && self.senate.winner.is_none() {
+            for (province, player) in visitors {
+                self.begin_encounter(province, ForceOwner::Player(player), None);
+            }
+        }
+        let inputs = self.inputs();
+        self.economy.suspend_blocked_trade_routes(&inputs);
         if ownership_changed {
             self.economy.recalculate_storage();
             for wallet in &mut self.economy.players {
@@ -1071,6 +1192,9 @@ impl Campaign {
     fn recruitment_budget(&self, province: usize) -> Option<(usize, f64)> {
         let economic = self.economy.provinces.get(province)?;
         let owner = economic.owner?;
+        if economic.occupied {
+            return None;
+        }
         let project = self.military.provinces.get(province)?.recruitment.as_ref()?;
         if project.owner != ForceOwner::Player(owner) {
             return None;
@@ -1122,6 +1246,9 @@ impl Campaign {
             .zip(budgets)
             .map(|(province, budget)| {
                 province.recruitment_happiness = 0.0;
+                if province.occupied {
+                    return 0.0;
+                }
                 let Some((owner, cost)) = budget else {
                     return 1.0;
                 };
@@ -1169,15 +1296,17 @@ impl Campaign {
         }
     }
 
-    /// Convert every slave into a hostile force proportional to the population removed.
+    /// Every slave leaves the economy, while only the mobilized share becomes infantry.
     fn start_slave_revolt(&mut self, province: usize, owner: usize) {
         use super::campaign_notifications::{NoticeKind, NoticeSeverity};
         let lost = self.economy.provinces[province].population[3];
+        let mobilized =
+            lost * self.military.config.slave_revolt_mobilization_fraction.clamp(0.0, 1.0);
         let Ok(cohorts) = self.military.seed_population_force(
             province,
             ForceOwner::Local(province),
             UnitType::LightInfantry,
-            lost,
+            mobilized,
         ) else {
             return;
         };
@@ -1224,15 +1353,79 @@ impl Campaign {
                     || battle.defenders.plans.contains_key(&rebel))
         });
         let situation = if fighting {
-            "The rebel light infantry is fighting your army."
+            "The rebel light infantry is fighting your army.".to_owned()
         } else {
-            "A hostile rebel army now stands in the province. Send troops to defeat it."
+            format!(
+                "A hostile rebel army now stands in the province. Without your troops here, you lose {:.2} Control per month, based on surviving rebel strength. At zero Control, the province becomes independent. Send troops to defeat it.",
+                self.unopposed_rebellion_control_loss(province),
+            )
         };
         self.notifications.province_notice(
             owner, province, self.economy.month, NoticeSeverity::Warning,
             NoticeKind::SlaveRevolt, format!("Slave revolt in {name}"),
-            format!("All {lost:.0} slaves have risen and formed {cohorts} light infantry cohorts. {situation}"),
+            format!("All {lost:.0} slaves have risen; {mobilized:.0} have formed {cohorts} light infantry cohorts. {situation}"),
         );
+    }
+
+    /// Surviving local rebels erode Control only when the owner's troops are absent.
+    fn unopposed_rebellion_control_loss(&self, province: usize) -> f64 {
+        if !self.military.provinces[province].slave_rebellion {
+            return 0.0;
+        }
+        let PoliticalState::Owned {
+            owner,
+        } = self.politics[province].state
+        else {
+            return 0.0;
+        };
+        let local_units =
+            self.military.provinces[province].forces.values().flatten().chain(
+                self.military.battles.iter().filter(|battle| battle.province == province).flat_map(
+                    |battle| battle.attackers.units.iter().chain(&battle.defenders.units),
+                ),
+            );
+        let mut rebel_manpower = 0.0;
+        for unit in local_units {
+            if unit.current_manpower <= 0.0 || unit.morale <= 0.0 {
+                continue;
+            }
+            if unit.owner == ForceOwner::Player(owner) {
+                return 0.0;
+            }
+            if unit.owner == ForceOwner::Local(province) {
+                rebel_manpower += unit.current_manpower;
+            }
+        }
+        let config = &self.military.config;
+        (rebel_manpower / config.unit(UnitType::LightInfantry).manpower.max(0.001)
+            * config.rebellion_control_loss_per_cohort.max(0.0))
+        .min(config.maximum_rebellion_control_loss.max(0.0))
+    }
+
+    /// Apply rebellion pressure once at the monthly political boundary, after combat and arrivals.
+    fn resolve_rebellion_control(&mut self) {
+        use super::campaign_notifications::{NoticeKind, NoticeSeverity};
+        for province in 0..self.politics.len() {
+            let loss = self.unopposed_rebellion_control_loss(province);
+            if loss <= 0.0 {
+                continue;
+            }
+            let PoliticalState::Owned {
+                owner,
+            } = self.politics[province].state
+            else {
+                continue;
+            };
+            let _ = self.politics[province].apply_rebellion_control_loss(loss);
+            if matches!(self.politics[province].state, PoliticalState::Independent { .. }) {
+                self.notifications.province_notice(
+                    owner, province, self.economy.month, NoticeSeverity::Warning,
+                    NoticeKind::OwnedControlThreatened,
+                    format!("{} became independent", self.economy.provinces[province].name),
+                    "The unopposed rebellion reduced your Control to zero. You have lost ownership of this province.",
+                );
+            }
+        }
     }
 
     /// Execute one month exactly once, with shared supply and simultaneous political pressure.
@@ -1381,7 +1574,39 @@ impl Campaign {
         let report = self.economy.begin_month(&inputs);
         // Programs follow trade, but precede food, tax, noble and rank income.
         self.pull_wallets();
-        self.senate.pay_outreach(&mut self.actors, &self.senate_config);
+        for payment in self.senate.pay_outreach(&mut self.actors, &self.senate_config) {
+            use crate::game::politics::espionage::{ScandalKind, Severity};
+            self.espionage.record_action(
+                payment.player,
+                None,
+                ScandalKind::PoliticalBribery,
+                Severity::Medium,
+                self.senate.month,
+                &self.espionage_config,
+            );
+            if payment.caught {
+                use super::campaign_notifications::{
+                    CampaignNotice, NoticeAction, NoticeKind, NoticeSeverity,
+                };
+                self.notifications.push(CampaignNotice {
+                    id: 0,
+                    recipient: payment.player,
+                    severity: NoticeSeverity::Warning,
+                    title: "Senator bribery exposed".into(),
+                    body: format!(
+                        "Your payment to Senator {} was exposed. The bribe ended and faction confidence fell.",
+                        payment.senator + 1,
+                    ),
+                    kind: NoticeKind::SenatorBriberyExposed,
+                    province: None,
+                    building: None,
+                    wonder: None,
+                    scandal: None,
+                    month: self.economy.month,
+                    action: NoticeAction::OpenSenate,
+                });
+            }
+        }
         let mut paid_support = Vec::with_capacity(self.politics.len());
         for id in 0..self.politics.len() {
             let distances: Vec<_> = (0..self.actors.len()).map(|p| self.distance(p, id)).collect();
@@ -1465,6 +1690,7 @@ impl Campaign {
         // Surviving spy pressure joins this month's simultaneous political pool.
         self.advance_espionage();
         self.sync_owned_relations();
+        self.reconcile_provinces();
         self.military_pressure.retain(|&(player, province)| {
             matches!(self.politics[province].state, PoliticalState::Independent { .. })
                 && !self.npc_wars[player][province]
@@ -1500,9 +1726,7 @@ impl Campaign {
                     if gain > 0. {
                         let _ = self.politics[id].queue_control_gain(player, gain);
                     }
-                    self.politics[id]
-                        .change_relation(player, -self.military.config.pressure_relation_loss);
-                    // Coercion replaces the invited-garrison gain, so its ceiling cannot be bypassed.
+                    // Pressure replaces the invited-garrison gain, so its ceiling cannot be bypassed.
                     *strength = 0.;
                 }
             }
@@ -1537,6 +1761,7 @@ impl Campaign {
                 self.actors[p].coin += tribute;
             }
         }
+        self.resolve_rebellion_control();
         self.push_wallets();
         self.reconcile_provinces();
         self.pull_wallets();
@@ -1545,6 +1770,14 @@ impl Campaign {
             actor.influence += self.senate_config.rank_income(actor.rank)
                 + self.military.config.rank_influence[military_rank as usize];
         }
+        self.push_wallets();
+        // Senate income must use the same settled change as the HUD, including
+        // wages, spy/recruitment upkeep, recurring support and vassal tribute.
+        for (p, wallet) in self.economy.players.iter().enumerate() {
+            if let Some(delta) = self.economy.last_report.player_delta.get_mut(p) {
+                *delta = std::array::from_fn(|r| wallet.balances()[r] - before[p][r]);
+            }
+        }
         self.refresh_profiles();
         for event in
             self.senate.advance_month(&mut self.actors, &self.profiles, &self.senate_config)
@@ -1552,11 +1785,6 @@ impl Campaign {
             self.record_senate_event(&event);
         }
         self.push_wallets();
-        for (p, wallet) in self.economy.players.iter().enumerate() {
-            if let Some(delta) = self.economy.last_report.player_delta.get_mut(p) {
-                *delta = std::array::from_fn(|r| wallet.balances()[r] - before[p][r]);
-            }
-        }
         for victory in &mut self.recent_victories {
             *victory *= 0.95;
         }
@@ -1929,8 +2157,13 @@ impl Campaign {
             let provincial_trade = recurring
                 .iter()
                 .filter(|t| {
-                    matches!(t.party_a, TradeParty::Npc(_))
-                        || matches!(t.party_b, TradeParty::Npc(_))
+                    [t.party_a, t.party_b].into_iter().any(|party| {
+                        if let TradeParty::Npc(province) = party {
+                            self.economy.provinces.get(province).is_some_and(|p| !p.has_city)
+                        } else {
+                            false
+                        }
+                    })
                 })
                 .map(delivered)
                 .sum();
@@ -1952,12 +2185,26 @@ impl Campaign {
                     |p| matches!(p.state, PoliticalState::Vassal {overlord,..} if overlord==player),
                 )
                 .collect();
+            let other_provinces: Vec<_> = self
+                .politics
+                .iter()
+                .filter(|province| {
+                    province.state != PoliticalState::Rome
+                        && !matches!(province.state, PoliticalState::Owned { owner } if owner == player)
+                })
+                .collect();
             let mut profile = PoliticalProfile {
                 nobles: counts[0],
                 noble_happiness: happy[0],
                 citizen_happiness: happy[1],
                 plebeian_happiness: happy[2],
-                provincial_happiness: (happy[0] + happy[1] + happy[2]) / 3.0,
+                vassal_count: vassals.len() as f64,
+                province_relation: if other_provinces.is_empty() {
+                    50.0
+                } else {
+                    other_provinces.iter().map(|p| p.relation(player)).sum::<f64>()
+                        / other_provinces.len() as f64
+                },
                 food_security: food,
                 famine: 1.0 - food,
                 coin_income: self
@@ -1973,6 +2220,7 @@ impl Campaign {
                         t.status == TradeStatus::Active
                             && t.last_executed_month == Some(self.economy.month)
                             && t.last_fulfillment >= 0.99
+                            && t.last_delivered_value > 0.0
                     })
                     .count() as f64,
                 active_wars: self.wars[player].iter().filter(|war| **war).count() as f64
@@ -2025,19 +2273,6 @@ impl Campaign {
                 ..PoliticalProfile::default()
             };
             if !vassals.is_empty() {
-                profile.vassal_relation =
-                    vassals.iter().map(|p| p.relation(player)).sum::<f64>() / vassals.len() as f64;
-                profile.voluntary_vassal_stability = vassals
-                    .iter()
-                    .map(|p| match p.state {
-                        PoliticalState::Vassal {
-                            control,
-                            ..
-                        } => control / 100.0 * ((p.relation(player) - 50.0) / 50.0).max(0.0),
-                        _ => 0.0,
-                    })
-                    .sum::<f64>()
-                    / vassals.len() as f64;
                 profile.high_tribute = vassals
                     .iter()
                     .filter(|p| {

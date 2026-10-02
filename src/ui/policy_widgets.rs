@@ -1,5 +1,6 @@
 //! Shared Governance and province policy card styling.
 
+use super::spectator::InspectionHover;
 use bevy_egui::egui;
 
 pub(super) const ROW_HEIGHT: f32 = 95.0;
@@ -27,19 +28,6 @@ pub(super) fn coin_decimal(value: f64) -> String {
     }
 }
 
-#[cfg(test)]
-mod coin_format_tests {
-    use super::coin_decimal;
-
-    #[test]
-    fn small_policy_costs_keep_their_cents() {
-        assert_eq!(coin_decimal(0.0), "0");
-        assert_eq!(coin_decimal(0.01), "0.01");
-        assert_eq!(coin_decimal(0.02), "0.02");
-        assert_eq!(coin_decimal(0.6), "0.6");
-    }
-}
-
 pub(super) fn signed_decimal(value: f64) -> String {
     let number = compact_decimal(value);
     if value > 0.0 && number != "0" {
@@ -57,7 +45,7 @@ pub(super) fn hover_effects(
     if effects.is_empty() {
         return response;
     }
-    response.on_hover_ui(|ui| {
+    response.inspection_hover_ui(|ui| {
         ui.set_max_width(310.0 * scale);
         ui.spacing_mut().item_spacing.y = 3.0 * scale;
         for effect in effects {
@@ -70,8 +58,12 @@ pub(super) fn hover_effects(
 }
 
 pub(super) fn section(ui: &mut egui::Ui, scale: f32, title: &str) {
+    section_with_height(ui, scale, title, SECTION_HEIGHT);
+}
+
+pub(super) fn section_with_height(ui: &mut egui::Ui, scale: f32, title: &str, height: f32) {
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), SECTION_HEIGHT * scale),
+        egui::vec2(ui.available_width(), height * scale),
         egui::Sense::hover(),
     );
     let painter = ui.painter_at(rect);
@@ -209,3 +201,7 @@ pub(super) fn choice<T: Copy + PartialEq>(
     );
     (changed, response)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/policy_widgets.rs"]
+mod coin_format_tests;

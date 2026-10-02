@@ -52,8 +52,49 @@ pub(crate) fn take_province_order_click(ctx: &egui::Context) -> Option<ProvinceO
     ctx.data_mut(|data| data.remove_temp(egui::Id::new("map-province-order-click")))
 }
 
+/// UI selection only: retain an origin highlight while previewing an order destination.
+pub(crate) fn set_army_order_selection(
+    ctx: &egui::Context,
+    selection: Option<(usize, Option<usize>)>,
+) {
+    ctx.data_mut(|data| {
+        let key = egui::Id::new("map-army-order-selection");
+        if let Some(selection) = selection {
+            data.insert_temp(key, selection);
+        } else {
+            data.remove::<(usize, Option<usize>)>(key);
+        }
+    });
+}
+
 pub(crate) fn take_battle_click(ctx: &egui::Context) -> Option<u64> {
     ctx.data_mut(|data| data.remove_temp(egui::Id::new("map-battle-click")))
+}
+
+pub(crate) fn movement_visual_progress(
+    ctx: &egui::Context,
+    order: &crate::game::military::MovementOrder,
+) -> f32 {
+    military_visuals::movement_visual_progress(ctx, order)
+}
+
+/// Camera-local battle mix, published by the same pass that paints the fighting units.
+#[derive(Clone)]
+pub(crate) struct AudibleBattle {
+    pub battle: u64,
+    pub gain: f32,
+    pub strikes: Vec<BattleStrike>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BattleStrike {
+    pub actor: u64,
+    pub cycle: i64,
+    pub cue: &'static str,
+}
+
+pub(crate) fn audible_battles(ctx: &egui::Context) -> Vec<AudibleBattle> {
+    ctx.data(|data| data.get_temp(egui::Id::new("map-audible-battles"))).unwrap_or_default()
 }
 
 /// Reuse the generated military sheets in province-panel icon cells.
@@ -86,22 +127,12 @@ const INK: egui::Color32 = egui::Color32::from_rgb(51, 40, 33);
 const LABEL_HORIZONTAL_MARGIN: f32 = 0.18;
 const MIN_START_DISTANCE_KM: f32 = 1_000.0;
 const TWO_PLAYER_MIN_START_DISTANCE_KM: f32 = 2_100.0;
-const ROME_PROVINCE: &str = "Latium";
 // Provinces containing the city overlays in CITIES.
-const URBAN_PROVINCES: [&str; 8] = [
-    "Latium",
-    "Lugdunensis",
-    "Tarraconensis",
-    "Africa Proconsularis",
-    "Achaia",
-    "Aegyptus",
-    "Asia",
-    "Syria",
-];
+const URBAN_PROVINCES: [&str; 7] =
+    ["Lugdunensis", "Tarraconensis", "Africa Proconsularis", "Achaia", "Aegyptus", "Asia", "Syria"];
 
 pub(crate) fn city_name_for_province(name: &str) -> Option<&'static str> {
     match name {
-        "Latium" => Some("Rome"),
         "Lugdunensis" => Some("Lutetia"),
         "Tarraconensis" => Some("Tarraco"),
         "Africa Proconsularis" => Some("Carthage"),
@@ -643,8 +674,7 @@ fn starting_candidates() -> Vec<usize> {
         .iter()
         .enumerate()
         .filter_map(|(index, province)| {
-            (URBAN_PROVINCES.contains(&province.name.as_str()) && province.name != ROME_PROVINCE)
-                .then_some(index)
+            (URBAN_PROVINCES.contains(&province.name.as_str())).then_some(index)
         })
         .collect()
 }
@@ -875,10 +905,10 @@ struct CityAsset {
 // Ancient names at present-day sites. Lutetia is included for the requested Paris location.
 const CITIES: [CityAsset; 8] = [
     CityAsset {
-        // Rome's display anchor sits just south of the simplified Etruria border.
-        province: "Latium",
-        position: [12.75, 41.63],
-        hotspot: [0.2, 0.2],
+        // Independent city at the shared Etruria–Latium–Samnium border vertex.
+        province: "Rome",
+        position: [12.5455, 41.94048],
+        hotspot: [0.5, 0.65],
     },
     CityAsset {
         // Lutetia (present-day Paris)
@@ -1082,6 +1112,9 @@ impl MapView {
     pub(crate) fn focus_province(&mut self, id: usize) {
         if let Some(province) = atlas().provinces.get(id) {
             self.focus_target = Some(province.visual_center);
+            self.target_zoom = self.target_zoom.max(2.4);
+        } else if id == atlas().provinces.len() {
+            self.focus_target = Some(CITIES[0].position);
             self.target_zoom = self.target_zoom.max(2.4);
         }
     }
@@ -1712,12 +1745,7 @@ fn paint_map(
             .iter()
             .rev()
             .find(|marker| marker.bounds.contains(position))
-            .and_then(|marker| {
-                atlas
-                    .provinces
-                    .iter()
-                    .position(|province| province.name == CITIES[marker.city_index].province)
-            })
+            .and_then(|marker| city_location(marker.city_index, campaign))
             .map(MapDetail::City)
             .or_else(|| {
                 let point = projection.inverse(position);
@@ -1831,6 +1859,33 @@ fn paint_map(
         }
     }
 
+    if !spectating {
+        if let Some((origin, destination)) = painter.ctx().data(|data| {
+            data.get_temp::<(usize, Option<usize>)>(egui::Id::new("map-army-order-selection"))
+        }) {
+            for (index, color) in [
+                (Some(origin), egui::Color32::from_rgb(255, 239, 203)),
+                (destination, egui::Color32::from_rgb(244, 195, 87)),
+            ] {
+                let Some(province) = index.and_then(|id| atlas.provinces.get(id)) else {
+                    continue;
+                };
+                if !projection.bounds_rect(province.bounds).intersects(rect) {
+                    continue;
+                }
+                paint_meshes(painter, &province.parts, &projection, color.gamma_multiply(0.12));
+                for part in &province.parts {
+                    paint_rings(
+                        painter,
+                        part,
+                        &projection,
+                        egui::Stroke::new(4., egui::Color32::from_black_alpha(150)),
+                    );
+                    paint_rings(painter, part, &projection, egui::Stroke::new(2., color));
+                }
+            }
+        }
+    }
     paint_sea_crossing_terminals(painter, &projection);
     paint_cities(painter, &city_markers, view.zoom, &view.city_textures);
     paint_wonders(
@@ -2038,6 +2093,21 @@ fn paint_map(
             label_areas[index] = Some(label_rect.union(badge));
         }
     }
+    // Clouds cover the map artwork, but stay below troops so close-zoom
+    // cloud cover cannot wash out their figures or owner badges.
+    if let Some(clouds) = view.environment_textures.get(CLOUD_TEXTURE) {
+        let opacity = (45.0 + close * 63.0) as u8;
+        paint_scrolling_texture(
+            painter,
+            rect,
+            &projection,
+            clouds,
+            [84.0, 32.0],
+            view.cloud_offset,
+            egui::Color32::from_white_alpha(opacity),
+        );
+    }
+
     // Immediate-mode paint order is the map's Z order: troops and their owner
     // badges sit above province names/resources without reserving label space.
     if let Some(campaign) = campaign {
@@ -2065,41 +2135,6 @@ fn paint_map(
             .unwrap_or_default();
         let mut battle_hits = Vec::new();
         for battle in &world.battles {
-            let Some(province) = atlas.provinces.get(battle.province) else {
-                continue;
-            };
-            let anchor = projection.point(province.visual_center);
-            let badge = egui::Rect::from_center_size(
-                anchor + egui::vec2(0., -8. * view.zoom * 0.65),
-                egui::vec2(62., 22.),
-            );
-            if rect.intersects(badge) {
-                painter.rect_filled(badge, 3., egui::Color32::from_rgb(105, 37, 28));
-                let pulse = 0.5 + 0.5 * (view.animation_clock * 5.).sin();
-                let gold = egui::Color32::from_rgb(250, 225, 181);
-                painter.rect_stroke(
-                    badge,
-                    3.,
-                    egui::Stroke::new(1. + pulse, gold),
-                    egui::StrokeKind::Inside,
-                );
-                let clash = badge.left_center() + egui::vec2(9., 0.);
-                for (a, b) in [
-                    (egui::vec2(-4., 5.), egui::vec2(4., -5.)),
-                    (egui::vec2(4., 5.), egui::vec2(-4., -5.)),
-                ] {
-                    painter.line_segment([clash + a, clash + b], egui::Stroke::new(1.5, gold));
-                }
-                painter.circle_filled(clash, 1. + pulse * 1.5, gold);
-                painter.text(
-                    badge.center() + egui::vec2(6., 0.),
-                    egui::Align2::CENTER_CENTER,
-                    "BATTLE",
-                    egui::FontId::proportional(11.),
-                    egui::Color32::from_rgb(250, 225, 181),
-                );
-                battle_hits.push((badge, battle.id));
-            }
             for hit in &army_hits {
                 if hit.province == battle.province
                     && hit.movement.is_none()
@@ -2115,22 +2150,29 @@ fn paint_map(
             }
         }
         if interactions_enabled
+            && !spectating
             && !pointer_over_menu
             && !foreground_control
             && response.clicked_by(egui::PointerButton::Secondary)
         {
-            if let (Some(province), Some(position)) =
-                (view.hovered, response.interact_pointer_pos())
-            {
-                painter.ctx().data_mut(|data| {
-                    data.insert_temp(
-                        egui::Id::new("map-province-order-click"),
-                        ProvinceOrderHit {
-                            province,
-                            position,
-                        },
-                    )
-                });
+            if let Some(position) = response.interact_pointer_pos() {
+                let province = city_markers
+                    .iter()
+                    .rev()
+                    .find(|marker| marker.bounds.contains(position))
+                    .and_then(|marker| city_location(marker.city_index, Some(campaign)))
+                    .or(view.hovered);
+                if let Some(province) = province {
+                    painter.ctx().data_mut(|data| {
+                        data.insert_temp(
+                            egui::Id::new("map-province-order-click"),
+                            ProvinceOrderHit {
+                                province,
+                                position,
+                            },
+                        )
+                    });
+                }
             }
         }
         if interactions_enabled && !pointer_over_menu && !foreground_control {
@@ -2164,7 +2206,10 @@ fn paint_map(
                         data.insert_temp(egui::Id::new("map-battle-click"), *battle)
                     });
                     clicked_detail = None;
-                } else {
+                } else if !campaign
+                    .rome_location()
+                    .is_some_and(|id| clicked_detail == Some(MapDetail::City(id)))
+                {
                     let hit = painter
                         .ctx()
                         .data(|data| {
@@ -2185,20 +2230,7 @@ fn paint_map(
         }
     }
 
-    // Clouds and wildlife sit above all map artwork, including crossing
-    // terminals, labels, and troops. Birds also fly above the clouds.
-    if let Some(clouds) = view.environment_textures.get(CLOUD_TEXTURE) {
-        let opacity = (45.0 + close * 63.0) as u8;
-        paint_scrolling_texture(
-            painter,
-            rect,
-            &projection,
-            clouds,
-            [84.0, 32.0],
-            view.cloud_offset,
-            egui::Color32::from_white_alpha(opacity),
-        );
-    }
+    // Wildlife, including birds, stays above the clouds and troops.
     paint_wildlife(painter, &view.wildlife, &view.environment_textures, &projection);
 
     clicked_detail
@@ -2492,6 +2524,16 @@ struct CityMarker {
     image: egui::Rect,
     bounds: egui::Rect,
     is_rome: bool,
+}
+
+/// Rome targets the separate capital; other city images target their map province.
+fn city_location(index: usize, campaign: Option<&crate::app::campaign::Campaign>) -> Option<usize> {
+    let city = CITIES.get(index)?;
+    if city.province == "Rome" {
+        campaign?.rome_location()
+    } else {
+        atlas().provinces.iter().position(|p| p.name == city.province)
+    }
 }
 
 fn city_blend(zoom: f32) -> f32 {

@@ -9,6 +9,118 @@ fn campaign() -> Campaign {
 }
 
 #[test]
+fn defeat_blocks_owned_province_work_and_trade_until_a_relief_army_wins() {
+    let mut c = campaign();
+    let owner = ForceOwner::Player(0);
+    let enemy = ForceOwner::Player(1);
+    c.politics[2] = ProvincePolitics::owned(2, 0);
+    c.economy.provinces[2].owner = Some(0);
+    c.economy.adjacency = vec![vec![1, 2], vec![0], vec![0]];
+    for (id, node) in c.graph.iter_mut().enumerate() {
+        node.neighbors = c.economy.adjacency[id].clone();
+    }
+    c.wars[0][1] = true;
+    c.wars[1][0] = true;
+    c.military.config.base_manpower_damage = 0.;
+    c.military.config.base_morale_damage = 0.;
+    c.economy.players[0].resources = [10_000.; 3];
+    c.military.config.units[UnitType::LightInfantry as usize].recruitment_months = 2.;
+    for _ in 0..2 {
+        c.military
+            .recruit(
+                0,
+                0,
+                UnitType::LightInfantry,
+                true,
+                &[],
+                &mut c.economy.provinces[0].population,
+                &mut c.economy.players[0].resources[1],
+            )
+            .unwrap();
+        c.economy.start_building(0, 0, BuildingType::Road).unwrap();
+    }
+    c.military.provinces[0].recruitment.as_mut().unwrap().progress = 0.5;
+    let construction = c.economy.provinces[0].construction.as_ref().unwrap().progress();
+    let mut trade = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            coin: 5.,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0., 1., 0.],
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    trade.id = 1;
+    trade.accepted = [true; 2];
+    trade.status = TradeStatus::Active;
+    trade.last_delivered_value = 10.;
+    c.economy.trades.push(trade);
+    c.reconcile_provinces();
+    assert_eq!(c.economy.trades[0].status, TradeStatus::Active);
+    c.military.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+    c.military.seed_unit(0, enemy, UnitType::HeavyInfantry).unwrap();
+    c.military
+        .start_battle(0, &[enemy], &[owner], Some(0), Some(1), MilitaryTerrain::Plains, 0, 1)
+        .unwrap();
+    c.military.battles[0].defenders.units[0].current_manpower = 0.;
+    c.advance_live_combat();
+    assert_eq!(c.military.provinces[0].occupation, Some(enemy));
+    assert_eq!(c.economy.provinces[0].owner, Some(0));
+    assert!(c.economy.provinces[0].occupied);
+    assert!(!c.economy.provinces[0].can_administer(0));
+    assert_eq!(c.economy.trades[0].status, TradeStatus::Suspended);
+    assert_eq!(c.economy.trades[0].last_delivered_value, 0.);
+    assert!(c.economy.trade_route(TradeParty::Player(0), TradeParty::Npc(1), &c.inputs()).is_err());
+    let wallet = c.economy.players[0].balances();
+    assert!(c.economy.start_building(0, 0, BuildingType::Granary).is_err());
+    assert!(c.economy.cancel_construction(0, 0).is_err());
+    assert!(c.economy.cancel_queued_construction(0, 0, 0).is_err());
+    assert_eq!(c.economy.players[0].balances(), wallet);
+    assert_eq!(c.recruitment_effort_cost(0), 0.);
+    let policies = c.economy.provinces[0].policies;
+    let mut governance = c.governance_for(0);
+    governance.food_rations = crate::map::EdictLevel::Low;
+    c.set_governance(0, governance);
+    assert_eq!(c.economy.provinces[0].policies, policies);
+    c.advance_live_month();
+    assert_eq!(c.military.provinces[0].recruitment.as_ref().unwrap().progress, 0.5);
+    assert_eq!(c.military.provinces[0].recruitment_queue.len(), 1);
+    assert_eq!(c.economy.provinces[0].construction.as_ref().unwrap().progress(), construction);
+    assert_eq!(c.economy.provinces[0].construction_queue.len(), 1);
+    let remaining_control = c.politics[0].control(0);
+    assert!(remaining_control < 100.);
+    assert_eq!(
+        c.politics[0].state,
+        PoliticalState::Owned {
+            owner: 0
+        }
+    );
+    let relief = c.military.seed_unit(2, owner, UnitType::HeavyInfantry).unwrap();
+    c.order_army(2, 0, 0, &[relief], &[0], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    while c.military.battles.is_empty() {
+        c.advance_live_month();
+    }
+    assert!(c.economy.provinces[0].occupied, "relief combat alone does not lift occupation");
+    assert_eq!(c.military.provinces[0].recruitment.as_ref().unwrap().progress, 0.5);
+    c.military.battles[0].defenders.units.iter_mut().for_each(|unit| unit.current_manpower = 0.);
+    c.advance_live_combat();
+    assert_eq!(c.military.provinces[0].occupation, None);
+    assert!(c.economy.provinces[0].can_administer(0));
+    assert_eq!(c.economy.provinces[0].owner, Some(0));
+    assert!(c.economy.trade_route(TradeParty::Player(0), TradeParty::Npc(1), &c.inputs()).is_ok());
+    let liberated_control = c.politics[0].control(0);
+    c.economy.start_building(0, 0, BuildingType::Granary).unwrap();
+    c.advance_live_month();
+    assert!(c.military.provinces[0].recruitment.as_ref().unwrap().progress > 0.5);
+    assert!(c.economy.provinces[0].construction.as_ref().unwrap().progress().0 > construction.0);
+    assert!(c.politics[0].control(0) > liberated_control);
+}
+
+#[test]
 fn attack_order_detaches_selected_units_and_engages_only_on_arrival() {
     let mut c = campaign();
     let own = ForceOwner::Player(0);
@@ -81,7 +193,7 @@ fn pressure_preserves_defenders_caps_control_and_ends_when_troops_leave() {
     let own = ForceOwner::Player(0);
     let id = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
     let defender = c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
-    c.politics[1].relations[0] = 40.;
+    c.politics[1].relations[0] = 50.;
     c.politics[1].gain_control_now(0, 39.8).unwrap();
     c.order_army(0, 0, 1, &[id], &[1], BattlePlan::default(), ArmyOrderKind::Pressure).unwrap();
     for _ in 0..4 {
@@ -92,7 +204,7 @@ fn pressure_preserves_defenders_caps_control_and_ends_when_troops_leave() {
     assert!(c.military.provinces[1].occupation.is_none());
     assert_eq!(c.military.provinces[1].forces[&ForceOwner::Local(1)][0].id, defender);
     assert!((c.politics[1].control(0) - 40.).abs() < 1e-8);
-    assert!(c.politics[1].relation(0) < 40.);
+    assert_eq!(c.politics[1].relation(0), 50.);
     assert!(
         c.profiles[0].controlled_provinces > 1.,
         "partial control contributes to Military support"
@@ -101,6 +213,131 @@ fn pressure_preserves_defenders_caps_control_and_ends_when_troops_leave() {
     c.advance_month();
     assert!(!c.military_pressure.contains(&(0, 1)));
     assert_eq!(c.access_snapshot()[0][1], MilitaryAccess::Blocked);
+}
+
+#[test]
+fn disliked_provinces_attack_visitors_on_arrival_without_an_attack_order() {
+    for relation in [49.9, 20.] {
+        let mut c = campaign();
+        let own = ForceOwner::Player(0);
+        let id = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+        let local = ForceOwner::Local(1);
+        let defender = c.military.seed_unit(1, local, UnitType::LightInfantry).unwrap();
+        c.politics[1].relations[0] = 80.;
+        c.order_army(0, 0, 1, &[id], &[1], BattlePlan::default(), ArmyOrderKind::Pressure).unwrap();
+        c.politics[1].relations[0] = relation;
+        c.advance_live_month();
+        assert!(c.npc_wars[0][1]);
+        assert!(!c.military_pressure.contains(&(0, 1)));
+        assert_eq!(c.military.battles.len(), 1);
+        let battle = &c.military.battles[0];
+        assert_eq!(battle.attackers.units[0].id, defender);
+        assert_eq!(battle.defenders.units[0].id, id);
+        assert_eq!(battle.round, 0, "Arrival starts the fight before any combat ticks");
+        assert_eq!(c.politics[1].relation(0), relation, "Defending is not an invasion penalty");
+        assert!(c.senate.accusations.is_empty(), "Defending creates no attack scandal");
+    }
+}
+
+#[test]
+fn ordinary_stationing_gains_control_and_locals_attack_when_relations_drop() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let unit = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
+    c.politics[1].relations[0] = 80.;
+    c.order_army(0, 0, 1, &[unit], &[1], BattlePlan::default(), ArmyOrderKind::Move).unwrap();
+    c.advance_live_month();
+    assert!(c.military.battles.is_empty());
+    assert!(c.politics[1].control(0) > 0.);
+    assert_eq!(c.politics[1].relation(0), 80.);
+    c.politics[1].relations[0] = 49.9;
+    c.reconcile_provinces();
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].defenders.units[0].id, unit);
+    assert_eq!(c.economy.month, 1);
+}
+
+#[test]
+fn visiting_armies_join_a_local_attack_and_receive_a_defensive_victory_notice() {
+    let mut c = campaign();
+    for player in [0, 1] {
+        for _ in 0..8 {
+            c.military.seed_unit(1, ForceOwner::Player(player), UnitType::HeavyInfantry).unwrap();
+        }
+        c.politics[1].relations[player] = 49.;
+    }
+    c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
+    c.reconcile_provinces();
+    assert_eq!(c.military.battles.len(), 1);
+    assert!(c.military.battles[0].attackers.plans.contains_key(&ForceOwner::Local(1)));
+    assert_eq!(c.military.battles[0].defenders.plans.len(), 2);
+    assert!(c.npc_wars[0][1] && c.npc_wars[1][1]);
+    assert!(!c.wars[0][1]);
+    assert!(c.notifications.history_for(0).any(
+        |notice| notice.kind == NoticeKind::InvasionBegins && notice.body.contains("below 50")
+    ));
+    c.military.config.base_morale_damage = 100.;
+    for _ in 0..c.military.config.maximum_battle_months * c.military.config.rounds_per_month {
+        if c.military.battles.is_empty() {
+            break;
+        }
+        c.advance_live_combat();
+    }
+    assert!(c.military.battles.is_empty());
+    assert_eq!(c.military.history[0].result, BattleResult::DefenderVictory);
+    for player in [0, 1] {
+        assert!(c
+            .notifications
+            .history_for(player)
+            .any(|notice| notice.kind == NoticeKind::NpcDefeated));
+    }
+}
+
+#[test]
+fn an_insult_below_fifty_immediately_starts_local_combat_without_waiting_a_month() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let visitor = c.military.seed_unit(1, own, UnitType::HeavyInfantry).unwrap();
+    let local = c.military.seed_unit(1, ForceOwner::Local(1), UnitType::LightInfantry).unwrap();
+    c.military_pressure.insert((0, 1));
+    c.politics[1].relations[0] = 60.;
+    c.reconcile_provinces();
+    assert!(c.military.battles.is_empty());
+    c.send_insult(0, 1).unwrap();
+    assert_eq!(c.politics[1].relation(0), 50.);
+    assert!(c.military.battles.is_empty(), "Exactly 50 remains peaceful");
+    c.diplomacy_used.clear();
+    c.send_insult(0, 1).unwrap();
+    assert_eq!(c.economy.month, 0);
+    assert_eq!(c.politics[1].relation(0), 40.);
+    assert!(c.npc_wars[0][1]);
+    assert!(!c.npc_wars[1][1]);
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].attackers.units[0].id, local);
+    assert_eq!(c.military.battles[0].defenders.units[0].id, visitor);
+    assert_eq!(c.military.battles[0].round, 0);
+    assert!(c.notifications.history_for(0).any(|notice| notice.kind == NoticeKind::InvasionBegins));
+    c.reconcile_provinces();
+    assert_eq!(c.military.battles.len(), 1, "Reconciliation cannot restart the battle");
+}
+
+#[test]
+fn low_relations_without_visitors_or_local_defenders_do_not_create_a_battle() {
+    for visitors in [false, true] {
+        let mut c = campaign();
+        let owner = if visitors {
+            ForceOwner::Player(0)
+        } else {
+            ForceOwner::Local(1)
+        };
+        c.military.seed_unit(1, owner, UnitType::LightInfantry).unwrap();
+        c.politics[1].relations[0] = 20.;
+        c.reconcile_provinces();
+        assert!(c.military.battles.is_empty());
+        assert!(!c.npc_wars[0][1]);
+        assert!(c.military.movements.is_empty(), "Locals never chase into another province");
+    }
 }
 
 #[test]
@@ -220,12 +457,12 @@ fn slave_revolt_removes_residents_and_attacks_the_owners_garrison() {
     assert!(c.military.provinces[0].slave_rebellion);
     assert_eq!(c.military.battles.len(), 1);
     let battle = &c.military.battles[0];
-    assert_eq!(battle.attackers.units.len(), 2);
-    assert_eq!(battle.attackers.manpower(), 12.0);
-    assert_eq!(battle.attackers.units[1].manpower_ratio(), 0.2);
+    assert_eq!(battle.attackers.units.len(), 1);
+    assert_eq!(battle.attackers.manpower(), 9.0);
+    assert_eq!(battle.attackers.units[0].manpower_ratio(), 0.9);
     let food: f64 =
         battle.attackers.units.iter().map(|unit| unit.food_demand(&c.military.config)).sum();
-    assert!((food - 1.8).abs() < 1e-10, "the partial cohort must not consume full rations");
+    assert!((food - 1.35).abs() < 1e-10, "the partial cohort must not consume full rations");
     assert!(battle.attackers.units.iter().all(|unit| {
         unit.owner == ForceOwner::Local(0) && unit.unit_type == UnitType::LightInfantry
     }));
@@ -247,7 +484,7 @@ fn an_unguarded_revolt_leaves_hostile_light_infantry_in_its_province() {
     c.start_slave_revolt(0, 0);
     assert!(c.military.battles.is_empty());
     let rebel = ForceOwner::Local(0);
-    assert_eq!(c.military.provinces[0].forces[&rebel].len(), 12);
+    assert_eq!(c.military.provinces[0].forces[&rebel].len(), 9);
     assert!(c.forces_hostile(rebel, ForceOwner::Player(0)));
     let notice = c
         .notifications
@@ -256,6 +493,7 @@ fn an_unguarded_revolt_leaves_hostile_light_infantry_in_its_province() {
         .unwrap();
     assert_eq!(notice.action, NoticeAction::OpenProvince(0));
     assert!(notice.body.contains("hostile rebel army now stands in the province"));
+    assert!(notice.body.contains("2.25 Control per month"));
     assert!(c.military.provinces[0].forces[&rebel]
         .iter()
         .all(|unit| unit.unit_type == UnitType::LightInfantry));
@@ -280,7 +518,7 @@ fn a_revolt_joins_the_garrisons_existing_battle_immediately() {
     assert!(battle.defenders.plans.contains_key(&ForceOwner::Player(0)));
     assert_eq!(
         battle.attackers.units.iter().filter(|unit| unit.owner == ForceOwner::Local(0)).count(),
-        12
+        9
     );
     assert!(c.military.provinces[0].forces.get(&ForceOwner::Local(0)).is_none_or(Vec::is_empty));
 }
@@ -296,12 +534,12 @@ fn fresh_rebels_join_an_existing_revolt_battle_immediately() {
     c.start_slave_revolt(0, 0);
     assert_eq!(c.military.battles.len(), 1);
     assert_eq!(c.military.battles[0].id, id);
-    assert_eq!(c.military.battles[0].attackers.manpower(), 32.0);
+    assert_eq!(c.military.battles[0].attackers.manpower(), 24.0);
     assert!(c.military.provinces[0].forces.get(&ForceOwner::Local(0)).is_none_or(Vec::is_empty));
 }
 
 #[test]
-fn slave_revolt_removes_every_slave_and_scales_past_eight_cohorts() {
+fn slave_revolt_removes_every_slave_but_mobilizes_a_smaller_fighting_force() {
     for population in [12.0, 120.0, 300_000.0] {
         let mut c = campaign();
         c.economy.provinces[0].population[3] = population;
@@ -313,11 +551,11 @@ fn slave_revolt_removes_every_slave_and_scales_past_eight_cohorts() {
         assert_eq!(report.slave_revolt_loss, population);
         assert_eq!(report.population_delta, -population);
         let owner = ForceOwner::Local(0);
-        assert_eq!(c.military.total_manpower(owner), population);
-        assert_eq!(c.military.peak_manpower[&owner], population);
+        assert_eq!(c.military.total_manpower(owner), population * 0.75);
+        assert_eq!(c.military.peak_manpower[&owner], population * 0.75);
         assert_eq!(
             c.military.provinces[0].forces[&owner].len(),
-            (population / 10.0).ceil() as usize
+            (population * 0.75 / 10.0).ceil() as usize
         );
     }
 }
@@ -343,15 +581,117 @@ fn desperate_slaves_revolt_with_configured_certain_chance() {
         c.economy.provinces[0].population[3] = 4.0 * cost;
         c.resolve_slave_revolts();
         let army = &c.military.provinces[0].forces[&ForceOwner::Local(0)];
-        assert_eq!(army.len(), 4);
+        assert_eq!(army.len(), 3);
         assert_eq!(c.economy.provinces[0].population[3], 0.0);
-        assert_eq!(c.military.total_manpower(ForceOwner::Local(0)), 40.0);
+        assert_eq!(c.military.total_manpower(ForceOwner::Local(0)), 30.0);
         assert!(army.iter().all(|unit| unit.unit_type == UnitType::LightInfantry));
         assert!(c
             .notifications
             .history_for(0)
             .any(|notice| notice.kind == NoticeKind::SlaveRevolt));
     }
+}
+
+#[test]
+fn unopposed_rebellions_lose_control_each_month_in_proportion_to_survivors() {
+    for (population, monthly_loss) in [(40.0, 0.75), (120.0, 2.25), (400.0, 5.0)] {
+        let mut c = campaign();
+        c.economy.provinces[0].population[3] = population;
+        c.start_slave_revolt(0, 0);
+        assert_eq!(c.politics[0].control(0), 100.0, "Control changes on the monthly tick");
+        for month in 1..=2 {
+            c.advance_live_month();
+            assert_eq!(c.politics[0].control(0), 100.0 - month as f64 * monthly_loss);
+            assert_eq!(c.economy.provinces[0].owner, Some(0));
+        }
+        for _ in 0..3 {
+            c.advance_live_combat();
+        }
+        assert_eq!(c.politics[0].control(0), 100.0 - 2.0 * monthly_loss);
+
+        // Keep the same cohort count but halve its surviving strength.
+        for unit in c.military.provinces[0].forces.get_mut(&ForceOwner::Local(0)).unwrap() {
+            unit.current_manpower *= 0.5;
+        }
+        let expected = (population * 0.75 * 0.5 / 10.0 * 0.25).min(5.0);
+        let before = c.politics[0].control(0);
+        c.resolve_rebellion_control();
+        assert_eq!(c.politics[0].control(0), before - expected);
+    }
+}
+
+#[test]
+fn troops_arriving_to_fight_rebels_stop_further_control_loss() {
+    let mut c = campaign();
+    c.economy.provinces[0].population[3] = 40.0;
+    c.start_slave_revolt(0, 0);
+    c.advance_live_month();
+    assert_eq!(c.politics[0].control(0), 99.25);
+    let own = ForceOwner::Player(0);
+    let unit = c.military.seed_unit(1, own, UnitType::HeavyInfantry).unwrap();
+    c.order_army(1, 0, 0, &[unit], &[0], BattlePlan::default(), ArmyOrderKind::Move).unwrap();
+    c.advance_live_month();
+    assert_eq!(c.military.battles.len(), 1);
+    assert_eq!(c.military.battles[0].defenders.units[0].id, unit);
+    assert!(c.military.provinces[0].forces.get(&own).is_none_or(Vec::is_empty));
+    assert_eq!(c.politics[0].control(0), 99.25, "Fighting troops count as a local garrison");
+    c.advance_live_month();
+    assert_eq!(c.politics[0].control(0), 99.25);
+}
+
+#[test]
+fn marching_troops_do_not_protect_the_province_they_left() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let unit = c.military.seed_unit(0, own, UnitType::HeavyInfantry).unwrap();
+    c.politics[1].relations[0] = 80.0;
+    c.graph[0].area = 90_000.0;
+    c.order_army(0, 0, 1, &[unit], &[1], BattlePlan::default(), ArmyOrderKind::Move).unwrap();
+    c.economy.provinces[0].population[3] = 40.0;
+    c.start_slave_revolt(0, 0);
+    c.advance_live_month();
+    assert_eq!(c.military.movements.len(), 1);
+    assert_eq!(c.politics[0].control(0), 99.25);
+}
+
+#[test]
+fn defeated_rebels_and_ordinary_local_armies_do_not_drain_control() {
+    let mut c = campaign();
+    c.economy.provinces[0].population[3] = 40.0;
+    c.start_slave_revolt(0, 0);
+    c.advance_live_month();
+    c.military.provinces[0].forces.remove(&ForceOwner::Local(0));
+    c.advance_live_month();
+    assert_eq!(c.politics[0].control(0), 99.25);
+
+    let mut c = campaign();
+    c.military.seed_unit(0, ForceOwner::Local(0), UnitType::LightInfantry).unwrap();
+    c.advance_live_month();
+    assert_eq!(c.politics[0].control(0), 100.0, "Only an active rebellion drains Control");
+}
+
+#[test]
+fn unopposed_rebellion_releases_a_province_when_its_owner_loses_all_control() {
+    let mut c = campaign();
+    c.politics[0].owned_shares = vec![1.0, 20.0];
+    c.economy.provinces[0].population[3] = 120.0;
+    c.start_slave_revolt(0, 0);
+    c.advance_live_month();
+    assert_eq!(c.politics[0].control(0), 0.0);
+    assert_eq!(c.politics[0].control(1), 20.0, "Rival shares survive the release");
+    assert!(matches!(
+        c.politics[0].state,
+        PoliticalState::Independent {
+            local: 80.0,
+            ..
+        }
+    ));
+    assert_eq!(c.economy.provinces[0].owner, None);
+    assert!(c.defeated[0]);
+    assert!(c.notifications.history_for(0).any(|notice| {
+        notice.kind == NoticeKind::OwnedControlThreatened
+            && notice.title == "Test 0 became independent"
+    }));
 }
 
 #[test]
@@ -627,7 +967,7 @@ fn war_clears_province_access_and_prevents_new_grants() {
 #[test]
 fn defeating_romes_defenders_awards_immediate_victory_without_political_control() {
     let mut c = campaign();
-    c.economy.provinces[1].name = "Latium".into();
+    c.economy.provinces[1].name = "Rome".into();
     c.politics[1] = ProvincePolitics::rome(2);
     c.npc_wars[0][1] = true;
     for _ in 0..8 {
@@ -655,7 +995,7 @@ fn defeating_romes_defenders_awards_immediate_victory_without_political_control(
 #[test]
 fn romes_local_defenders_fight_at_zero_morale_past_the_normal_deadline() {
     let mut c = campaign();
-    c.economy.provinces[1].name = "Latium".into();
+    c.economy.provinces[1].name = "Rome".into();
     c.politics[1] = ProvincePolitics::rome(2);
     c.npc_wars[0][1] = true;
     for _ in 0..8 {
@@ -689,7 +1029,7 @@ fn romes_local_defenders_fight_at_zero_morale_past_the_normal_deadline() {
 #[test]
 fn defeating_a_visiting_rival_cannot_win_while_romes_local_defenders_remain() {
     let mut c = campaign();
-    c.economy.provinces[1].name = "Latium".into();
+    c.economy.provinces[1].name = "Rome".into();
     c.politics[1] = ProvincePolitics::rome(2);
     c.wars[0][1] = true;
     c.wars[1][0] = true;
@@ -1457,7 +1797,7 @@ fn career_influence_is_paid_once_per_month_to_the_wallet_and_report() {
         (PoliticalRank::Censor, 15.),
         (PoliticalRank::Consul, 20.),
         (PoliticalRank::Proconsul, 20.),
-        (PoliticalRank::Augustus, 25.),
+        (PoliticalRank::Augustus, 0.),
     ] {
         for (military_rank, military_income) in [
             (MilitaryRank::Centurion, 0.),

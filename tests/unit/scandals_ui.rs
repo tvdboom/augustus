@@ -3,9 +3,13 @@ use crate::game::economy::{EconomicProvince, Terrain};
 use crate::game::politics::espionage::ScandalKind;
 use crate::game::politics::PoliticalPlayer;
 
+use crate::egui_capture as capture;
+
 fn fixture() -> Campaign {
-    let mut campaign = Campaign::default();
-    campaign.actors = vec![PoliticalPlayer::default(); 3];
+    let mut campaign = Campaign {
+        actors: vec![PoliticalPlayer::default(); 3],
+        ..Default::default()
+    };
     campaign.economy.provinces.push(EconomicProvince::new(
         "Achaia",
         60.0,
@@ -131,6 +135,8 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
         let campaign = fixture();
         let (mut output, _, bounds) =
             render(&ctx, &campaign, &mut ScandalFilters::default(), width, scale, 0.0, vec![]);
+        let mut capture = capture::Capture::default();
+        capture.frame(&ctx, &output, &format!("scandals-{}", width as u32));
         assert!(bounds.width() <= width + 1.0, "Scandals overflow at {width}px: {bounds:?}");
         let text = output
             .shapes
@@ -167,14 +173,37 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
         let first = label_rect("I");
         let second = label_rect("II");
         let third = label_rect("III");
+        let banner = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.vertices.len() == 4 => Some(mesh.calc_bounds()),
+                _ => None,
+            })
+            .expect("Scandal banner must be painted");
+        for filter in [target, first, second, third] {
+            assert!(banner.contains_rect(filter), "Filters must stay inside the banner");
+        }
         assert!(
             target.left() < first.left()
                 && first.left() < second.left()
                 && second.left() < third.left()
         );
         assert!(
-            (bounds.right() - third.right()).abs() < 4.0 * scale,
-            "Severity filters must align to the right edge"
+            (banner.right() - third.right() - 13.0 * scale).abs() < 3.0 * scale,
+            "Severity filters must align inside the right banner badge"
+        );
+        assert!(second.left() - first.right() > 25.0 * scale);
+        assert!(third.left() - second.right() > 25.0 * scale);
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::LineSegment { points, .. }
+                    if points[0].y == points[1].y
+                        && points[0].y >= banner.bottom()
+                        && (points[0].x - points[1].x).abs() > width * 0.9
+            )),
+            "No separator beneath the banner"
         );
         assert!((first.center().y - target.center().y).abs() < scale, "Filters must share a row");
         let dropdown = target.center();
@@ -183,6 +212,7 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
         for (time, pressed) in [(0.1, true), (0.2, false)] {
             let (mut opened, _, _) =
                 render(&ctx, &campaign, &mut filters, width, scale, time, click(dropdown, pressed));
+            capture.frame(&ctx, &opened, &format!("scandals-dropdown-{}", width as u32));
             if !pressed {
                 let frame = opened
                     .shapes
@@ -198,12 +228,60 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
                     })
                     .expect("Open dropdown retains its button frame");
                 assert!(
-                    frame.fill.r() > 180 && frame.fill.g() > 160,
-                    "Open dropdown must use a light parchment fill"
+                    frame.fill.a() < 100,
+                    "Open dropdown must retain the dark banner badge's translucent highlight"
                 );
             }
             opened.textures_delta.clear();
         }
+        let (mut opened, _, _) = render(&ctx, &campaign, &mut filters, width, scale, 0.3, vec![]);
+        capture.frame(&ctx, &opened, &format!("scandals-dropdown-{}", width as u32));
+        opened.textures_delta.clear();
+        // Let the popup's normal fade-in finish before checking its final colors.
+        let (mut opened, _, _) = render(&ctx, &campaign, &mut filters, width, scale, 0.6, vec![]);
+        capture.frame(&ctx, &opened, &format!("scandals-dropdown-{}", width as u32));
+        let mut options = egui::Rect::NOTHING;
+        for label in ["Player 1", "Player 2", "Player 3", "Independent provinces"] {
+            let text = opened
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing dropdown option {label}"));
+            options = options.union(text.galley.rect.translate(text.pos.to_vec2()));
+            assert!(
+                text.galley.job.sections[0].format.color.r() < 100,
+                "Popup options must use readable parchment ink"
+            );
+        }
+        let popup = opened
+            .shapes
+            .iter()
+            .flat_map(|shape| match &shape.shape {
+                egui::Shape::Vec(shapes) => shapes.as_slice(),
+                shape => std::slice::from_ref(shape),
+            })
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.width > 0.0
+                        && rect.rect.contains_rect(options)
+                        && rect.rect.width() < width * 0.8
+                        && rect.rect.top() >= target.bottom() =>
+                {
+                    Some(rect)
+                },
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .expect("Target dropdown must paint its popup frame");
+        assert!(
+            popup.fill.r() > 180 && popup.fill.a() == 255,
+            "Dropdown options must have an opaque parchment background: {:?}",
+            popup.fill
+        );
+        opened.textures_delta.clear();
     }
 }
 

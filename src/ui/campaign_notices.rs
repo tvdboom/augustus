@@ -2,28 +2,27 @@
 
 use super::campaign::Campaign;
 use super::campaign_notifications::{CampaignNotice, NoticeKind, NoticeSeverity};
-use super::campaign_widgets::{paint_icon, texture, Icon};
+use super::campaign_widgets::{paint_icon, portrait, texture, Icon, ProvinceLandscape};
 use super::province_panel::{INK, RULE, TABLE_STRIPE};
 use bevy_egui::egui;
 
-const FILTER_CATEGORIES: [(&str, Icon); 5] = [
-    ("Resources", Icon::Coin),
-    ("Spies", Icon::Spy),
-    ("Military", Icon::Attack),
+const FILTER_CATEGORIES: [(&str, Icon); 4] = [
+    ("Resources", Icon::Food),
     ("Buildings", Icon::Construction),
-    ("Politics", Icon::Diplomacy),
+    ("Military", Icon::Attack),
+    ("Diplomacy", Icon::Diplomacy),
 ];
 
 /// Notification filters are local presentation state; each view starts with all types visible.
 #[derive(Clone, Copy)]
 pub(in crate::app) struct NoticeFilters {
-    enabled: [bool; 5],
+    enabled: [bool; FILTER_CATEGORIES.len()],
 }
 
 impl Default for NoticeFilters {
     fn default() -> Self {
         Self {
-            enabled: [true; 5],
+            enabled: [true; FILTER_CATEGORIES.len()],
         }
     }
 }
@@ -32,7 +31,7 @@ fn category(kind: NoticeKind) -> usize {
     use NoticeKind::*;
     match kind {
         FoodShortage | TreasuryExhausted | TradeInterrupted | PopulationUnhappy(_) => 0,
-        SpyDetected | SpyWithdrawn | ScandalDiscovered | ForeignUnrest => 1,
+        BuildingCompleted | WonderStarted | WonderCompleted => 1,
         RecruitmentCompleted
         | ArmyDisbanded
         | UnitsDestroyed
@@ -48,8 +47,12 @@ fn category(kind: NoticeKind) -> usize {
         | MilitaryRankIncreased
         | MilitaryPromotionAvailable
         | SlaveRevolt => 2,
-        BuildingCompleted | WonderStarted | WonderCompleted => 3,
-        SenateOfficeAppointed
+        SpyDetected
+        | SpyWithdrawn
+        | ScandalDiscovered
+        | SenatorBriberyExposed
+        | ForeignUnrest
+        | SenateOfficeAppointed
         | PoliticalPromotionAvailable
         | ConsulTermExpired
         | ConsulRemoved
@@ -61,7 +64,7 @@ fn category(kind: NoticeKind) -> usize {
         | VassalWeakened
         | HostileRelation
         | VeryHostileRelation
-        | VassalRelationDecay => 4,
+        | VassalRelationDecay => 3,
     }
 }
 
@@ -76,17 +79,46 @@ fn filtered_history<'a>(
         .filter(move |notice| filters.enabled[category(notice.kind)])
 }
 
-fn filters_row(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
-    ui.add_space(4.0 * scale);
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-        egui::Layout::right_to_left(egui::Align::Center),
-        |ui| {
+/// Overlay filters on the banner with the political-distance badge's dark treatment.
+fn filters_banner(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
+    let banner = portrait(ui, ProvinceLandscape::Notifications, 76.0 * scale);
+    let margin = 7.0 * scale;
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(banner.left() + margin, banner.bottom() - margin - 32.0 * scale),
+        banner.right_bottom() - egui::Vec2::splat(margin),
+    );
+    let mut overlay = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("notification-filters")
+            .max_rect(rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    overlay.set_clip_rect(ui.clip_rect().intersect(banner));
+    egui::Frame::new()
+        .fill(egui::Color32::from_black_alpha(180))
+        .corner_radius(3.0 * scale)
+        .inner_margin(egui::Margin::symmetric(
+            (6.0 * scale).round() as i8,
+            (3.0 * scale).round() as i8,
+        ))
+        .show(&mut overlay, |ui| {
             ui.spacing_mut().item_spacing.x = 12.0 * scale;
             ui.spacing_mut().icon_spacing = 3.0 * scale;
+            ui.spacing_mut().icon_width = 14.0 * scale;
+            ui.spacing_mut().icon_width_inner = 8.0 * scale;
+            ui.spacing_mut().interact_size.y = 24.0 * scale;
+            ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+            let widgets = &mut ui.visuals_mut().widgets;
+            for widget in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active] {
+                widget.fg_stroke = egui::Stroke::new(scale, egui::Color32::WHITE);
+                widget.bg_stroke = egui::Stroke::new(scale, egui::Color32::from_white_alpha(180));
+                widget.bg_fill = egui::Color32::from_white_alpha(20);
+            }
+            widgets.hovered.bg_fill = egui::Color32::from_white_alpha(50);
+            widgets.active.bg_fill = egui::Color32::from_white_alpha(70);
             for (index, &(name, artwork)) in FILTER_CATEGORIES.iter().enumerate().rev() {
                 let image =
-                    egui::Image::new((texture(ui.ctx(), artwork), egui::vec2(18.0, 18.0) * scale))
+                    egui::Image::new((texture(ui.ctx(), artwork), egui::vec2(24.0, 24.0) * scale))
                         .alt_text(name);
                 let response = ui.add(egui::Checkbox::new(&mut filters.enabled[index], image));
                 response.widget_info(|| {
@@ -97,14 +129,17 @@ fn filters_row(ui: &mut egui::Ui, filters: &mut NoticeFilters, scale: f32) {
                         name,
                     )
                 });
-                response.on_hover_text(name).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let tooltip = match index {
+                    0 => "Resources, population, and trade",
+                    3 => "Diplomacy, spies, and Senate",
+                    _ => name,
+                };
+                response.on_hover_text(tooltip).on_hover_cursor(egui::CursorIcon::PointingHand);
             }
-        },
-    );
-    ui.separator();
+        });
 }
 
-/// Keep the compact filters fixed while only the notice cards scroll.
+/// Keep the banner and its filters fixed while only the notice cards scroll.
 pub(super) fn filtered_list<R>(
     ui: &mut egui::Ui,
     filters: &mut NoticeFilters,
@@ -112,7 +147,7 @@ pub(super) fn filtered_list<R>(
     id: impl std::hash::Hash + std::fmt::Debug,
     render: impl FnOnce(&mut egui::Ui, &NoticeFilters) -> R,
 ) -> R {
-    filters_row(ui, filters, scale);
+    filters_banner(ui, filters, scale);
     egui::ScrollArea::vertical()
         .id_salt(id)
         .max_height(ui.available_height())
@@ -159,63 +194,6 @@ pub(in crate::app) fn overview(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overview_filters_history_by_type_and_recipient() {
-        let mut campaign = Campaign::default();
-        for (player, kind, title) in [
-            (0, NoticeKind::FoodShortage, "Food"),
-            (0, NoticeKind::BattleResolved, "Battle"),
-            (0, NoticeKind::SpyDetected, "Spy"),
-            (1, NoticeKind::BuildingCompleted, "Other player"),
-        ] {
-            campaign.notifications.province_notice(
-                player,
-                if title == "Battle" {
-                    1
-                } else {
-                    0
-                },
-                0,
-                NoticeSeverity::Info,
-                kind,
-                title,
-                "Details",
-            );
-        }
-        campaign.notifications.push(CampaignNotice {
-            id: 0,
-            recipient: 0,
-            severity: NoticeSeverity::Info,
-            title: "Senate".into(),
-            body: "Details".into(),
-            kind: NoticeKind::SenateOfficeAppointed,
-            province: None,
-            building: None,
-            wonder: None,
-            scandal: None,
-            month: 1,
-            action: super::super::campaign_notifications::NoticeAction::OpenSenate,
-        });
-        let mut filters = NoticeFilters::default();
-        let titles = |filters: &NoticeFilters| {
-            filtered_history(&campaign, 0, filters)
-                .map(|notice| notice.title.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(titles(&filters), ["Senate", "Spy", "Battle", "Food"]);
-        filters.enabled[2] = false;
-        assert_eq!(titles(&filters), ["Senate", "Spy", "Food"]);
-        filters.enabled.fill(false);
-        assert!(titles(&filters).is_empty());
-        filters.enabled.fill(true);
-        assert_eq!(titles(&filters), ["Senate", "Spy", "Battle", "Food"]);
-    }
-}
-
 pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
     use NoticeKind::*;
     match kind {
@@ -246,6 +224,7 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | AugustusVictory
         | PlayerDefeated => Icon::Eagle,
         SpyDetected | SpyWithdrawn | ScandalDiscovered => Icon::Spy,
+        SenatorBriberyExposed => Icon::SenatorBribe,
         ForeignUnrest => Icon::Happiness,
         ControlFifty
         | ControlFull
@@ -427,3 +406,7 @@ pub(in crate::app) fn message_card(
         response
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/campaign_notices.rs"]
+mod tests;

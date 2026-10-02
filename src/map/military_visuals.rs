@@ -4,23 +4,121 @@
 //! Owner badges fade together with troops, whose anchors stay inside their province.
 
 use super::*;
-use crate::game::military::{ForceOwner, MilitaryWorld, Unit, UnitType};
+use crate::game::military::{ForceOwner, MilitaryWorld, MovementOrder, Unit, UnitType};
+
+#[derive(Clone)]
+struct MarchPreview {
+    origin: usize,
+    destination: Option<usize>,
+    start_fraction: f64,
+}
+
+/// Preview monthly travel continuously, sharing exactly the same fraction with the army bar.
+pub(super) fn movement_visual_progress(ctx: &egui::Context, order: &MovementOrder) -> f32 {
+    ctx.data_mut(|data| {
+        let fraction = f64::from(
+            data.get_temp::<f32>(egui::Id::new("campaign-construction-month-fraction"))
+                .unwrap_or(0.),
+        );
+        let key = egui::Id::new(("march-preview", order.id));
+        let previous = data.get_temp::<MarchPreview>(key);
+        let start_fraction = match previous {
+            Some(previous)
+                if previous.origin == order.origin
+                    && previous.destination == order.destination() =>
+            {
+                previous.start_fraction
+            },
+            Some(_) => 0., // A monthly boundary starts the next edge at the province we just reached.
+            None if order.progress == 0. => fraction,
+            None => 0.,
+        };
+        data.insert_temp(
+            key,
+            MarchPreview {
+                origin: order.origin,
+                destination: order.destination(),
+                start_fraction,
+            },
+        );
+        // The resolver rounds an edge up to whole monthly ticks. Do the same here
+        // so a short crossing keeps moving until its actual arrival, without a pause.
+        let duration = order.required_progress.ceil().max(1.);
+        ((order.progress + fraction - start_fraction) / (duration - start_fraction).max(0.001))
+            .clamp(0., 1.) as f32
+    })
+}
+
+/// Flowing open chevrons follow the remaining route from the army.
+/// Using travel progress keeps their motion tied to army speed and the paused clock.
+fn paint_march_arrows(
+    painter: &egui::Painter,
+    route: &[egui::Pos2],
+    phase: f32,
+    size: f32,
+    color: egui::Color32,
+) {
+    let scale = (size / 48.).clamp(0.75, 1.5);
+    let spacing = 36. * scale;
+    let clearance = size * 0.55;
+    let length: f32 = route.windows(2).map(|edge| edge[0].distance(edge[1])).sum();
+    let mut distance = clearance + phase.rem_euclid(spacing);
+    while distance < length - 8. * scale {
+        let mut along = distance;
+        for edge in route.windows(2) {
+            let delta = edge[1] - edge[0];
+            let edge_length = delta.length();
+            if edge_length <= f32::EPSILON {
+                continue;
+            }
+            if along > edge_length {
+                along -= edge_length;
+                continue;
+            }
+            let forward = delta / edge_length;
+            let across = egui::vec2(-forward.y, forward.x);
+            let tip = edge[0] + forward * along;
+            let fade = ((distance - clearance) / (16. * scale))
+                .min((length - distance) / (20. * scale))
+                .clamp(0., 1.);
+            let ink = color.gamma_multiply(0.85 * fade);
+            painter.add(egui::Shape::line(
+                vec![
+                    tip - forward * (6. * scale) + across * (4. * scale),
+                    tip,
+                    tip - forward * (6. * scale) - across * (4. * scale),
+                ],
+                egui::Stroke::new(1.6 * scale, ink),
+            ));
+            break;
+        }
+        distance += spacing;
+    }
+}
 
 #[path = "military_frames.rs"]
 mod frames;
+
+#[path = "military_combat.rs"]
+mod combat;
 
 /// Geographic anchors survive zoom, panning, clipping and changes to nearby artwork.
 #[derive(Default)]
 pub(super) struct Anchors {
     positions: std::collections::BTreeMap<(usize, ForceOwner, u8), [f32; 2]>,
+    battles: std::collections::BTreeMap<u64, combat::FieldAnchor>,
 }
 
 impl Anchors {
     fn retain_for(&mut self, world: &MilitaryWorld) {
+        self.battles.retain(|id, _| world.battles.iter().any(|battle| battle.id == *id));
         self.positions.retain(|&(province, owner, side), _| {
             if side == 0 {
                 world.provinces.get(province).is_some_and(|state| {
                     state.forces.get(&owner).is_some_and(|units| !units.is_empty())
+                }) || world.movements.iter().any(|order| {
+                    order.owner == owner
+                        && (order.origin == province || order.route.contains(&province))
                 })
             } else {
                 world.battles.iter().any(|battle| {
@@ -228,7 +326,8 @@ pub(super) fn paint(
     anchors: &mut Anchors,
 ) -> Vec<egui::Rect> {
     painter.ctx().data_mut(|data| {
-        data.insert_temp(egui::Id::new("map-army-hit-targets"), Vec::<ArmyHit>::new())
+        data.insert_temp(egui::Id::new("map-army-hit-targets"), Vec::<ArmyHit>::new());
+        data.insert_temp(egui::Id::new("map-audible-battles"), Vec::<AudibleBattle>::new());
     });
     anchors.retain_for(world);
     let threshold = world.config.sprite_zoom_threshold.max(0.0) as f32;
@@ -237,7 +336,15 @@ pub(super) fn paint(
     // Like city and wonder artwork, units keep one map footprint as the camera zooms.
     let size = troop_size(zoom);
     let alpha = troop_alpha(zoom, threshold);
-    if alpha == 0 && !revolts.iter().any(|&active| active) {
+    for movement in &world.movements {
+        movement_visual_progress(painter.ctx(), movement);
+    }
+    if alpha == 0
+        && !revolts
+            .iter()
+            .enumerate()
+            .any(|(province, &active)| active && !world.province_in_battle(province))
+    {
         return vec![];
     }
     let cache_id = egui::Id::new("military-sprite-sheet-cache");
@@ -304,7 +411,7 @@ pub(super) fn paint(
                 }
                 place(landmarks)
                     .or_else(|| {
-                        // Rome's narrow province must not shrink or hide its army
+                        // Narrow Latium must not shrink or hide its normal army
                         // when nearby artwork leaves no unobstructed rectangle.
                         (map_province.name == "Latium")
                             .then(|| {
@@ -355,31 +462,92 @@ pub(super) fn paint(
                 &mut army_hits,
                 province,
                 None,
+                false,
             );
         }
     }
     for movement in &world.movements {
+        // Record departures even when sprites are hidden at this camera zoom.
+        let fraction = movement_visual_progress(painter.ctx(), movement);
         if alpha == 0 {
             continue;
         }
         let types = map_representatives(&movement.units);
-        let (Some(origin), Some(destination)) = (
-            atlas.provinces.get(movement.origin),
-            movement.destination().and_then(|p| atlas.provinces.get(p)),
-        ) else {
+        let location = |id: usize| {
+            atlas
+                .provinces
+                .get(id)
+                .map(|p| p.visual_center)
+                .or_else(|| (id == atlas.provinces.len()).then_some(CITIES[0].position))
+        };
+        let (Some(origin), Some(destination)) =
+            (location(movement.origin), movement.destination().and_then(location))
+        else {
             continue;
         };
-        let start = projection.point(origin.visual_center);
-        let end = projection.point(destination.visual_center);
-        let fraction = movement.interpolation() as f32;
-        // Small repeated stride gives movement feedback while the authoritative monthly progress stays discrete.
-        let route_anchor = start.lerp(end, fraction);
-        let anchor = route_anchor;
+        // Reuse the stationed army's geographic anchors at both ends of a march.
+        // Arrival and the next edge then meet at exactly the same map position.
+        let mut endpoint = |id: usize, geographic: [f32; 2]| {
+            let fallback = projection.point(geographic);
+            let Some(province) = atlas.provinces.get(id) else {
+                return fallback;
+            };
+            let preferred = if province.name == "Latium" {
+                projection.point([13.30, 41.65])
+            } else {
+                labels
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .map_or(fallback, |label| projection.point(label.center))
+                    + egui::vec2(0., -size * 1.25)
+            };
+            anchors
+                .get_or_place((id, movement.owner, 0), projection, || {
+                    let mut obstacles = landmarks.to_vec();
+                    if let Some(area) = label_areas.get(id).copied().flatten() {
+                        obstacles.push(area.expand(3.));
+                    }
+                    province_anchor(
+                        preferred, size, viewport, &obstacles, &occupied, province, projection,
+                        &types,
+                    )
+                    .or_else(|| {
+                        province_anchor(
+                            preferred, size, viewport, landmarks, &occupied, province, projection,
+                            &types,
+                        )
+                    })
+                    .or_else(|| {
+                        province_anchor(
+                            preferred,
+                            size,
+                            viewport,
+                            &[],
+                            &[],
+                            province,
+                            projection,
+                            &types,
+                        )
+                    })
+                })
+                .unwrap_or(fallback)
+        };
+        let start = endpoint(movement.origin, origin);
+        let end = endpoint(movement.destination().unwrap(), destination);
+        let anchor = start.lerp(end, fraction);
+        let mut route = vec![anchor];
+        route.extend(
+            movement
+                .route
+                .iter()
+                .filter_map(|&id| location(id).map(|position| endpoint(id, position))),
+        );
+        let color =
+            owner_color(movement.owner, world, ownership).gamma_multiply(f32::from(alpha) / 255.);
+        paint_march_arrows(painter, &route, fraction * start.distance(end) * 2., size, color);
         if !viewport.expand(size).contains(anchor) {
             continue;
         }
-        let color = owner_color(movement.owner, world, ownership);
-        painter.line_segment([start, end], egui::Stroke::new(1.3, color.gamma_multiply(0.45)));
         draw_cluster(
             painter,
             &mut textures,
@@ -397,95 +565,49 @@ pub(super) fn paint(
             &mut army_hits,
             movement.origin,
             Some(movement.id),
+            end.x < start.x,
         );
     }
+    let mut audible = Vec::new();
     for battle in &world.battles {
-        let Some(map_province) = atlas.provinces.get(battle.province) else {
+        let Some(map_province) = atlas.provinces.get(battle.province).or_else(|| {
+            (battle.province == atlas.provinces.len())
+                .then(|| atlas.provinces.iter().find(|province| province.name == "Latium"))
+                .flatten()
+        }) else {
             continue;
         };
-        let revolt = revolts[battle.province];
-        let (size, alpha) = revolt_troop_style(size, alpha, revolt);
+        // Fighting armies use the same zoom fade as other units, including rebels.
         if alpha == 0 {
             continue;
         }
-        let anchor = projection.point(map_province.visual_center);
-        if !viewport.expand(size * 2.).contains(anchor) {
+        if !viewport.intersects(projection.bounds_rect(map_province.bounds).expand(size * 4.)) {
             continue;
         }
-        for (key, direction, side) in [(1, -1., &battle.attackers), (2, 1., &battle.defenders)] {
-            let mut owners: Vec<_> = side
-                .units
-                .iter()
-                .map(|unit| unit.owner)
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            owners.sort_unstable();
-            for (cluster, owner) in owners.iter().enumerate() {
-                let active: Vec<_> = side
-                    .units
-                    .iter()
-                    // Map composition is public even when foreign deployment is redacted.
-                    .filter(|u| u.owner == *owner && u.current_manpower > 0.)
-                    .cloned()
-                    .collect();
-                let mut types = map_representatives(&active);
-                if revolt && zoom <= threshold {
-                    types.truncate(1);
-                }
-                let Some(center) =
-                    anchors.get_or_place((battle.province, *owner, key), projection, || {
-                        let desired = anchor
-                            + egui::vec2(direction * size * 0.6, cluster as f32 * size * 0.65);
-                        province_anchor(
-                            desired,
-                            size,
-                            viewport,
-                            landmarks,
-                            &occupied,
-                            map_province,
-                            projection,
-                            &types,
-                        )
-                        .or_else(|| {
-                            revolt
-                                .then(|| {
-                                    revolt_anchor(
-                                        desired,
-                                        size,
-                                        map_province,
-                                        projection,
-                                        &types,
-                                        &occupied,
-                                    )
-                                })
-                                .flatten()
-                        })
-                    })
-                else {
-                    continue;
-                };
-                draw_cluster(
-                    painter,
-                    &mut textures,
-                    world,
-                    ownership,
-                    *owner,
-                    &active,
-                    &types,
-                    center,
-                    size,
-                    3,
-                    clock,
-                    alpha,
-                    &mut occupied,
-                    &mut army_hits,
-                    battle.province,
-                    None,
-                );
-            }
+        if let Some(sound) = combat::paint(
+            painter,
+            &mut textures,
+            world,
+            ownership,
+            battle,
+            map_province,
+            projection,
+            zoom,
+            threshold,
+            clock,
+            size,
+            alpha,
+            viewport,
+            landmarks,
+            label_areas.get(battle.province).copied().flatten(),
+            &mut anchors.battles,
+            &mut occupied,
+            &mut army_hits,
+        ) {
+            audible.push(sound);
         }
     }
+    painter.ctx().data_mut(|data| data.insert_temp(egui::Id::new("map-audible-battles"), audible));
     painter.ctx().data_mut(|data| data.insert_temp(cache_id, textures));
     if !occupied.is_empty() {
         painter.ctx().request_repaint_after(std::time::Duration::from_millis(33));
@@ -526,7 +648,7 @@ fn revolt_troop_style(size: f32, alpha: u8, active: bool) -> (f32, u8) {
 }
 
 /// An uprising must remain visible even when landmarks cover the available ground.
-/// Like Rome's narrow ground, keep the feet and badge anchored inside the province.
+/// Like Latium's narrow ground, keep the feet and badge anchored inside the province.
 fn revolt_anchor(
     desired: egui::Pos2,
     size: f32,
@@ -805,6 +927,7 @@ fn draw_cluster(
     army_hits: &mut Vec<ArmyHit>,
     province: usize,
     movement: Option<u64>,
+    facing_left: bool,
 ) {
     if types.is_empty() {
         return;
@@ -825,7 +948,10 @@ fn draw_cluster(
             .wrapping_add(index as u64 * 13);
         let frame = animation_frame(clock, seed, animation);
         let texture = motion_texture(painter.ctx(), textures, *kind, animation);
-        let uv = animation_uv(frame);
+        let mut uv = animation_uv(frame);
+        if facing_left {
+            std::mem::swap(&mut uv.min.x, &mut uv.max.x);
+        }
         painter.image(texture, rect, uv, egui::Color32::from_white_alpha(alpha));
         occupied.push(rect);
         army_hits.push(ArmyHit {
@@ -835,11 +961,39 @@ fn draw_cluster(
             movement,
         });
     }
+    draw_banner(
+        painter,
+        world,
+        owner,
+        owner_color,
+        anchor,
+        size,
+        alpha,
+        occupied,
+        army_hits,
+        province,
+        movement,
+    );
+}
+
+fn draw_banner(
+    painter: &egui::Painter,
+    world: &MilitaryWorld,
+    owner: ForceOwner,
+    color: egui::Color32,
+    anchor: egui::Pos2,
+    size: f32,
+    alpha: u8,
+    occupied: &mut Vec<egui::Rect>,
+    army_hits: &mut Vec<ArmyHit>,
+    province: usize,
+    movement: Option<u64>,
+) {
     let banner = egui::Rect::from_center_size(
         anchor + egui::vec2(0., size * 0.5 + 7.),
         egui::vec2(27., 12.),
     );
-    painter.rect_filled(banner, 2., owner_color.gamma_multiply(f32::from(alpha) / 255.));
+    painter.rect_filled(banner, 2., color.gamma_multiply(f32::from(alpha) / 255.));
     let caption = match owner {
         ForceOwner::Player(p) => format!("P{}", p + 1),
         ForceOwner::Local(_) if is_rebel(owner, world) => "Revolt".to_owned(),

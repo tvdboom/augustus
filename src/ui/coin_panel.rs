@@ -62,8 +62,11 @@ pub(in crate::app) fn show(
     });
     let recruitment = campaign.map_or(0.0, |campaign| campaign.recruitment_effort_cost(player));
     let spy_upkeep = campaign.map_or(0.0, |campaign| campaign.spy_upkeep(player));
-    let senator_bribery =
+    let senator_bribery_upfront =
         campaign.map_or(0.0, |campaign| campaign.senate.spent_on(player, SenatorAction::Bribe));
+    let senator_bribery = campaign.map_or(0.0, |campaign| {
+        campaign.senate.action_upkeep(player, SenatorAction::Bribe, &campaign.senate_config)
+    });
     let outflow = [
         ("Noble wages", noble_wages),
         ("Army wages", army_wages),
@@ -71,6 +74,7 @@ pub(in crate::app) fn show(
         ("Recruitment effort", recruitment),
         ("Spy upkeep", spy_upkeep),
         ("Senator bribery", senator_bribery),
+        ("Senator bribery (upfront)", senator_bribery_upfront),
         ("Trade deals", 0.0),
     ];
     flow_panel::show(

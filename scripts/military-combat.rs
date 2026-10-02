@@ -2,10 +2,11 @@
 //!
 //! The spear and sword rigs use the raised ready pose in action column zero.
 //! Arms, weapons and shoulders prepare and recover together; feet stay planted.
-//! Time is evaluated once per frame and consists only of periodic harmonics.
+//! Each gesture and the javelin release close smoothly at the cycle boundary.
 
 #[derive(Clone, Copy)]
 enum Kind {
+    Skirmisher,
     Infantry,
     Mounted,
     Archer,
@@ -50,12 +51,14 @@ pub struct Combat {
     sin: f32,
     joint: Joint,
     secondary: Joint,
+    phase: f32,
 }
 
 impl Combat {
     pub fn new(name: &str, width: f32, height: f32, angle: f32) -> Self {
         let kind = match name {
-            "light-infantry" | "heavy-infantry" => Kind::Infantry,
+            "light-infantry" => Kind::Skirmisher,
+            "heavy-infantry" => Kind::Infantry,
             "archers" => Kind::Archer,
             "horse-archers" => Kind::HorseArcher,
             "war-elephants" => Kind::Elephant,
@@ -71,23 +74,24 @@ impl Combat {
         let retract = 1. - stroke;
         let release = (angle * 3.).sin() * retract * retract;
         let (joint, secondary) = match kind {
-            Kind::Infantry => {
-                (Joint::new([0.43, 0.68], -0.035 * retract), Joint::new([0.38, 0.32], 0.055 * sin))
-            },
+            Kind::Skirmisher | Kind::Infantry => (
+                Joint::new([0.43, 0.68], -0.09 * retract),
+                Joint::new([0.38, 0.32], 0.24 * stroke + 0.035 * sin),
+            ),
             Kind::Mounted => {
-                (Joint::new([0.45, 0.48], -0.055 * retract), Joint::new([0.72, 0.49], 0.014 * sin))
+                (Joint::new([0.45, 0.48], -0.10 * retract), Joint::new([0.72, 0.49], 0.035 * sin))
             },
             Kind::Archer | Kind::HorseArcher => {
-                (Joint::new([0.43, 0.60], -0.018 * retract), Joint::new([0.79, 0.31], 0.))
+                (Joint::new([0.43, 0.60], -0.045 * retract), Joint::new([0.79, 0.31], 0.))
             },
             Kind::Elephant => {
-                (Joint::new([0.64, 0.57], -0.027 * stroke), Joint::new([0.84, 0.43], 0.14 * sin))
+                (Joint::new([0.64, 0.57], -0.055 * stroke), Joint::new([0.84, 0.43], 0.20 * sin))
             },
             Kind::Ballista => {
-                (Joint::new([0.20, 0.59], -0.047 * sin), Joint::new([0.27, 0.42], 0.08 * sin))
+                (Joint::new([0.20, 0.59], -0.08 * sin), Joint::new([0.27, 0.42], 0.14 * sin))
             },
             Kind::Catapult => {
-                (Joint::new([0.68, 0.25], 0.11 * stroke), Joint::new([0.20, 0.61], -0.045 * sin))
+                (Joint::new([0.68, 0.25], 0.23 * stroke), Joint::new([0.20, 0.61], -0.08 * sin))
             },
         };
         Self {
@@ -100,6 +104,7 @@ impl Combat {
             sin,
             joint,
             secondary,
+            phase: angle / std::f32::consts::TAU,
         }
     }
 
@@ -107,7 +112,7 @@ impl Combat {
         let primary = self.joint.offset(x, y, self.width, self.height);
         let secondary = self.secondary.offset(x, y, self.width, self.height);
         match self.kind {
-            Kind::Infantry => {
+            Kind::Skirmisher | Kind::Infantry => {
                 // The complete upper silhouette, including the weapon, shares
                 // one rigid shoulder/hip movement. The waist absorbs it over a
                 // broad interval, while the boots remain exactly planted.
@@ -117,8 +122,8 @@ impl Combat {
                 let arm = (1. - smooth(0.30, 0.52, x)) * (1. - smooth(0.28, 0.48, y));
                 let weapon = (1. - smooth(0.08, 0.23, y)).max(arm);
                 [
-                    upper * (primary[0] - 4.8 * self.retract) + secondary[0] * weapon,
-                    upper * (primary[1] + 0.8 * self.retract) + secondary[1] * weapon,
+                    upper * (primary[0] - 10.0 * self.retract) + secondary[0] * weapon,
+                    upper * (primary[1] + 1.5 * self.retract) + secondary[1] * weapon,
                 ]
             },
             Kind::Mounted => {
@@ -127,8 +132,8 @@ impl Combat {
                 let rider = 1. - smooth(0.29, 0.56, y);
                 let head = smooth(0.61, 0.79, x) * band(0.26, 0.38, 0.53, 0.69, y);
                 [
-                    rider * (primary[0] - 3.6 * self.retract) + secondary[0] * head,
-                    rider * (primary[1] + 0.55 * self.retract) + secondary[1] * head,
+                    rider * (primary[0] - 7.2 * self.retract) + secondary[0] * head,
+                    rider * (primary[1] + 1.1 * self.retract) + secondary[1] * head,
                 ]
             },
             Kind::Archer | Kind::HorseArcher => {
@@ -162,9 +167,9 @@ impl Combat {
                 // The bow translates as a rigid unit and settles after recoil.
                 [
                     primary[0] * upper
-                        + 4.2 * self.retract * hand
-                        + (1.4 * self.stroke + 0.5 * self.release) * bow,
-                    primary[1] * upper - 0.6 * self.stroke * bow,
+                        + 11.0 * self.retract * hand
+                        + (2.8 * self.stroke + 0.8 * self.release) * bow,
+                    primary[1] * upper - 1.2 * self.stroke * bow,
                 ]
             },
             Kind::Elephant => {
@@ -182,8 +187,8 @@ impl Combat {
                 let mechanism = smooth(0.28, 0.47, x) * (1. - smooth(0.48, 0.66, y));
                 let recoil = self.stroke * self.stroke * self.stroke;
                 [
-                    primary[0] * crew + secondary[0] * hand - 2.8 * recoil * mechanism,
-                    primary[1] * crew + secondary[1] * hand + 0.55 * recoil * mechanism,
+                    primary[0] * crew + secondary[0] * hand - 5.6 * recoil * mechanism,
+                    primary[1] * crew + secondary[1] * hand + 1.1 * recoil * mechanism,
                 ]
             },
             Kind::Catapult => {
@@ -197,6 +202,20 @@ impl Combat {
                 [primary[0] * arm + secondary[0] * crew, primary[1] * arm + secondary[1] * crew]
             },
         }
+    }
+}
+
+impl Combat {
+    /// The thrown javelin leaves the hand, then a fresh one is readied for the next cast.
+    pub fn opacity(&self, x: f32, y: f32) -> f32 {
+        if !matches!(self.kind, Kind::Skirmisher) {
+            return 1.;
+        }
+        let weapon_line = 0.15 - 0.19 * x;
+        let weapon =
+            (1. - smooth(0.015, 0.045, (y - weapon_line).abs())) * (1. - smooth(0.20, 0.26, y));
+        let released = smooth(0.48, 0.52, self.phase) * (1. - smooth(0.86, 0.98, self.phase));
+        1. - weapon * released
     }
 }
 

@@ -2,6 +2,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 jobs := env_var_or_default("AUGUSTUS_JOBS", "12")
 asset_jobs := env_var_or_default("AUGUSTUS_ASSET_JOBS", "12")
+npm_command := if os() == "windows" { "npm.cmd" } else { "npm" }
 native_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-native.ps1" } else { "bash scripts/package-native.sh" }
 web_package_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-web.ps1" } else { "bash scripts/package-web.sh" }
 packaging_check_command := if os() == "windows" { "powershell -NoProfile -ExecutionPolicy Bypass -File tests/scripts/packaging.ps1" } else { "bash tests/scripts/packaging.sh" }
@@ -39,10 +40,10 @@ fmt-check:
 
 # Run every Rust test target, including topic files under tests/unit.
 test:
-    cargo test --package augustus --all-targets -j{{ jobs }}
+    cargo test --package augustus --all-targets --all-features -j{{ jobs }}
 
 lint:
-    cargo clippy --package augustus --bin augustus -j{{ jobs }} -- -D warnings
+    cargo clippy --package augustus --all-targets --all-features -j{{ jobs }} -- -D warnings
 
 assets:
     cargo run --package augustus --features asset-pipeline --bin build-assets -j{{ jobs }} -- --jobs {{ asset_jobs }}
@@ -53,7 +54,12 @@ assets-force:
 assets-check:
     cargo run --package augustus --features asset-pipeline --bin build-assets -j{{ jobs }} -- --check --jobs {{ asset_jobs }}
 
-ci: fmt-check lint test assets-check check-wasm packaging-check
+ci: fmt-check lint assets test sql-check assets-check check-wasm packaging-check
+
+# Verify the lobby schema against a disposable PostgreSQL database.
+sql-check:
+    {{ npm_command }} install --prefix target/sql-verification --no-save --package-lock=false --ignore-scripts @electric-sql/pglite@0.5.8
+    node tests/sql/verify-schema.mjs
 
 packaging-check:
     {{ packaging_check_command }}

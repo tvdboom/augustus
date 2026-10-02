@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct BattleSide {
     /// Surviving units, including troops routed in this battle.
     pub units: Vec<Unit>,
+    /// Cohorts on engagement, retained for inspection after casualties remove survivors.
+    pub initial_units: Vec<Unit>,
     /// Plans captured on engagement, immutable through public editing actions.
     pub plans: BTreeMap<ForceOwner, BattlePlan>,
     /// Military ranks captured for the engagement.
@@ -28,7 +30,7 @@ impl BattleSide {
     /// Construct a coalition and deterministically deploy it.
     pub fn new(
         units: Vec<Unit>,
-        plans: BTreeMap<ForceOwner, BattlePlan>,
+        mut plans: BTreeMap<ForceOwner, BattlePlan>,
         ranks: BTreeMap<ForceOwner, MilitaryRank>,
         width: usize,
         config: &MilitaryConfig,
@@ -39,9 +41,18 @@ impl BattleSide {
             *initial_manpower.entry(unit.owner).or_insert(0.) += unit.current_manpower;
             *initial_strength.entry(unit.owner).or_insert(0.) += unit.effective_strength(config);
         }
+        for &owner in initial_manpower.keys() {
+            if matches!(owner, ForceOwner::Local(_)) {
+                plans.entry(owner).or_default().tactic = best_composition_tactic(
+                    units.iter().filter(|unit| unit.owner == owner),
+                    config,
+                );
+            }
+        }
         let routed = BTreeSet::new();
         let formation = deploy_formation(&units, &plans, width, &routed, config);
         Self {
+            initial_units: units.clone(),
             units,
             plans,
             ranks,
@@ -317,21 +328,13 @@ impl Battle {
         let (defender_losses, attacker_tactics) = attacks(
             &self.attackers,
             &self.defenders,
-            self.terrain,
             self.fortification_level,
             true,
             dice_multipliers[0],
             config,
         );
-        let (attacker_losses, defender_tactics) = attacks(
-            &self.defenders,
-            &self.attackers,
-            self.terrain,
-            0,
-            false,
-            dice_multipliers[1],
-            config,
-        );
+        let (attacker_losses, defender_tactics) =
+            attacks(&self.defenders, &self.attackers, 0, false, dice_multipliers[1], config);
         mark_participating(&mut self.attackers);
         mark_participating(&mut self.defenders);
         apply_losses(&mut self.attackers, attacker_losses, &self.trapped);
@@ -402,6 +405,7 @@ impl Battle {
             months: self.months,
             round_history: self.rounds,
             terrain: self.terrain,
+            fortification_level: self.fortification_level,
         })
     }
 }
@@ -433,6 +437,8 @@ pub struct BattleOutcome {
     pub round_history: Vec<BattleRound>,
     /// Original battlefield landscape for the result panel.
     pub terrain: MilitaryTerrain,
+    /// Defenses present on engagement, retained for the result panel.
+    pub fortification_level: u32,
 }
 
 impl BattleOutcome {
@@ -510,12 +516,9 @@ pub fn estimate_battle(
                     * (stats.defense * (1. + config.training_defense * u.training / 100.)).sqrt()
                     * (1. + config.training_attack * u.training / 100.)
                     * (config.strength_morale_base + config.strength_morale_scale * morale / 100.)
-                    * config.terrain_attack[terrain as usize][u.unit_type as usize]
                     * if defender {
-                        config.terrain_defense[terrain as usize]
-                            * (1.
-                                + (f64::from(fortification) * config.fort_defense_per_level)
-                                    .min(config.fort_defense_cap))
+                        1. + (f64::from(fortification) * config.fort_defense_per_level)
+                            .min(config.fort_defense_cap)
                     } else {
                         1.
                     }
@@ -578,7 +581,6 @@ fn mark_participating(side: &mut BattleSide) {
 fn attacks(
     source: &BattleSide,
     target: &BattleSide,
-    terrain: MilitaryTerrain,
     fortification: u32,
     attacking: bool,
     dice: f64,
@@ -641,7 +643,6 @@ fn attacks(
                 * tactic_multiplier
                 * (1. + config.training_attack * unit.training / 100.)
                 * (config.strength_morale_base + config.strength_morale_scale * morale / 100.)
-                * config.terrain_attack[terrain as usize][unit.unit_type as usize]
                 * dice
                 * if protected {
                     config.support_effectiveness
@@ -651,7 +652,7 @@ fn attacks(
             let defense = target_stats.defense
                 * (1. + config.training_defense * victim.training / 100.)
                 * if attacking {
-                    config.terrain_defense[terrain as usize] * (1. + fort_bonus)
+                    1. + fort_bonus
                 } else {
                     1.
                 };

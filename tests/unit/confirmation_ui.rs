@@ -7,8 +7,10 @@ fn fixture() -> campaign::Campaign {
     let mut p =
         EconomicProvince::new("Italia", 50.0, Terrain::Plains, false, [1.0; 3], [1000.0; 4], 2);
     p.owner = Some(0);
-    let mut campaign = campaign::Campaign::default();
-    campaign.economy = EconomyWorld::new(2, vec![p], vec![vec![]]);
+    let mut campaign = campaign::Campaign {
+        economy: EconomyWorld::new(2, vec![p], vec![vec![]]),
+        ..Default::default()
+    };
     campaign.economy.players[0].resources = [100_000.0; 3];
     campaign.military = MilitaryWorld::new(1);
     campaign

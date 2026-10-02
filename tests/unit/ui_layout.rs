@@ -8,6 +8,130 @@ use crate::game::politics::senate::PoliticalProfile;
 use crate::game::politics::PoliticalPlayer;
 use crate::game::politics::PoliticalRank;
 
+use crate::egui_capture as capture;
+
+#[test]
+fn spectator_uses_regular_province_sections_and_cannot_change_policies() {
+    use bevy::asset::AssetPlugin;
+
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .insert_resource(State::new(AppState::Map))
+        .insert_resource(fixture())
+        .insert_resource(TerminalPresentation {
+            spectating: true,
+            ..Default::default()
+        })
+        .insert_resource(LocalPractice {
+            players: (0..2)
+                .map(|color_index| PracticePlayer {
+                    color_index,
+                    rank: 0,
+                    main_province: Some(color_index),
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .insert_resource(MenuAudio {
+            volume: 0.0,
+            mode: AudioMode::Mute,
+            restored_mode: AudioMode::Effects,
+            music: default(),
+        })
+        .init_resource::<Audio>()
+        .init_resource::<bevy_egui::EguiUserTextures>()
+        .init_resource::<CampaignUi>()
+        .init_resource::<ProvincePanelOpen>()
+        .init_resource::<GovernancePanelOpen>()
+        .init_resource::<MapPanelCloseClick>()
+        .init_resource::<MapView>()
+        .add_systems(Update, (draw, draw_army_panel).chain());
+    let entity = app
+        .world_mut()
+        .spawn((bevy_egui::EguiContext::default(), bevy_egui::PrimaryEguiContext))
+        .id();
+    let ctx = app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut().clone();
+    spectator::set_read_only(&ctx, true);
+    let initial = app.world().resource::<Campaign>().clone();
+    let mut capture = capture::Capture::default();
+    let mut time = 0.0;
+    for province in [1, 2] {
+        for section in 0..PROVINCE_SECTION_COUNT {
+            app.world_mut().resource_mut::<CampaignUi>().open_province_section(province, section);
+            app.world_mut().resource_mut::<ProvincePanelOpen>().0 =
+                Some(MapDetail::Province(province));
+            for frame in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1600.0, 1000.0),
+                        )),
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |_| app.update(),
+                );
+                time += 0.1;
+                capture.frame(&ctx, &output, &format!("spectator-province-{province}-{section}"));
+                output.textures_delta.clear();
+                if frame == 1 {
+                    assert!(
+                        output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == "Policies")),
+                        "Foreign and independent provinces use domestic tabs"
+                    );
+                    if section == 1 {
+                        let position = output
+                            .shapes
+                            .iter()
+                            .find_map(|shape| match &shape.shape {
+                                egui::Shape::Text(text) if text.galley.job.text == "Food" => {
+                                    Some(text.pos + text.galley.size() * 0.5)
+                                },
+                                _ => None,
+                            })
+                            .expect("The regular policy controls are visible");
+                        for pressed in [true, false] {
+                            let mut click_output = ctx.run_ui(
+                                egui::RawInput {
+                                    screen_rect: Some(egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(1600.0, 1000.0),
+                                    )),
+                                    time: Some(time),
+                                    events: vec![
+                                        egui::Event::PointerMoved(position),
+                                        egui::Event::PointerButton {
+                                            pos: position,
+                                            button: egui::PointerButton::Primary,
+                                            pressed,
+                                            modifiers: egui::Modifiers::NONE,
+                                        },
+                                    ],
+                                    ..Default::default()
+                                },
+                                |_| app.update(),
+                            );
+                            click_output.textures_delta.clear();
+                            time += 0.1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let campaign = app.world().resource::<Campaign>();
+    for (actual, expected) in campaign.economy.provinces.iter().zip(&initial.economy.provinces) {
+        assert_eq!(actual.policies, expected.policies);
+        assert_eq!(actual.buildings, expected.buildings);
+        assert_eq!(actual.population, expected.population);
+        assert_eq!(actual.owner, expected.owner);
+    }
+    assert!(app.world().resource::<CampaignUi>().confirmation.is_none());
+    assert_eq!(app.world().resource::<LocalPractice>().active_player, 0);
+}
+
 /// Deterministic representative states cover ownership, independence, vassals and troops.
 fn fixture() -> Campaign {
     let names = ["Italia", "Africa Proconsularis", "Achaia", "Cappadocia", "Sardinia et Corsica"];
@@ -31,9 +155,11 @@ fn fixture() -> Campaign {
     provinces[3].overlord = Some(0);
     provinces[4].overlord = Some(1);
     let graph = vec![vec![1, 2], vec![0, 3], vec![0, 3, 4], vec![1, 2, 4], vec![2, 3]];
-    let mut campaign = Campaign::default();
-    campaign.active = true;
-    campaign.economy = EconomyWorld::new(2, provinces, graph.clone());
+    let mut campaign = Campaign {
+        active: true,
+        economy: EconomyWorld::new(2, provinces, graph.clone()),
+        ..Default::default()
+    };
     for wallet in &mut campaign.economy.players {
         wallet.coin = 5000.0;
         wallet.influence = 1000.0;
@@ -662,7 +788,11 @@ fn spy_network_shows_cumulative_results_detection_and_adjacent_exit_choices() {
         spy_text_position(&output, value);
         spy_text_position(&output, "Sestertii spent");
         spy_text_position(&output, "Detection");
-        spy_text_position(&output, "2%");
+        spy_text_position(&output, "1%/mo");
+        campaign.economy.provinces[province].happiness[0] = 50.0;
+        output.textures_delta.clear();
+        output = render_spy_network(&ctx, &mut campaign, province, 380.0, 0.05, vec![]);
+        spy_text_position(&output, "4%/mo");
         campaign.economy.provinces[province].happiness[0] = 100.0;
         let recall = spy_text_position(&output, "Recall");
         let flee = spy_text_position(&output, "Flee");
@@ -681,7 +811,7 @@ fn spy_network_shows_cumulative_results_detection_and_adjacent_exit_choices() {
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 1.1, vec![]);
         output.textures_delta.clear();
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 1.2, vec![]);
-        spy_text_position(&output, "10%");
+        spy_text_position(&output, "7%/mo");
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text.contains("Return after six months"))));
         let primitives = ctx.tessellate(output.shapes.clone(), output.pixels_per_point);
@@ -790,7 +920,7 @@ fn unavailable_spy_mission_explains_its_restriction_below_the_effect() {
 fn recall_and_flee_buttons_have_matching_dimensions() {
     let ctx = layout_context();
     for remaining in [None, Some(6), Some(1)] {
-        let mut sizes = None;
+        let mut buttons = None;
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -801,19 +931,49 @@ fn recall_and_flee_buttons_have_matching_dimensions() {
             },
             |ui| {
                 panel_style(ui, 1.0);
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let recall = spy_recall_button(ui, 1.0, remaining);
                     let flee = spy_flee_button(ui, 1.0);
                     assert_eq!(recall.enabled(), remaining.is_none());
-                    sizes = Some((recall.rect.size(), flee.rect.size()));
+                    buttons = Some((recall.rect, flee.rect));
                 });
             },
         );
-        let (recall, flee) = sizes.unwrap();
+        let (recall, flee) = buttons.unwrap();
+        let label = |name: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == name => {
+                        Some(text.pos.x + text.galley.size().x * 0.5)
+                    },
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let recall_label = remaining.map_or_else(
+            || "Recall".to_owned(),
+            |months| {
+                format!(
+                    "{months} {}",
+                    if months == 1 {
+                        "month"
+                    } else {
+                        "months"
+                    }
+                )
+            },
+        );
+        assert!(
+            ((label(&recall_label) - recall.center().x) - (label("Flee") - flee.center().x)).abs()
+                < 0.6,
+            "Both labels must use the same centered icon-and-text layout"
+        );
         output.textures_delta.clear();
-        assert_eq!(recall, flee);
-        assert_eq!(recall.x, 98.0);
-        assert!(recall.y >= 30.0);
+        assert_eq!(recall.size(), flee.size());
+        assert_eq!(recall.width(), 98.0);
+        assert!(recall.height() >= 30.0);
     }
 }
 
@@ -1025,7 +1185,7 @@ fn resource_hover_cards_open_over_the_drag_guard_and_stay_open_on_the_card() {
                 frame as f64 * 0.1,
                 position,
             );
-            let active = hover.resource.or_else(|| {
+            let active = hover.resource.or({
                 if hover.coin {
                     Some(3)
                 } else if hover.influence {
@@ -1354,7 +1514,7 @@ fn global_panel_headers_use_menu_art_and_senate_has_no_directory_tabs() {
     for (index, (tab, title)) in [
         (CampaignTab::Military, "Military"),
         (CampaignTab::Trade, "Trade"),
-        (CampaignTab::Senate, "Rome"),
+        (CampaignTab::Senate, "Senate"),
     ]
     .into_iter()
     .enumerate()
@@ -1739,7 +1899,7 @@ fn province_close_button_changes_color_on_hover_and_press() {
                             && circle.center.x > 550.0
                             && circle.center.y < 75.0 =>
                     {
-                        Some(circle.clone())
+                        Some(*circle)
                     },
                     _ => None,
                 })
@@ -1808,15 +1968,20 @@ fn province_tabs_offer_policies_only_to_the_direct_owner_and_trade_to_everyone_e
 }
 
 #[test]
-fn top_bar_draws_civic_power_before_resources_with_abbreviated_population() {
+fn top_bar_draws_civic_power_before_stock_limits_with_abbreviated_population() {
     let ctx = layout_context();
-    let (icons, _) = hover_card_textures(&ctx);
+    let icons = std::array::from_fn(|index| {
+        super::super::resource_hud::load_hud_resource_icon(&ctx, index)
+    });
     let mut resources = [HudResource {
         amount: 0.0,
         monthly_delta: 0.0,
     }; 7];
-    for (index, value) in [110.0, 220.0, 330.0, 440.0, 550.0, 1660.9].into_iter().enumerate() {
+    for (index, value) in [2400.0, 1600.0, 4000.0, 440.0, 550.0, 1660.9].into_iter().enumerate() {
         resources[index].amount = value;
+    }
+    for (resource, production) in resources.iter_mut().zip([718.0, 75.0, 6.0]) {
+        resource.monthly_delta = production;
     }
     let mut output = ctx.run_ui(
         egui::RawInput {
@@ -1827,16 +1992,23 @@ fn top_bar_draws_civic_power_before_resources_with_abbreviated_population() {
             ..Default::default()
         },
         |root| {
+            root.painter().rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 48.0)),
+                0.0,
+                egui::Color32::from_rgb(238, 234, 221),
+            );
             super::super::resource_hud::paint_hud_resources(
                 root.painter(),
                 egui::Pos2::ZERO,
                 1.0,
                 1200.0,
                 &resources,
+                Some(&[2300.0, 1600.0, 5000.0]),
                 &icons,
             );
         },
     );
+    capture::Capture::default().frame(&ctx, &output, "top-bar-stock-limits");
     output.textures_delta.clear();
     let left = |label: &str| {
         output
@@ -1848,8 +2020,98 @@ fn top_bar_draws_civic_power_before_resources_with_abbreviated_population() {
             })
             .unwrap_or_else(|| panic!("Missing top-bar value {label}"))
     };
-    let positions = ["550", "440", "110", "220", "330", "1.7k"].map(left);
+    let positions = ["550", "440", "2.4k / 2.3k", "1.6k / 1.6k", "4.0k / 5.0k", "1.7k"].map(left);
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    let icon_size = |index: usize| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == icons[index].id() => {
+                    Some(mesh.calc_bounds().size())
+                },
+                _ => None,
+            })
+            .expect("Resource icon should be painted")
+    };
+    for index in 0..5 {
+        assert_eq!(icon_size(index), egui::vec2(38.0, 38.0));
+    }
+    let civic_font = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "440" => {
+                Some(text.galley.job.sections[0].format.font_id.clone())
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(civic_font.size, 19.0);
+    for (index, label) in ["2.4k / 2.3k", "1.6k / 1.6k", "4.0k / 5.0k"].into_iter().enumerate() {
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            text.galley.job.sections[0].format.color,
+            super::super::resource_hud::hud_delta_color(if index <= 1 {
+                -1.0
+            } else {
+                0.0
+            }),
+        );
+        assert_eq!(
+            text.galley.job.sections.last().unwrap().format.color,
+            super::super::resource_hud::hud_delta_color(if index <= 1 {
+                -1.0
+            } else {
+                0.0
+            }),
+        );
+        assert_eq!(
+            text.galley.job.sections[0].format.font_id, civic_font,
+            "Stock and capacity must match the civic currency font size",
+        );
+        assert_eq!(text.galley.rows.len(), 1, "Stock and capacity must share one line");
+        assert!(text.galley.size().x <= HUD_STOCK_RESOURCE_WIDTH - 58.0);
+        let delta = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(delta)
+                    if delta.pos.y > text.pos.y
+                        && ((delta.pos.x + delta.galley.size().x)
+                            - (text.pos.x + text.galley.size().x))
+                            .abs()
+                            < 0.01 =>
+                {
+                    Some(delta)
+                },
+                _ => None,
+            })
+            .expect("Monthly change must be below the stock total");
+        assert_eq!(
+            delta.galley.job.text,
+            if index <= 1 {
+                "0"
+            } else {
+                "+6"
+            }
+        );
+        assert_eq!(
+            delta.galley.job.sections[0].format.color,
+            super::super::resource_hud::hud_delta_color(if index <= 1 {
+                0.0
+            } else {
+                6.0
+            }),
+        );
+    }
 }
 
 #[test]
@@ -1886,6 +2148,7 @@ fn top_bar_population_growth_and_icon_use_whole_numbers_and_fixed_size() {
                     1.0,
                     1200.0,
                     &resources,
+                    None,
                     &icons,
                 );
             },
@@ -1941,7 +2204,15 @@ fn provincial_income_tooltips_show_illustrated_contributors_without_formulas() {
         for building in [BuildingType::CityHall, BuildingType::UrbanMarket, BuildingType::Forum] {
             campaign.economy.provinces[0].buildings[building as usize] = 1;
         }
+        // Exercise configurable production contributions; current default
+        // buildings have no Metal production multiplier.
+        if name == "Metal" {
+            campaign.economy.config.buildings[BuildingType::Forum as usize].effects.production[1] =
+                0.15;
+        }
         if name == "Influence" {
+            // Use explicit rates with this fixture's small population counts.
+            campaign.economy.config.influence_per_noble = 0.25;
             campaign.economy.provinces[0].completed_wonder = Some(0);
             campaign
                 .economy
@@ -1951,6 +2222,9 @@ fn provincial_income_tooltips_show_illustrated_contributors_without_formulas() {
                 .find(|wonder| wonder.wonder_id == 0)
                 .unwrap()
                 .monthly_influence = 3.0;
+        }
+        if name == "Sestertius" {
+            campaign.economy.config.tax_rates = [0.0, 0.5, 0.2, 0.0];
         }
         let render = |time, pointer: Option<egui::Pos2>| {
             let mut output = ctx.run_ui(
@@ -2585,7 +2859,7 @@ fn all_hud_ledgers_fit_with_a_full_atlas_of_owned_provinces() {
         for (index, x) in hud_resource_positions().into_iter().enumerate() {
             let date_left = super::super::map_menu::map_resource_strip_right(screen, scale)
                 - MAP_DATE_SECTION_WIDTH;
-            if x + HUD_RESOURCE_WIDTH > date_left - HUD_RESOURCE_GROUP_PADDING {
+            if x + hud_resource_width(index) > date_left - HUD_RESOURCE_GROUP_PADDING {
                 continue;
             }
             let pointer = egui::pos2(x + 35.0, 22.0) * scale;
@@ -2617,6 +2891,10 @@ fn all_hud_ledgers_fit_with_a_full_atlas_of_owned_provinces() {
 /// Measure actual panel bodies without substituting implementation-shaped mock widgets.
 fn assert_body_fits(label: &str, width: f32, scale: f32, mut render: impl FnMut(&mut egui::Ui)) {
     let ctx = layout_context();
+    let mut capture = capture::Capture::default();
+    if std::env::var_os("AUGUSTUS_UI_CAPTURE").is_some() {
+        ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+    }
     let mut used_width: f32 = 0.0;
     let mut used_height: f32 = 0.0;
     // A second frame resolves font/layout cache and CollapsingHeader animation state.
@@ -2647,6 +2925,11 @@ fn assert_body_fits(label: &str, width: f32, scale: f32, mut render: impl FnMut(
                 },
             );
         });
+        capture.frame(
+            &ctx,
+            &output,
+            &format!("{}-{width:.0}-{scale:.2}", label.replace(' ', "-").to_lowercase()),
+        );
         // Headless layout intentionally has no GPU; acknowledge atlas/icon deltas.
         output.textures_delta.clear();
         assert!(!output.shapes.is_empty(), "{label}: empty output would not verify a real panel");
@@ -2697,6 +2980,210 @@ fn complete_panel_shell_bounds_long_headers_and_status_with_scrolled_content() {
                     assert!(outer.bottom() <= rect.bottom() + 1.0, "{tab:?}: frame/footer vertical overflow at {width}×{height}px: {outer:?}");
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn rome_panel_fits_its_art_ranks_chamber_and_legend_without_scrolling() {
+    for screen in [
+        egui::vec2(1600.0, 900.0),
+        egui::vec2(1280.0, 720.0),
+        egui::vec2(1024.0, 768.0),
+        egui::vec2(1920.0, 1080.0),
+    ] {
+        for players in [2, 4, 8] {
+            let ctx = layout_context();
+            ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+            let scale = viewport_ui_scale(screen);
+            let height = (PANEL_HEIGHT * scale).min((screen.y - 90.0 * scale).max(140.0));
+            let mut campaign = fixture();
+            campaign.actors = vec![PoliticalPlayer::default(); players];
+            campaign.profiles = vec![PoliticalProfile::default(); players];
+            let mut view = CampaignUi {
+                open: Some(CampaignTab::Senate),
+                ..Default::default()
+            };
+            let mut capture = capture::Capture::default();
+            for frame in 0..2 {
+                let (mut output, body, content_height) = rome_panel_frame(
+                    &ctx,
+                    &mut campaign,
+                    &mut view,
+                    screen,
+                    height,
+                    frame as f64,
+                    vec![],
+                );
+                if screen == egui::vec2(1600.0, 900.0) && players == 4 {
+                    capture.frame(&ctx, &output, "rome-panel-fit");
+                }
+                output.textures_delta.clear();
+                assert!(
+                    content_height <= body.height() + 1.0,
+                    "{players} players at {screen:?}: {content_height}px content in {}px body",
+                    body.height()
+                );
+                let legend: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.job.text.starts_with("Neutral (")
+                                || text.galley.job.text.starts_with("Player ") =>
+                        {
+                            Some(text.visual_bounding_rect())
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(legend.len(), players + 1);
+                assert!(
+                    legend.iter().all(|rect| body.expand(0.5).contains_rect(*rect)),
+                    "{players} players at {screen:?}: legend {legend:?} outside body {body:?}"
+                );
+            }
+        }
+    }
+}
+
+fn rome_panel_frame(
+    ctx: &egui::Context,
+    campaign: &mut Campaign,
+    view: &mut CampaignUi,
+    screen: egui::Vec2,
+    height: f32,
+    time: f64,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, egui::Rect, f32) {
+    let scale = viewport_ui_scale(screen);
+    let width = (PANEL_WIDTH * scale).min((screen.x - 80.0 * scale).max(120.0));
+    let panel = egui::Rect::from_min_size(egui::pos2(30.0, 30.0), egui::vec2(width, height));
+    let mut body = egui::Rect::NOTHING;
+    let mut content_height = 0.0;
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            time: Some(time),
+            events,
+            ..Default::default()
+        },
+        |root| {
+            root.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                panel_style(ui, scale);
+                panel_frame(scale).show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.set_height(height);
+                    panel_header(ui, "Senate", scale, &campaign.economy.provinces, 0, view, None);
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: (12.0 * scale).round() as i8,
+                            right: (12.0 * scale).round() as i8,
+                            top: 0,
+                            bottom: (12.0 * scale).round() as i8,
+                        })
+                        .show(ui, |ui| {
+                            let bottom = panel.bottom() - 12.0 * scale;
+                            body = egui::Rect::from_min_max(
+                                ui.next_widget_position(),
+                                egui::pos2(ui.max_rect().right(), bottom),
+                            );
+                            scroll_body(ui, bottom, "rome-panel-layout", |ui| {
+                                let top = ui.next_widget_position().y;
+                                campaign_politics::show(
+                                    ui,
+                                    &mut campaign.senate,
+                                    &mut campaign.actors,
+                                    &campaign.profiles,
+                                    &campaign.senate_config,
+                                    0,
+                                    &mut campaign.espionage,
+                                    &campaign.espionage_config,
+                                    &PLAYER_COLORS,
+                                );
+                                content_height = ui.min_rect().bottom() - top;
+                            });
+                        });
+                });
+            });
+        },
+    );
+    (output, body, content_height)
+}
+
+#[test]
+fn rome_art_scrolls_with_the_body_while_the_title_stays_fixed() {
+    let ctx = layout_context();
+    ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+    let mut campaign = fixture();
+    let mut view = CampaignUi {
+        open: Some(CampaignTab::Senate),
+        ..Default::default()
+    };
+    let screen = egui::vec2(1600.0, 900.0);
+    let art =
+        campaign_widgets::prepare_portrait(&ctx, campaign_widgets::ProvinceLandscape::RomeSenate);
+    let art_top = |output: &egui::FullOutput| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == art.id() => {
+                    Some(mesh.calc_bounds().top())
+                },
+                _ => None,
+            })
+            .expect("Rome portrait must be in the panel body")
+    };
+    let title_top = |output: &egui::FullOutput| {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Senate" => Some(text.pos.y),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (mut first, _, _) =
+        rome_panel_frame(&ctx, &mut campaign, &mut view, screen, 360.0, 0.0, vec![]);
+    first.textures_delta.clear();
+    let (mut before, body, content_height) =
+        rome_panel_frame(&ctx, &mut campaign, &mut view, screen, 360.0, 0.1, vec![]);
+    before.textures_delta.clear();
+    assert!(content_height > body.height());
+    let original_art_top = art_top(&before);
+    let original_title_top = title_top(&before);
+    for frame in 1..=6 {
+        let events = if frame == 1 {
+            vec![
+                egui::Event::PointerMoved(body.center()),
+                egui::Event::MouseWheel {
+                    phase: egui::TouchPhase::Move,
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -30.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        } else {
+            vec![]
+        };
+        let (mut after, _, _) = rome_panel_frame(
+            &ctx,
+            &mut campaign,
+            &mut view,
+            screen,
+            360.0,
+            0.1 + frame as f64 * 0.05,
+            events,
+        );
+        after.textures_delta.clear();
+        assert_eq!(title_top(&after), original_title_top);
+        if frame == 6 {
+            assert!(
+                art_top(&after) < original_art_top - 5.0,
+                "The artwork must move with the Senate content"
+            );
         }
     }
 }
@@ -2768,7 +3255,7 @@ fn full_control_diplomacy_shows_spy_and_political_actions() {
             "Relation",
             "Vassalize",
             "Integrate",
-            "Political distance ×1",
+            "Distance modifier ×1",
             "Build control",
             "Improve relations",
             "Uncover scandals",
@@ -3005,12 +3492,12 @@ fn own_diplomacy_shows_unboxed_player_rows_and_immediate_access_notices() {
             );
         }
         let mut previous_row = description.pos.y;
-        for player in 1..4 {
+        for (player, color) in colors.iter().enumerate().skip(1) {
             let text = texts
                 .iter()
                 .find(|text| text.galley.job.text == format!("Player {}", player + 1))
                 .unwrap();
-            assert_eq!(text.galley.job.sections[0].format.color, colors[player]);
+            assert_eq!(text.galley.job.sections[0].format.color, *color);
             assert!(
                 text.pos.x >= description.pos.x && text.pos.y > previous_row,
                 "Player names should form a readable vertical list"
@@ -3076,9 +3563,10 @@ fn senate_neutral_loyalty_and_consul_states_fit_desktop_and_compact_panels() {
 }
 
 #[test]
-fn rome_city_and_province_selection_open_senate_and_other_selections_stay_contextual() {
+fn rome_city_opens_senate_while_latium_opens_its_normal_province_panel() {
     let mut c = fixture();
-    c.economy.provinces[2].name = "Latium".into();
+    c.economy.provinces[2].name = "Rome".into();
+    c.economy.provinces[1].name = "Latium".into();
     c.politics[2] = ProvincePolitics::rome(2);
     let mut view = CampaignUi::default();
     for selected in [MapDetail::Province(2), MapDetail::City(2)] {
@@ -3087,11 +3575,241 @@ fn rome_city_and_province_selection_open_senate_and_other_selections_stay_contex
         assert_eq!(view.province, Some(2));
         assert_eq!(view.last_detail, Some(selected));
     }
+    view.select_map_detail(MapDetail::Province(1), &c);
+    assert_eq!(view.open, Some(CampaignTab::Province));
+    assert_eq!(view.province, Some(1));
     view.select_map_detail(MapDetail::Province(0), &c);
     assert_eq!(view.open, Some(CampaignTab::Province));
     assert_eq!(view.section, 0);
     view.select_map_detail(MapDetail::City(0), &c);
     assert_eq!(view.section, 0, "City selection must retain the remembered province tab");
+}
+
+#[test]
+fn selecting_an_owned_map_army_closes_the_province_inspector_and_retains_its_tab() {
+    let ctx = layout_context();
+    let mut view = CampaignUi::default();
+    view.open_province_section(1, 4);
+    let mut detail = ProvincePanelOpen(Some(MapDetail::Province(1)));
+    open_map_army(&ctx, &mut view, &mut detail, 0, ForceOwner::Player(0), None, 0);
+    assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
+    assert!(campaign_military::army_details_open(&ctx));
+    assert_eq!(view.open, None, "The map should not have two expanded inspectors");
+    assert_eq!(detail.0, None);
+    assert_eq!(view.last_detail, None, "A stale map detail must not reopen the province panel");
+    assert_eq!(view.section, 4, "Remember the province tab for later inspection");
+    open_map_army(&ctx, &mut view, &mut detail, 0, ForceOwner::Player(0), None, 0);
+    assert_eq!(
+        campaign_military::selected_army_province(&ctx),
+        None,
+        "Clicking the selected army again deselects it"
+    );
+}
+
+#[test]
+fn right_click_orders_replace_inspectors_from_each_province_tab_or_an_army_selection() {
+    let campaign = fixture();
+    for province_tab in (0..PROVINCE_SECTION_COUNT).map(Some).chain([None]) {
+        for prior_army in [false, true] {
+            let ctx = layout_context();
+            let mut view = CampaignUi::default();
+            let mut detail = ProvincePanelOpen::default();
+            let mut governance = GovernancePanelOpen(true);
+            if let Some(section) = province_tab {
+                if prior_army {
+                    campaign_military::open_army_panel(&ctx, 1, 0, None);
+                } else {
+                    campaign_military::open_battle_panel(&ctx, 42, 0);
+                }
+                view.open_province_section(0, section);
+                view.province_selector_open = true;
+                detail.0 = Some(MapDetail::Province(0));
+            } else {
+                campaign_military::open_army_panel(&ctx, 0, 0, None);
+            }
+            view.notice = "Previous action".into();
+            view.confirmation = campaign_confirmation::PendingConfirmation::new(
+                &campaign,
+                0,
+                0,
+                ConfirmationAction::DisbandArmy,
+            );
+            let mut destination = crate::map::take_province_order_click(&ctx).unwrap_or_default();
+            destination.province = 2;
+            destination.position = egui::pos2(300., 250.);
+            ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new("map-province-order-click"), destination);
+            });
+            assert!(prepare_map_orders(
+                &ctx,
+                &campaign.military,
+                &campaign.economy,
+                0,
+                &mut view,
+                &mut detail,
+                &mut governance,
+            ));
+            assert_eq!(view.open, None);
+            assert_eq!(detail.0, None);
+            assert_eq!(view.last_detail, None);
+            assert!(!view.province_selector_open);
+            assert!(!governance.0);
+            assert!(view.notice.is_empty());
+            assert!(!view.confirmation_open());
+            assert!(!campaign_military::army_details_open(&ctx));
+            assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
+            assert_eq!(
+                ctx.data(|data| data
+                    .get_temp::<(usize, Option<usize>)>(egui::Id::new("map-army-order-selection"))),
+                Some((0, Some(2))),
+                "The visible selection supplies the origin, even with a previous army selection"
+            );
+            assert_eq!(
+                ctx.data(|data| data
+                    .get_temp::<(u64, usize)>(egui::Id::new("campaign-battle-inspection"))),
+                None,
+            );
+            assert!(
+                !prepare_map_orders(
+                    &ctx,
+                    &campaign.military,
+                    &campaign.economy,
+                    0,
+                    &mut view,
+                    &mut detail,
+                    &mut governance,
+                ),
+                "The right-click is consumed once"
+            );
+            if let Some(section) = province_tab {
+                assert_eq!(view.section, section, "Remember the province tab after sending");
+            }
+        }
+    }
+}
+
+#[test]
+fn right_click_orders_allow_foreign_stationing_and_ignore_empty_selections() {
+    for (province, foreign_units, empty_origin) in
+        [(1, false, false), (1, true, false), (0, false, true)]
+    {
+        let mut campaign = fixture();
+        if foreign_units {
+            campaign.military.seed_unit(1, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+        }
+        if empty_origin {
+            campaign.military.provinces[0].forces.remove(&ForceOwner::Player(0));
+        }
+        let ctx = layout_context();
+        campaign_military::open_army_panel(&ctx, 0, 0, None);
+        let mut view = CampaignUi::default();
+        view.open_province_section(province, 3);
+        view.province_selector_open = true;
+        view.notice = "Previous action".into();
+        let mut detail = ProvincePanelOpen(Some(MapDetail::Province(province)));
+        let mut governance = GovernancePanelOpen(true);
+        let mut destination = crate::map::take_province_order_click(&ctx).unwrap_or_default();
+        destination.province = 2;
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("map-province-order-click"), destination);
+        });
+        let opened = prepare_map_orders(
+            &ctx,
+            &campaign.military,
+            &campaign.economy,
+            0,
+            &mut view,
+            &mut detail,
+            &mut governance,
+        );
+        assert_eq!(opened, foreign_units);
+        if foreign_units {
+            assert_eq!(view.open, None);
+            assert_eq!(detail.0, None);
+            assert!(!governance.0);
+            assert!(view.notice.is_empty());
+            assert_eq!(campaign_military::selected_army_province(&ctx), Some(1));
+            assert_eq!(
+                ctx.data(|data| data
+                    .get_temp::<(usize, Option<usize>)>(egui::Id::new("map-army-order-selection"))),
+                Some((1, Some(2)))
+            );
+            continue;
+        }
+        assert_eq!(view.open, Some(CampaignTab::Province));
+        assert_eq!(view.province, Some(province));
+        assert_eq!(view.last_detail, Some(MapDetail::Province(province)));
+        assert_eq!(detail.0, view.last_detail);
+        assert!(view.province_selector_open);
+        assert!(governance.0);
+        assert_eq!(view.notice, "Previous action");
+        assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
+        assert!(crate::map::take_province_order_click(&ctx).is_none());
+        assert_eq!(
+            ctx.data(|data| data
+                .get_temp::<(usize, Option<usize>)>(egui::Id::new("map-army-order-selection"))),
+            Some((0, None)),
+            "An ignored click must not highlight a destination for the previous army"
+        );
+    }
+}
+
+#[test]
+fn right_click_without_a_selection_does_not_use_a_remembered_province() {
+    let campaign = fixture();
+    let ctx = layout_context();
+    let mut view = CampaignUi {
+        province: Some(0),
+        ..Default::default()
+    };
+    let mut detail = ProvincePanelOpen::default();
+    let mut governance = GovernancePanelOpen(false);
+    let mut destination = crate::map::take_province_order_click(&ctx).unwrap_or_default();
+    destination.province = 2;
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new("map-province-order-click"), destination);
+    });
+    assert!(!prepare_map_orders(
+        &ctx,
+        &campaign.military,
+        &campaign.economy,
+        0,
+        &mut view,
+        &mut detail,
+        &mut governance,
+    ));
+    assert_eq!(campaign_military::selected_army_province(&ctx), None);
+    assert_eq!(
+        ctx.data(|data| data
+            .get_temp::<(usize, Option<usize>)>(egui::Id::new("map-army-order-selection"))),
+        None,
+    );
+}
+
+#[test]
+fn selecting_a_map_battle_replaces_province_and_military_inspectors() {
+    for tab in [CampaignTab::Province, CampaignTab::Military] {
+        let ctx = layout_context();
+        let mut view = CampaignUi::default();
+        view.open_province_section(1, 4);
+        view.open = Some(tab);
+        let mut detail = ProvincePanelOpen(Some(MapDetail::Province(1)));
+        campaign_military::open_army_panel(&ctx, 0, 0, None);
+        assert!(campaign_military::army_details_open(&ctx));
+        open_map_battle(&ctx, &mut view, &mut detail, 42, 0);
+        assert_eq!(view.open, None);
+        assert_eq!(detail.0, None);
+        assert_eq!(view.last_detail, None);
+        assert_eq!(view.section, 4, "Remember the province tab after closing");
+        assert_eq!(campaign_military::selected_army_province(&ctx), None);
+        assert!(!campaign_military::army_details_open(&ctx));
+        assert_eq!(
+            ctx.data(
+                |data| data.get_temp::<(u64, usize)>(egui::Id::new("campaign-battle-inspection"))
+            ),
+            Some((42, 0))
+        );
+    }
 }
 
 #[test]
@@ -3105,7 +3823,7 @@ fn province_selection_remembers_each_tab_across_map_changes_and_reopening() {
             view.select_map_detail(selected, &campaign);
             assert_eq!(view.section, section);
         }
-        assert_eq!(view.open, Some(CampaignTab::Senate));
+        assert_eq!(view.open, Some(CampaignTab::Province));
         view.open = None;
         view.select_map_detail(MapDetail::Province(4), &campaign);
         assert_eq!(view.open, Some(CampaignTab::Province));
@@ -3148,6 +3866,8 @@ fn national_trade_routes_composer_and_market_fit_compact_widths() {
     for (width, scale) in [(546.0, 1.0), (380.0, 0.85), (380.0, 1.0)] {
         for page in 0..3 {
             let mut campaign = fixture();
+            // Leave room for a live purchase quote and its full delivery preview.
+            campaign.economy.players[0].resources = [100.0; 3];
             let agreement = |party| {
                 TradeAgreement::new(
                     TradeParty::Player(0),
@@ -3180,11 +3900,201 @@ fn national_trade_routes_composer_and_market_fit_compact_widths() {
 #[test]
 fn province_trade_composer_fits_and_targets_the_selected_owner_or_npc() {
     for (width, scale) in [(546.0, 1.0), (380.0, 0.85), (380.0, 1.0)] {
-        for province in 1..5 {
+        for (province, active) in (1..5).flat_map(|province| [(province, false), (province, true)])
+        {
             let mut campaign = fixture();
-            assert_body_fits(&format!("Province trade {province}"), width, scale, |ui| {
-                campaign_trade::show_province(ui, &mut campaign, province, 0, scale);
-            });
+            if active {
+                use crate::game::economy::{
+                    TradeAgreement, TradeBundle, TradeFrequency, TradeStatus,
+                };
+                let partner = campaign.economy.provinces[province]
+                    .owner
+                    .map_or(TradeParty::Npc(province), TradeParty::Player);
+                let mut trade = TradeAgreement::new(
+                    TradeParty::Player(0),
+                    partner,
+                    TradeBundle {
+                        coin: 5.0,
+                        ..Default::default()
+                    },
+                    TradeBundle {
+                        resources: [0.0, 1.0, 0.0],
+                        ..Default::default()
+                    },
+                    TradeFrequency::Monthly,
+                );
+                trade.status = TradeStatus::Active;
+                campaign.economy.trades.push(trade);
+            }
+            assert_body_fits(
+                &format!("Province trade {province} active {active}"),
+                width,
+                scale,
+                |ui| {
+                    campaign_trade::show_province(ui, &mut campaign, province, 0, scale);
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn province_portraits_share_the_same_gap_before_cards_and_section_titles() {
+    for (screen, width) in [(egui::vec2(1600.0, 900.0), 570.0), (egui::vec2(1156.0, 650.25), 380.0)]
+    {
+        let scale = super::super::viewport_ui_scale(screen);
+        for (section, construction) in (0..5).map(|section| (section, false)).chain([(2, true)]) {
+            let ctx = layout_context();
+            ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+            let mut campaign = fixture();
+            if construction {
+                campaign
+                    .economy
+                    .start_building(0, 0, crate::game::economy::BuildingType::Granary)
+                    .unwrap();
+            }
+            let province = if section == 1 || section == 4 {
+                1
+            } else {
+                0
+            };
+            let mut view = CampaignUi {
+                open: Some(CampaignTab::Province),
+                province: Some(province),
+                section,
+                ..Default::default()
+            };
+            let panel =
+                egui::Rect::from_min_size(egui::pos2(30.0, 30.0), egui::vec2(width, 1000.0));
+            let mut capture = capture::Capture::default();
+            for frame in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |root| {
+                        root.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                            panel_style(ui, scale);
+                            panel_frame(scale).show(ui, |ui| {
+                                ui.set_width(width);
+                                let (_, overview_portrait) = panel_header(
+                                    ui,
+                                    "Italia",
+                                    scale,
+                                    &campaign.economy.provinces,
+                                    0,
+                                    &mut view,
+                                    None,
+                                );
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin {
+                                        left: (12.0 * scale).round() as i8,
+                                        right: (12.0 * scale).round() as i8,
+                                        top: 0,
+                                        bottom: 0,
+                                    })
+                                    .show(ui, |ui| match section {
+                                        0 => {
+                                            province_overview_body(
+                                                ui,
+                                                panel.bottom(),
+                                                &campaign,
+                                                province,
+                                                0,
+                                                scale,
+                                                overview_portrait,
+                                            );
+                                        },
+                                        1 => {
+                                            campaign_trade::show_province(
+                                                ui,
+                                                &mut campaign,
+                                                province,
+                                                0,
+                                                scale,
+                                            );
+                                        },
+                                        2 => {
+                                            province_buildings_body(
+                                                ui,
+                                                panel.bottom(),
+                                                &mut campaign,
+                                                province,
+                                                0,
+                                                scale,
+                                                &mut view,
+                                            );
+                                        },
+                                        3 => {
+                                            campaign_military::show(
+                                                ui,
+                                                &campaign.military,
+                                                &campaign.economy,
+                                                &campaign.graph,
+                                                province,
+                                                0,
+                                                |_| true,
+                                                |_| None,
+                                                |_, _| MilitaryAccess::Peaceful,
+                                                |_, _| false,
+                                            );
+                                        },
+                                        _ => {
+                                            diplomacy(
+                                                ui,
+                                                &mut campaign,
+                                                province,
+                                                0,
+                                                &[PLAYER_COLORS[0], PLAYER_COLORS[1]],
+                                                &mut view,
+                                            );
+                                        },
+                                    });
+                            });
+                        });
+                    },
+                );
+                capture.frame(&ctx, &output, &format!("province-portrait-gap-{section}-{width}"));
+                if frame == 1 {
+                    let image = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Mesh(mesh) => {
+                                let rect = mesh.calc_bounds();
+                                ((rect.height() - 76.0 * scale).abs() < 1.0
+                                    && rect.width() > width - 30.0)
+                                    .then_some(rect)
+                            },
+                            _ => None,
+                        })
+                        .expect("Province banner must be rendered");
+                    let top = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if rect.rect.top() >= image.bottom() - 0.1
+                                    && (rect.fill == province_panel::TABLE_STRIPE
+                                        || rect.fill == egui::Color32::from_rgb(73, 69, 61)) =>
+                            {
+                                Some(rect.rect.top())
+                            },
+                            _ => None,
+                        })
+                        .min_by(f32::total_cmp)
+                        .expect("Cards or a section header must follow the image");
+                    assert!(
+                        (top - image.bottom() - 8.0 * scale).abs() < 1.0,
+                        "Section {section} at {width}px: visible gap {} should be {}",
+                        top - image.bottom(),
+                        8.0 * scale
+                    );
+                }
+                output.textures_delta.clear();
+            }
         }
     }
 }
@@ -3430,7 +4340,7 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
                                     .show(ui, |ui| {
                                         ui.set_width(width);
                                         ui.set_min_height(height);
-                                        panel_header(
+                                        let (_, overview_portrait) = panel_header(
                                             ui,
                                             &campaign.economy.provinces[province].name,
                                             scale,
@@ -3454,6 +4364,7 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
                                                     province,
                                                     0,
                                                     scale,
+                                                    overview_portrait,
                                                 );
                                                 body = ui.min_rect();
                                             });
@@ -3645,8 +4556,8 @@ fn campaign_symbols_use_transparent_art_without_circle_frames() {
     let images: Vec<_> = output
         .textures_delta
         .set
-        .iter()
-        .flat_map(|(_, deltas)| deltas.iter())
+        .values()
+        .flat_map(|deltas| deltas.iter())
         .filter_map(|delta| {
             let egui::ImageData::Color(image) = &delta.image;
             (image.size == [64, 64]).then_some(image)
@@ -3665,11 +4576,12 @@ fn campaign_symbols_use_transparent_art_without_circle_frames() {
 #[test]
 fn province_policy_choices_apply_only_for_the_direct_owner() {
     use crate::game::economy::ResourceFocus;
-    for owner in [0, 1] {
+    for (owner, occupied) in [(0, false), (1, false), (0, true)] {
         let ctx = layout_context();
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         let mut campaign = fixture();
         campaign.economy.provinces[0].owner = Some(owner);
+        campaign.economy.provinces[0].occupied = occupied;
         let mut render = |time, events| {
             ctx.run_ui(
                 egui::RawInput {
@@ -3719,10 +4631,9 @@ fn province_policy_choices_apply_only_for_the_direct_owner() {
             );
             output.textures_delta.clear();
         }
-        drop(render);
         assert_eq!(
             campaign.economy.provinces[0].policies.focus,
-            if owner == 0 {
+            if owner == 0 && !occupied {
                 ResourceFocus::Food
             } else {
                 ResourceFocus::Balanced
@@ -3823,7 +4734,6 @@ fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_own
                 );
             }
         }
-        drop(render);
         let policies = campaign.economy.provinces[0].policies;
         if owner == 0 {
             assert_eq!(policies.focus, ResourceFocus::Balanced);
@@ -4191,6 +5101,141 @@ fn overview_meters_follow_live_control_relation_and_ownership() {
         }
         assert!(!labels.contains(&"Your province") && !labels.contains(&"Domestic province"));
         output.textures_delta.clear();
+    }
+}
+
+#[test]
+fn control_actions_keep_their_size_and_own_their_hover_feedback() {
+    for (width, scale, labeled) in [(570.0, 1.0, true), (240.0, 1.0, false), (240.0, 0.75, false)] {
+        let ctx = layout_context();
+        ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+        campaign_widgets::configure_cursor(&ctx);
+        let mut politics = ProvincePolitics::independent(2);
+        politics.state = PoliticalState::Independent {
+            local: 0.0,
+            shares: vec![100.0, 0.0],
+        };
+        let mut time = 0.0;
+        let mut capture = capture::Capture::default();
+        let mut render = |events: Vec<egui::Event>| {
+            // Advance tooltip waits while keeping press/release inside egui's click timeout.
+            time += if events.iter().any(|event| matches!(event, egui::Event::PointerButton { .. }))
+            {
+                0.1
+            } else {
+                1.0
+            };
+            let mut requested = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 300.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        ui.allocate_ui(egui::vec2(width * scale, 260.0), |ui| {
+                            panel_style(ui, scale);
+                            requested = overview_politics(ui, &politics, 0, scale, 60.0);
+                        });
+                    });
+                },
+            );
+            capture.frame(&ctx, &output, &format!("control-actions-{width}-{scale}"));
+            output.textures_delta.clear();
+            (output, requested)
+        };
+        let button_rects = |output: &egui::FullOutput| {
+            let mut rects: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.stroke == egui::Stroke::new(scale, province_panel::RULE)
+                            && (rect.rect.height() - 22.0 * scale).abs() < 0.1 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .collect();
+            rects.sort_by(|a, b| a.left().total_cmp(&b.left()));
+            rects
+        };
+        let has_text =
+            |output: &egui::FullOutput, needle: &str| {
+                output.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(needle)
+            ))
+            };
+        render(vec![]);
+        let (normal, _) = render(vec![]);
+        let buttons = button_rects(&normal);
+        assert_eq!(buttons.len(), 2);
+        for label in ["Vassalize", "Integrate"] {
+            assert_eq!(has_text(&normal, label), labeled);
+        }
+        if !labeled {
+            for button in &buttons {
+                assert_eq!(button.size(), egui::vec2(22.0, 22.0) * scale);
+            }
+        }
+        let control_title = normal
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Control" => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                },
+                _ => None,
+            })
+            .unwrap();
+        render(vec![egui::Event::PointerMoved(control_title)]);
+        render(vec![]);
+        render(vec![]);
+        let (control_hover, _) = render(vec![]);
+        assert!(has_text(&control_hover, "Your political power over this province"));
+        for (button, (action, label)) in buttons.iter().zip([
+            (ConfirmationAction::Vassalize, "Vassalize"),
+            (ConfirmationAction::Integrate, "Integrate"),
+        ]) {
+            let position = button.center();
+            render(vec![egui::Event::PointerMoved(position)]);
+            render(vec![]);
+            render(vec![]);
+            let (hover, _) = render(vec![]);
+            assert_eq!(
+                button_rects(&hover),
+                buttons,
+                "Hover must not move or resize either button"
+            );
+            assert_eq!(hover.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+            assert!(has_text(&hover, &format!("{label} this province.")));
+            assert!(!has_text(&hover, "Your political power over this province"));
+            for pressed in [true, false] {
+                let (output, requested) = render(vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert_eq!(button_rects(&output), buttons, "Press must retain the button size");
+                assert_eq!(
+                    requested.map(|action| std::mem::discriminant(&action)),
+                    (!pressed).then_some(std::mem::discriminant(&action))
+                );
+            }
+        }
+        render(vec![egui::Event::PointerMoved(control_title)]);
+        render(vec![]);
+        render(vec![]);
+        let (control_hover, _) = render(vec![]);
+        assert_eq!(control_hover.platform_output.cursor_icon, egui::CursorIcon::Default);
+        assert!(has_text(&control_hover, "Your political power over this province"));
     }
 }
 

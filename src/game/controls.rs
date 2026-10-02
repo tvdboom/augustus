@@ -144,6 +144,7 @@ pub(super) fn apply_practice_boost(
     ownership: &mut ProvinceOwnership,
 ) {
     if campaign.active {
+        let player_count = campaign.economy.players.len();
         let Some(wallet) = campaign.economy.players.get_mut(player) else {
             return;
         };
@@ -154,6 +155,17 @@ pub(super) fn apply_practice_boost(
         }
         wallet.coin += 5_000.0;
         wallet.influence += 1_000.0;
+        if let Some(actor) = campaign.actors.get_mut(player) {
+            if let Some(requirement) = campaign.senate_config.requirements(actor.rank, player_count)
+            {
+                wallet.influence = wallet.influence.max(requirement.influence);
+                campaign.senate.grant_practice_support(player, requirement.senators);
+                actor.promoted_at = None;
+                if requirement.rank == crate::game::politics::PoliticalRank::Consul {
+                    actor.consul_again_at = campaign.senate.month;
+                }
+            }
+        }
         let owner = crate::game::military::ForceOwner::Player(player);
         if let Some(requirements) =
             crate::game::military::MilitaryRank::Imperator.promotion_requirements()
@@ -163,10 +175,18 @@ pub(super) fn apply_practice_boost(
             let victories = campaign.military.victories.entry(owner).or_default();
             *victories = (*victories).max(requirements.victories);
         }
-        for province in &mut campaign.economy.provinces {
+        for (id, province) in campaign.economy.provinces.iter_mut().enumerate() {
             if province.owner == Some(player) {
                 for population in &mut province.population {
                     *population *= 10.0;
+                }
+                for kind in crate::game::military::UnitType::ALL {
+                    for _ in 0..3 {
+                        campaign
+                            .military
+                            .seed_unit(id, owner, kind)
+                            .expect("owned campaign provinces have military state");
+                    }
                 }
             }
         }

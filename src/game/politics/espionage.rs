@@ -11,7 +11,7 @@ pub struct EspionageConfig {
     pub deployment_influence: [f64; 6],
     /// Coin maintenance paid before each detection check.
     pub monthly_coin: f64,
-    /// Detection chance with zero and fully happy Nobles.
+    /// Monthly detection chance with zero and fully happy Nobles.
     pub detection_range: [f64; 2],
     /// Months an orderly recall remains deployed.
     pub recall_months: u32,
@@ -37,7 +37,7 @@ impl Default for EspionageConfig {
         Self {
             deployment_influence: [10.0, 5.0, 15.0, 20.0, 20.0, 20.0],
             monthly_coin: 5.0,
-            detection_range: [0.02, 0.10],
+            detection_range: [0.01, 0.07],
             recall_months: 6,
             npc_detection_relation_loss: 10.0,
             evidence_lifetime: 24,
@@ -188,9 +188,8 @@ impl ScandalKind {
             | Self::Famine
             | Self::MassStarvation
             | Self::HarshLabor
-            | Self::CitizenAbuse
-            | Self::UnhappyCitizens
-            | Self::UnhappyPlebeians => (3, Some(2)),
+            | Self::CitizenAbuse => (3, Some(2)),
+            Self::UnhappyCitizens | Self::UnhappyPlebeians => (3, None),
             Self::HighTribute | Self::HostileOccupation => (2, Some(3)),
             Self::PoliticalBribery
             | Self::NobleBribery
@@ -230,7 +229,7 @@ impl ScandalKind {
                 [0.03, 0.10, 0.04, 0.08, 0.01]
             },
             Self::EliteFeud => [0.12, 0.03, 0.02, 0.02, 0.01],
-            Self::UnhappyCitizens | Self::UnhappyPlebeians => [0.02, 0.03, 0.06, 0.12, 0.02],
+            Self::UnhappyCitizens | Self::UnhappyPlebeians => [0.02, 0.03, 0.0, 0.12, 0.02],
         };
         base.map(|effect| effect * severity.multiplier())
     }

@@ -200,6 +200,8 @@ pub struct EconomicProvince {
     pub has_city: bool,
     /// Current direct player owner; absent for independent/vassal NPCs.
     pub owner: Option<usize>,
+    /// Enemy military occupation blocks administration and provincial trade without changing ownership.
+    pub occupied: bool,
     /// Current NPC overlord, if any. Does not receive direct province output.
     pub overlord: Option<usize>,
     /// View of each player, synchronized from the political subsystem.
@@ -271,6 +273,7 @@ impl EconomicProvince {
             terrain,
             has_city,
             owner: None,
+            occupied: false,
             overlord: None,
             relation_by_player: vec![50.0; player_count],
             trade_ratio_by_player: vec![1.0; player_count],
@@ -298,6 +301,11 @@ impl EconomicProvince {
     /// Total aggregate population, including construction-assigned slaves.
     pub fn total_population(&self) -> f64 {
         self.population.iter().sum()
+    }
+
+    /// Only the direct owner of an unoccupied province can administer it.
+    pub fn can_administer(&self, player: usize) -> bool {
+        self.owner == Some(player) && !self.occupied
     }
 
     /// Current completed building level.

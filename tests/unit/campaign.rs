@@ -183,7 +183,7 @@ fn surviving_spy_control_resolves_in_the_same_campaign_month() {
 #[test]
 fn rome_starts_protected_with_fifty_supplied_cohorts_and_rejects_provincial_actions() {
     let mut c = atlas_campaign();
-    let rome = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
+    let rome = c.rome_location().unwrap();
     assert_eq!(c.politics[rome].state, PoliticalState::Rome);
     assert_eq!(c.economy.provinces[rome].owner, None);
     assert_eq!(c.access_snapshot()[0][rome], MilitaryAccess::Blocked);
@@ -252,7 +252,7 @@ fn rome_starts_protected_with_fifty_supplied_cohorts_and_rejects_provincial_acti
 #[test]
 fn unguarded_rome_requires_hostility_and_presence_then_wins_immediately() {
     let mut c = atlas_campaign();
-    let rome = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
+    let rome = c.rome_location().unwrap();
     c.military.provinces[rome].forces.clear();
     c.military.seed_unit(rome, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
     c.begin_encounter(rome, ForceOwner::Player(0), None);
@@ -264,6 +264,124 @@ fn unguarded_rome_requires_hostility_and_presence_then_wins_immediately() {
     let month = c.economy.month;
     c.advance_month();
     assert_eq!(c.economy.month, month);
+}
+
+#[test]
+fn latium_is_a_normal_rural_province_with_trade_and_two_local_cohorts() {
+    let mut c = atlas_campaign();
+    let latium = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
+    let etruria = c.economy.provinces.iter().position(|p| p.name == "Etruria").unwrap();
+    let rome = c.rome_location().unwrap();
+    assert_ne!(latium, rome);
+    assert!(!c.economy.provinces[latium].has_city);
+    assert!(matches!(c.politics[latium].state, PoliticalState::Independent { .. }));
+    let defenders = &c.military.provinces[latium].forces[&ForceOwner::Local(latium)];
+    assert_eq!(
+        defenders.iter().map(|u| u.unit_type).collect::<Vec<_>>(),
+        vec![UnitType::LightInfantry, UnitType::Archers]
+    );
+    assert!(c.inputs().npc_army_food[latium] > 0.0);
+    assert_eq!(c.economy.provinces[rome].population, [0.0; 4]);
+    assert!(c.economy.adjacency[rome].is_empty());
+    assert!(!c.economy.adjacency[latium].contains(&rome));
+    c.politics[etruria] = ProvincePolitics::owned(2, 0);
+    c.reconcile_provinces();
+    let offer = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(latium),
+        TradeBundle {
+            coin: 100.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        TradeFrequency::OneTime,
+    );
+    assert!(c.economy.quote_trade(&offer, &c.inputs()).is_ok());
+    let influence = c.actors[0].influence;
+    assert!(c.politics[latium]
+        .improve_relation(
+            0,
+            &mut c.actors[0],
+            crate::game::politics::Currency::Influence,
+            1.0,
+            Some(1),
+            &c.diplomacy_config
+        )
+        .is_ok());
+    assert!(c.actors[0].influence < influence);
+}
+
+#[test]
+fn rome_can_be_attacked_only_from_its_three_approaches_and_fights_on_arrival() {
+    for name in ROME_APPROACHES {
+        let mut c = atlas_campaign();
+        let rome = c.rome_location().unwrap();
+        let approach = c.economy.provinces.iter().position(|p| p.name == name).unwrap();
+        let mut names: Vec<_> = c.graph[rome]
+            .neighbors
+            .iter()
+            .map(|&id| c.economy.provinces[id].name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["Etruria", "Latium", "Samnium"]);
+        let unit =
+            c.military.seed_unit(approach, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+        for kind in [ArmyOrderKind::Move, ArmyOrderKind::Pressure] {
+            assert!(c
+                .order_army(approach, 0, rome, &[unit], &[rome], BattlePlan::default(), kind)
+                .is_err());
+        }
+        assert!(!c.npc_wars[0][rome]);
+        c.order_army(
+            approach,
+            0,
+            rome,
+            &[unit],
+            &[rome],
+            BattlePlan::default(),
+            ArmyOrderKind::Attack,
+        )
+        .unwrap();
+        assert!(c.npc_wars[0][rome]);
+        assert!(!c.npc_wars[0][approach]);
+        assert!(c.military.battles.is_empty());
+        let travel = c.military.movements[0].required_progress.ceil() as usize;
+        for _ in 0..travel {
+            c.advance_live_month();
+        }
+        let battle = c.military.battles.iter().find(|b| b.province == rome).unwrap();
+        assert_eq!(battle.attackers.units[0].id, unit);
+        assert_eq!(battle.defenders.units.len(), 50);
+        assert!(battle.defenders.units.iter().all(|u| u.owner == ForceOwner::Local(rome)));
+        assert_eq!(c.senate.winner, None);
+    }
+    let mut c = atlas_campaign();
+    let rome = c.rome_location().unwrap();
+    let outside = c.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    let approach = c.graph[rome].neighbors[0];
+    let unit =
+        c.military.seed_unit(outside, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
+    for route in [vec![rome], vec![approach, rome]] {
+        assert!(c
+            .order_army(
+                outside,
+                0,
+                rome,
+                &[unit],
+                &route,
+                BattlePlan::default(),
+                ArmyOrderKind::Attack
+            )
+            .is_err());
+        assert!(!c.npc_wars[0][rome]);
+        assert!(c.military.movements.is_empty());
+        assert!(c.military.provinces[outside].forces[&ForceOwner::Player(0)]
+            .iter()
+            .any(|u| u.id == unit));
+    }
 }
 
 #[test]
@@ -590,10 +708,138 @@ fn blackmail_trade_multiplier_is_private_and_expires_in_economy_projection() {
 }
 
 #[test]
+fn provincials_ignore_population_happiness_while_populares_respond_to_it() {
+    use crate::game::politics::senate::Bloc;
+
+    let mut campaign = atlas_campaign();
+    for province in campaign.economy.provinces.iter_mut().filter(|p| p.owner == Some(0)) {
+        province.population = [1000.0, 100.0, 100.0, 100.0];
+        province.happiness = [0.0; 4];
+    }
+    let monthly_support = |campaign: &Campaign, bloc| {
+        campaign
+            .senate
+            .reasons(0, bloc, &campaign.actors[0], &campaign.profiles[0], &campaign.senate_config)
+            .iter()
+            .map(|reason| reason.points)
+            .sum::<f64>()
+    };
+    campaign.refresh_profiles();
+    assert_eq!(monthly_support(&campaign, Bloc::Provincials), 0.0);
+    let unhappy_populares = monthly_support(&campaign, Bloc::Populares);
+    assert!(unhappy_populares < 0.0);
+
+    for province in campaign.economy.provinces.iter_mut().filter(|p| p.owner == Some(0)) {
+        province.population[0] = 1_000_000.0;
+        province.happiness = [100.0; 4];
+    }
+    campaign.refresh_profiles();
+    assert_eq!(monthly_support(&campaign, Bloc::Provincials), 0.0);
+    assert!(monthly_support(&campaign, Bloc::Populares) > unhappy_populares);
+    assert!(monthly_support(&campaign, Bloc::Populares) > 0.0);
+}
+
+#[test]
+fn provincials_follow_vassal_count_foreign_relations_and_rural_trade() {
+    use crate::game::politics::senate::Bloc;
+
+    let mut campaign = atlas_campaign();
+    let npcs: Vec<_> = campaign
+        .politics
+        .iter()
+        .enumerate()
+        .filter_map(|(id, p)| matches!(p.state, PoliticalState::Independent { .. }).then_some(id))
+        .take(3)
+        .collect();
+    for province in &mut campaign.politics {
+        province.relations[0] = if matches!(
+            province.state,
+            PoliticalState::Rome
+                | PoliticalState::Owned {
+                    owner: 0
+                }
+        ) {
+            0.0
+        } else {
+            50.0
+        };
+    }
+    let monthly_support = |campaign: &Campaign| {
+        campaign
+            .senate
+            .reasons(
+                0,
+                Bloc::Provincials,
+                &campaign.actors[0],
+                &campaign.profiles[0],
+                &campaign.senate_config,
+            )
+            .iter()
+            .map(|reason| reason.points)
+            .sum::<f64>()
+    };
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].province_relation, 50.0);
+    assert_eq!(monthly_support(&campaign), 0.0);
+
+    for (count, &province) in npcs[..2].iter().enumerate() {
+        let before = monthly_support(&campaign);
+        campaign.politics[province].state = PoliticalState::Vassal {
+            overlord: 0,
+            control: 60.0,
+            tribute: Tribute::Normal,
+        };
+        campaign.refresh_profiles();
+        assert_eq!(campaign.profiles[0].vassal_count, (count + 1) as f64);
+        assert!(monthly_support(&campaign) > before);
+    }
+    let before_relations = monthly_support(&campaign);
+    campaign.politics[npcs[2]].change_relation(0, 40.0);
+    campaign.refresh_profiles();
+    assert!(campaign.profiles[0].province_relation > 50.0);
+    assert!(monthly_support(&campaign) > before_relations);
+    campaign.politics[npcs[2]].state = PoliticalState::Vassal {
+        overlord: 1,
+        control: 60.0,
+        tribute: Tribute::Normal,
+    };
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].vassal_count, 2.0);
+
+    for (&province, value, city) in [(&npcs[0], 40.0, false), (&npcs[1], 400.0, true)] {
+        campaign.economy.provinces[province].has_city = city;
+        let mut trade = TradeAgreement::new(
+            TradeParty::Player(0),
+            TradeParty::Npc(province),
+            TradeBundle::default(),
+            TradeBundle::default(),
+            TradeFrequency::Monthly,
+        );
+        trade.status = TradeStatus::Active;
+        trade.last_executed_month = Some(campaign.economy.month);
+        trade.last_delivered_value = value;
+        trade.last_fulfillment = 1.0;
+        campaign.economy.trades.push(trade);
+    }
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].trade_volume, 440.0);
+    assert_eq!(campaign.profiles[0].provincial_trade, 40.0);
+    let rural_trade_support = monthly_support(&campaign);
+    campaign.economy.provinces[npcs[0]].has_city = true;
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].provincial_trade, 0.0);
+    assert!((rural_trade_support - monthly_support(&campaign) - 0.2).abs() < 1e-9);
+    campaign.economy.provinces[npcs[0]].has_city = false;
+    campaign.economy.month += 1;
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].provincial_trade, 0.0);
+}
+
+#[test]
 fn senate_merchant_inputs_follow_delivered_trade_and_failure() {
     let mut c = atlas_campaign();
     c.economy.month = 3;
-    let npc = c.economy.provinces.iter().position(|p| p.owner.is_none()).unwrap();
+    let npc = c.economy.provinces.iter().position(|p| p.owner.is_none() && !p.has_city).unwrap();
     let mut trade = TradeAgreement::new(
         TradeParty::Player(0),
         TradeParty::Npc(npc),
@@ -615,12 +861,43 @@ fn senate_merchant_inputs_follow_delivered_trade_and_failure() {
     c.economy.trades[0].last_fulfillment = 1.0;
     c.refresh_profiles();
     assert_eq!(c.profiles[0].active_trade_routes, 1.0);
+    c.economy.trades[0].last_delivered_value = 0.0;
+    c.refresh_profiles();
+    assert_eq!(c.profiles[0].active_trade_routes, 0.0, "Empty routes cannot earn support");
+    c.economy.trades[0].last_delivered_value = 42.0;
     c.economy.month = 4;
     c.economy.trades[0].status = TradeStatus::Suspended;
     c.refresh_profiles();
     assert_eq!(c.profiles[0].trade_volume, 0.);
     assert_eq!(c.profiles[0].trade_reliability, 0.);
     assert_eq!(c.profiles[0].active_trade_routes, 0.0);
+}
+
+#[test]
+fn senate_merchant_income_matches_the_settled_wallet_and_hud_after_monthly_costs() {
+    let mut campaign = atlas_campaign();
+    for _ in 0..3 {
+        let before: Vec<_> = campaign.economy.players.iter().map(|wallet| wallet.coin).collect();
+        campaign.advance_month();
+        for (player, before) in before.into_iter().enumerate() {
+            let net = campaign.economy.players[player].coin - before;
+            assert_eq!(campaign.profiles[player].coin_income, net);
+            assert_eq!(
+                campaign.profiles[player].coin_income,
+                campaign.economy.last_report.player_delta[player][3]
+            );
+            let gross: f64 = campaign
+                .economy
+                .last_report
+                .province_reports
+                .iter()
+                .enumerate()
+                .filter(|(id, _)| campaign.economy.provinces[*id].owner == Some(player))
+                .map(|(_, report)| report.tax_income)
+                .sum();
+            assert!(net < gross, "Noble wages and civic spending must reduce Merchant income");
+        }
+    }
 }
 
 #[test]
@@ -634,13 +911,50 @@ fn senator_outreach_is_charged_to_the_authoritative_wallet_and_monthly_report() 
     c.push_wallets();
     let before = c.economy.players[0].influence;
     c.advance_month();
-    assert_eq!(c.senate.senators[0].arrangement.unwrap().paid_at, Some(0));
+    assert_eq!(c.senate.senators[0].arrangement(0).unwrap().paid_at, Some(0));
     assert!(
         (c.economy.players[0].influence - before - c.economy.last_report.player_delta[0][4]).abs()
             < 1e-8
     );
     assert_eq!(c.actors[0].influence, c.economy.players[0].influence);
     assert_eq!(c.senate.outreach_upkeep(0, &c.senate_config), 4.0);
+}
+
+#[test]
+fn senator_bribe_payments_update_wallet_reports_evidence_and_private_exposure_notices() {
+    use crate::app::campaign_notifications::NoticeKind;
+    use crate::game::politics::espionage::ScandalKind;
+    use crate::game::politics::senate::SenatorAction;
+    let mut c = atlas_campaign();
+    c.senate_config.action_risks = [0.0; 9];
+    c.economy.players[0].coin = 1000.0;
+    c.pull_wallets();
+    c.senate.act_on_senator(0, 0, SenatorAction::Bribe, &mut c.actors, &c.senate_config).unwrap();
+    c.push_wallets();
+    let before = c.economy.players[0].coin;
+    c.advance_month();
+    assert_eq!(c.senate.senators[0].arrangement(0).unwrap().paid_at, Some(0));
+    assert!(
+        (c.economy.players[0].coin - before - c.economy.last_report.player_delta[0][3]).abs()
+            < 1e-8
+    );
+    assert_eq!(c.actors[0].coin, c.economy.players[0].coin);
+    assert!(c
+        .espionage
+        .opportunities
+        .iter()
+        .any(|opportunity| opportunity.kind == ScandalKind::PoliticalBribery));
+    c.senate_config.action_risks[SenatorAction::Bribe as usize] = 1.0;
+    c.advance_month();
+    assert!(c.senate.senators[0].arrangement(0).is_none());
+    assert!(c
+        .notifications
+        .history_for(0)
+        .any(|notice| notice.kind == NoticeKind::SenatorBriberyExposed));
+    assert!(!c
+        .notifications
+        .history_for(1)
+        .any(|notice| notice.kind == NoticeKind::SenatorBriberyExposed));
 }
 
 #[test]

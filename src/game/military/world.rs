@@ -80,7 +80,7 @@ pub enum MilitaryEvent {
 pub struct MilitaryWorld {
     /// Central editable balance data.
     pub config: MilitaryConfig,
-    /// One state per map province, preserving the map's stable indices.
+    /// Map province states followed by the separate capital, preserving atlas indices.
     pub provinces: Vec<ProvinceMilitaryState>,
     /// Units in transit, never duplicated in a province force.
     pub movements: Vec<MovementOrder>,
@@ -240,9 +240,15 @@ impl MilitaryWorld {
         let peak = self.peak_manpower.entry(owner).or_default();
         *peak = peak.max(current);
     }
-    /// Whether any units in a province are engaged, locking recruitment/disband/plan actions.
+    /// Whether any units in a province are engaged, locking disband and plan actions.
     pub fn province_in_battle(&self, province: ProvinceId) -> bool {
         self.battles.iter().any(|b| b.province == province)
+    }
+    /// Established occupation blocks the displaced owner's province actions, even during relief combat.
+    pub fn province_occupied_by_enemy(&self, province: ProvinceId, owner: ForceOwner) -> bool {
+        self.provinces
+            .get(province)
+            .is_some_and(|state| state.occupation.is_some_and(|occupier| occupier != owner))
     }
     /// Save an owner-specific province default only outside battle.
     pub fn set_plan(
@@ -251,6 +257,9 @@ impl MilitaryWorld {
         owner: ForceOwner,
         mut plan: BattlePlan,
     ) -> Result<(), MilitaryError> {
+        if self.province_occupied_by_enemy(province, owner) {
+            return Err(MilitaryError::Occupied);
+        }
         if self.province_in_battle(province) {
             return Err(MilitaryError::InBattle);
         }
@@ -289,8 +298,8 @@ impl MilitaryWorld {
         if !directly_owned {
             return Err(MilitaryError::NotDirectlyOwned);
         }
-        if self.province_in_battle(province) {
-            return Err(MilitaryError::InBattle);
+        if self.province_occupied_by_enemy(province, ForceOwner::Player(player)) {
+            return Err(MilitaryError::Occupied);
         }
         let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
         let def = self.config.unit(kind);
@@ -338,6 +347,9 @@ impl MilitaryWorld {
         province: ProvinceId,
         owner: ForceOwner,
     ) -> Result<(), MilitaryError> {
+        if self.province_occupied_by_enemy(province, owner) {
+            return Err(MilitaryError::Occupied);
+        }
         let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
         if state.recruitment.as_ref().is_none_or(|r| r.owner != owner) {
             return Err(MilitaryError::InvalidUnits);
@@ -357,6 +369,9 @@ impl MilitaryWorld {
     ) -> Result<(), MilitaryError> {
         if !directly_owned {
             return Err(MilitaryError::NotDirectlyOwned);
+        }
+        if self.province_occupied_by_enemy(province, ForceOwner::Player(player)) {
+            return Err(MilitaryError::Occupied);
         }
         let state = self.provinces.get_mut(province).ok_or(MilitaryError::UnknownProvince)?;
         let project = state.recruitment_queue.get(index).ok_or(MilitaryError::InvalidUnits)?;
@@ -382,6 +397,9 @@ impl MilitaryWorld {
         if !directly_owned {
             return Err(MilitaryError::NotDirectlyOwned);
         }
+        if self.province_occupied_by_enemy(province, ForceOwner::Player(player)) {
+            return Err(MilitaryError::Occupied);
+        }
         if self.province_in_battle(province) {
             return Err(MilitaryError::InBattle);
         }
@@ -404,6 +422,9 @@ impl MilitaryWorld {
     ) -> Result<(), MilitaryError> {
         if !directly_owned {
             return Err(MilitaryError::NotDirectlyOwned);
+        }
+        if self.province_occupied_by_enemy(province, ForceOwner::Player(player)) {
+            return Err(MilitaryError::Occupied);
         }
         if self.province_in_battle(province) {
             return Err(MilitaryError::InBattle);
@@ -449,6 +470,9 @@ impl MilitaryWorld {
                 state.recruitment_queue.clear();
             }
             if let Some(project) = &mut state.recruitment {
+                if state.occupation.is_some_and(|occupier| occupier != project.owner) {
+                    continue;
+                }
                 project.progress += speed(province).max(0.0);
                 if project.progress >= project.required_progress {
                     complete.push((province, state.recruitment.take().unwrap()));
@@ -461,6 +485,23 @@ impl MilitaryWorld {
             let unit = self.make_unit(project.owner, project.unit_type, project.cohort_manpower);
             let id = unit.id;
             self.insert_units(province, vec![unit]);
+            if let Some(attacker) = self
+                .battles
+                .iter()
+                .find(|battle| battle.province == province && battle.result.is_none())
+                .and_then(|battle| {
+                    if battle.attackers.plans.contains_key(&project.owner) {
+                        Some(true)
+                    } else if battle.defenders.plans.contains_key(&project.owner) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                })
+            {
+                // The freshly inserted owner group and its coalition are known to exist.
+                let _ = self.join_battle(province, project.owner, attacker);
+            }
             events.push(MilitaryEvent::Recruited {
                 province,
                 unit: id,
@@ -916,7 +957,7 @@ impl MilitaryWorld {
         Ok(id)
     }
 
-    /// Join fresh cohorts to an existing battle at the next round boundary.
+    /// Join fresh cohorts to an existing battle immediately, ready for the next round.
     /// Existing owners retain their locked plan; a newly allied owner snapshots
     /// its own plan and rank.
     pub fn join_battle(
@@ -928,7 +969,7 @@ impl MilitaryWorld {
         let battle_index = self
             .battles
             .iter()
-            .position(|b| b.province == province)
+            .position(|b| b.province == province && b.result.is_none())
             .ok_or(MilitaryError::InvalidBattle)?;
         let state = self.provinces.get(province).ok_or(MilitaryError::UnknownProvince)?;
         if state.forces.get(&owner).is_none_or(Vec::is_empty) {
@@ -944,7 +985,10 @@ impl MilitaryWorld {
             return Err(MilitaryError::InvalidBattle);
         }
         let rank = self.rank(owner);
-        let plan = state.plans.get(&owner).copied().unwrap_or_default();
+        let mut plan = state.plans.get(&owner).copied().unwrap_or_default();
+        if matches!(owner, ForceOwner::Local(_)) {
+            plan.tactic = best_composition_tactic(state.forces[&owner].iter(), &self.config);
+        }
         let units = self.provinces[province].forces.remove(&owner).unwrap();
         let battle = &mut self.battles[battle_index];
         let side = if attacker {
@@ -959,8 +1003,10 @@ impl MilitaryWorld {
             *side.initial_strength.entry(owner).or_insert(0.) +=
                 unit.effective_strength(&self.config);
             side.formation.reserves.push(unit.id);
+            side.initial_units.push(unit.clone());
             side.units.push(unit);
         }
+        refill_formation(&mut side.formation, &side.units, &side.plans, &side.routed, &self.config);
         Ok(())
     }
     /// Resolve battles, retreat survivors, award renown, and return conquest events.
@@ -1070,7 +1116,7 @@ impl MilitaryWorld {
                 }
             }
             record_destroyed_cohorts(&mut events, outcome.province, &original_counts, &survivors);
-            if outcome.result == BattleResult::AttackerVictory {
+            if outcome.result != BattleResult::MutualRout {
                 let local_defender_remains = self.provinces[outcome.province]
                     .forces
                     .get(&ForceOwner::Local(outcome.province))
@@ -1090,8 +1136,10 @@ impl MilitaryWorld {
                 } else {
                     None
                 };
+                let previous_occupation = self.provinces[outcome.province].occupation;
                 self.provinces[outcome.province].occupation = occupation;
-                if let Some(owner) = occupation {
+                if let Some(owner) = occupation.filter(|owner| Some(*owner) != previous_occupation)
+                {
                     events.push(MilitaryEvent::OccupationEstablished {
                         province: outcome.province,
                         owner,
@@ -1194,7 +1242,7 @@ fn record_destroyed_cohorts(
 pub fn initial_defenders(name: &str) -> Vec<UnitType> {
     use UnitType::*;
     match name {
-        "Latium" => {
+        "Rome" => {
             let mut guards = vec![HeavyInfantry; 26];
             guards.extend([Archers; 10]);
             guards.extend([HeavyCavalry; 8]);

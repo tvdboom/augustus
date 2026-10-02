@@ -21,6 +21,9 @@ impl Campaign {
     /// Reapply after conquest/integration so an owner's edicts always cover their nation.
     pub(crate) fn sync_governance(&mut self) {
         for province in &mut self.economy.provinces {
+            if province.occupied {
+                continue;
+            }
             let Some(owner) = province.owner else {
                 continue;
             };

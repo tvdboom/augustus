@@ -123,7 +123,7 @@ fn spy_upkeep_detection_and_withdrawal_do_not_gate_public_facts() {
         }
         resolve(&mut c);
         assert!(c.espionage.missions.is_empty());
-        assert!(overview_text(&c, 1, 0).contains("89%"));
+        assert_eq!(noble_happiness(&c, 1, 0).as_deref(), Some("89"));
     }
 }
 
@@ -252,6 +252,14 @@ fn overview_text(c: &Campaign, province: usize, player: usize) -> String {
     text
 }
 
+fn noble_happiness(c: &Campaign, province: usize, player: usize) -> Option<String> {
+    overview_text(c, province, player)
+        .lines()
+        .skip_while(|line| *line != "Nobles")
+        .nth(3)
+        .map(str::to_owned)
+}
+
 fn buildings_text(c: &Campaign, province: usize, player: usize) -> String {
     use bevy_egui::egui;
     let ctx = egui::Context::default();
@@ -300,9 +308,8 @@ fn foreign_overviews_show_current_local_facts_without_spies_or_national_balances
                 paid_stone: 0.0,
             }));
         let text = overview_text(&c, province, 0);
-        for expected in ["12%", "Population"] {
-            assert!(text.contains(expected), "Missing {expected}: {text}");
-        }
+        assert_eq!(noble_happiness(&c, province, 0).as_deref(), Some("12"));
+        assert!(text.contains("Population"), "Missing Population: {text}");
         for hidden in ["Food demand", "Food supplied"] {
             assert!(!text.contains(hidden), "Unexpected {hidden}: {text}");
         }
@@ -323,7 +330,7 @@ fn foreign_overviews_show_current_local_facts_without_spies_or_national_balances
             }
         }
         c.economy.provinces[province].happiness[0] = 99.0;
-        assert!(overview_text(&c, province, 0).contains("99%"));
+        assert_eq!(noble_happiness(&c, province, 0).as_deref(), Some("99"));
     }
     deploy(&mut c, 0, 1);
     for _ in 0..3 {
@@ -332,7 +339,7 @@ fn foreign_overviews_show_current_local_facts_without_spies_or_national_balances
     c.espionage.withdraw(0, 1);
     c.economy.provinces[1].happiness[0] = 88.0;
     let current = overview_text(&c, 1, 0);
-    assert!(current.contains("88%"));
+    assert_eq!(noble_happiness(&c, 1, 0).as_deref(), Some("88"));
     assert!(!current.contains("last report"));
     assert!(!current.contains("? / ?"), "Province resources must not show national stockpiles");
     let own = overview_text(&c, 1, 1);

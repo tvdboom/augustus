@@ -1,7 +1,10 @@
-//! Live battlefield inspection using the same cohort artwork as deployment.
+//! Compact current-state battlefield inspection using the shared cohort artwork.
+use super::super::province_panel::{INK, PAPER, RULE, TABLE_STRIPE};
 use super::*;
 
 const PANEL_ID: &str = "campaign-battle-inspection";
+const PANEL_WIDTH: f32 = 900.;
+const PANEL_HEIGHT: f32 = 320.;
 
 pub(in crate::app) fn selected_battle(ctx: &egui::Context) -> Option<(u64, usize)> {
     ctx.data(|data| data.get_temp(egui::Id::new(PANEL_ID)))
@@ -22,6 +25,29 @@ fn participant(side: &BattleSide, player: usize) -> bool {
     side.initial_manpower.contains_key(&ForceOwner::Player(player))
 }
 
+/// The strongest starting contingent supplies its coalition's banner color.
+fn side_owner(side: &BattleSide) -> ForceOwner {
+    side.initial_manpower
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map_or(ForceOwner::Local(0), |(&owner, _)| owner)
+}
+
+fn panel_rect(screen: egui::Rect) -> (egui::Rect, f32) {
+    let scale = super::super::viewport_ui_scale(screen.size())
+        .min((screen.width() - 24.).max(1.) / PANEL_WIDTH)
+        .min((screen.height() - 24.).max(1.) / PANEL_HEIGHT);
+    let size = egui::vec2(PANEL_WIDTH, PANEL_HEIGHT) * scale;
+    let bottom = screen.bottom() - (screen.height() * 0.01).max(8. * scale);
+    (
+        egui::Rect::from_min_size(
+            egui::pos2(screen.center().x - size.x / 2., bottom - size.y),
+            size,
+        ),
+        scale,
+    )
+}
+
 pub(in crate::app) fn draw_battle_panel(
     ctx: &egui::Context,
     world: &MilitaryWorld,
@@ -35,124 +61,78 @@ pub(in crate::app) fn draw_battle_panel(
     }
     let battle = world.battles.iter().find(|b| b.id == id);
     let outcome = world.history.iter().find(|b| b.id == id);
-    let (province, terrain, attackers, defenders, rounds, months, result) = if let Some(b) = battle
-    {
-        (b.province, b.terrain, &b.attackers, &b.defenders, &b.rounds, b.months, b.result)
+    let (province, terrain, attackers, defenders, round) = if let Some(b) = battle {
+        (b.province, b.terrain, &b.attackers, &b.defenders, b.rounds.last())
     } else if let Some(b) = outcome {
-        (
-            b.province,
-            b.terrain,
-            &b.attackers,
-            &b.defenders,
-            &b.round_history,
-            b.months,
-            Some(b.result),
-        )
+        (b.province, b.terrain, &b.attackers, &b.defenders, b.round_history.last())
     } else {
         dismiss(ctx);
         return None;
     };
-    // An observer sees public strength; combat plans are revealed to participants only.
-    let inspect_deployment = participant(attackers, player) || participant(defenders, player);
     let economic = economy.provinces.get(province)?;
-    let scale = super::super::viewport_ui_scale(ctx.content_rect().size());
-    let width = (980. * scale).min(ctx.content_rect().width() - 24. * scale);
-    let max_height = (ctx.content_rect().height() - 140. * scale).max(180. * scale);
+    let finished = outcome.is_some() || battle.is_some_and(|battle| battle.result.is_some());
+    let fortification = battle
+        .map(|battle| battle.fortification_level)
+        .or_else(|| outcome.map(|outcome| outcome.fortification_level))
+        .unwrap_or(0);
+    // Public strength remains visible to observers; locked plans and deployments do not.
+    let inspection = super::super::spectator::read_only(ctx);
+    let reveal = inspection || participant(attackers, player) || participant(defenders, player);
+    let colors = [
+        army_owner_color(ctx, side_owner(attackers)),
+        army_owner_color(ctx, side_owner(defenders)),
+    ];
+    let (rect, scale) = panel_rect(ctx.content_rect());
     let mut open = true;
     let mut action = None;
     let response = egui::Area::new(egui::Id::new(PANEL_ID).with("window"))
-        .order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .movable(false).show(ctx, |ui| {
-        *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
-        egui::Frame::new().fill(super::super::province_panel::PAPER)
-            .stroke(egui::Stroke::new(2. * scale, super::super::province_panel::RULE))
-            .corner_radius(6.).inner_margin(12. * scale).show(ui, |ui| {
-            ui.set_width(width - 24. * scale);
-            ui.set_height((700. * scale).min(ctx.content_rect().height() - 40. * scale));
-            ui.horizontal(|ui| {
-                icon(ui, Icon::Attack, 28. * scale);
-                ui.heading(format!("Battle of {}", economic.name));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { if ui.button("×").clicked() { open = false; } });
-            });
-            let status = match result {
-                Some(BattleResult::AttackerVictory) => "Attacker victory",
-                Some(BattleResult::DefenderVictory) => "Defenders hold the province",
-                Some(BattleResult::MutualRout) => "Both armies routed",
-                None => "Battle in progress",
-            };
-            ui.label(format!("{status} · {terrain:?} · {} completed months · {} rounds", months, rounds.len()));
-            egui::ScrollArea::vertical().id_salt(("battle-content", id)).max_height(max_height).show(ui, |ui| {
-                let landscape = match terrain {
-                    MilitaryTerrain::Farmland => crate::game::economy::Terrain::Farmland,
-                    MilitaryTerrain::Plains => crate::game::economy::Terrain::Plains,
-                    MilitaryTerrain::Forest => crate::game::economy::Terrain::Forest,
-                    MilitaryTerrain::Hills => crate::game::economy::Terrain::Hills,
-                    MilitaryTerrain::Mountains => crate::game::economy::Terrain::Mountains,
-                    MilitaryTerrain::Desert => crate::game::economy::Terrain::Desert,
-                    MilitaryTerrain::Marsh => crate::game::economy::Terrain::Marsh,
-                };
-                let scene = ui.allocate_exact_size(egui::vec2(ui.available_width(), 358. * scale), egui::Sense::hover()).0;
-                let image = super::super::campaign_widgets::prepare_portrait(ctx, super::super::campaign_widgets::ProvinceLandscape::Terrain(landscape));
-                let aspect = image.size()[0] as f32 / image.size()[1] as f32;
-                let target = scene.width() / scene.height();
-                let visible = if aspect > target { egui::vec2(target / aspect, 1.) } else { egui::vec2(1., aspect / target) };
-                let uv = egui::Rect::from_center_size(egui::pos2(0.5, 0.5), visible);
-                ui.painter().image(image.id(), scene, uv, egui::Color32::WHITE);
-                ui.painter().rect_filled(scene, 0., egui::Color32::from_black_alpha(130));
-                let center = scene.center().y;
-                let pulse = if result.is_some() { 0.3 } else { 0.5 + 0.3 * (ctx.input(|i| i.time) as f32 * 4.).sin() };
-                ui.painter().line_segment([egui::pos2(scene.left() + 16., center), egui::pos2(scene.right() - 16., center)], egui::Stroke::new(2., egui::Color32::from_rgba_unmultiplied(221, 167, 87, (pulse * 255.) as u8)));
-                for (index, side) in [attackers, defenders].into_iter().enumerate() {
-                    let half = egui::Rect::from_min_size(scene.min + egui::vec2(10. * scale, (index as f32 * 179. + 6.) * scale), egui::vec2(scene.width() - 20. * scale, 166. * scale));
-                    let mut side_ui = ui.new_child(egui::UiBuilder::new().max_rect(half));
-                    side_ui.visuals_mut().override_text_color = Some(egui::Color32::from_rgb(255, 239, 207));
-                    side_ui.spacing_mut().item_spacing.y = 3. * scale;
-                    side_header(&mut side_ui, side, index, rounds.last(), world, economy, inspect_deployment, scale);
-                    if inspect_deployment { battlefield_rows(&mut side_ui, side, id, index == 0, scale); }
-                    else { side_ui.label("Select a battle involving your army to inspect deployment and tactics."); unit_composition(&mut side_ui, &side.units); }
+        .order(egui::Order::Foreground).fixed_pos(rect.min).movable(false)
+        .sense(egui::Sense::hover()).show(ctx, |ui| {
+            *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
+            let panel = ui.allocate_exact_size(rect.size(), egui::Sense::hover()).0;
+            ui.painter().rect_filled(panel, 6. * scale, PAPER);
+            let header = egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), 42. * scale));
+            battle_header(ui, header, &format!("Battle of {}", economic.name), colors, scale, &mut open);
+            defense_icons(ui, header, terrain, fortification, attackers, world, scale);
+            let field = egui::Rect::from_min_size(
+                panel.min + egui::vec2(12., 92.) * scale,
+                egui::vec2(panel.width() - 24. * scale, 154. * scale),
+            );
+            battlefield_background(ui, field, terrain, scale);
+            for (index, side) in [attackers, defenders].into_iter().enumerate() {
+                let card = egui::Rect::from_min_size(
+                    panel.min + egui::vec2(10., if index == 0 { 46. } else { 248. }) * scale,
+                    egui::vec2(panel.width() - 20. * scale, 42. * scale),
+                );
+                let mut side_ui = ui.new_child(egui::UiBuilder::new().id_salt(("battle-side", index)).max_rect(card));
+                side_card(&mut side_ui, card, side, index, round, world, economy, reveal, scale);
+                let rows = egui::Rect::from_min_size(
+                    field.min + egui::vec2(0., 3. + index as f32 * 76.) * scale,
+                    egui::vec2(field.width(), 72. * scale),
+                );
+                if reveal {
+                    battlefield_rows(&side_ui, rows, side, id, index == 0, finished, &world.config, scale);
+                } else {
+                    public_composition(&side_ui, rows, side, finished, scale);
                 }
-                ui.add_space(8. * scale);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("Defender terrain: +{:.0}% defense", (world.config.terrain_defense[terrain as usize] - 1.) * 100.));
-                    if let Some(battle) = battle {
-                        ui.label(format!("Fortifications: level {}", battle.fortification_level));
-                        let siege: f64 = attackers.formation.front.iter().chain(&attackers.formation.support).flatten()
-                            .filter_map(|id| attackers.units.iter().find(|u| u.id == *id))
-                            .map(|u| world.config.unit(u.unit_type).siege_power * u.manpower_ratio()).sum();
-                        let fort = (f64::from(battle.fortification_level) * world.config.fort_defense_per_level).min(world.config.fort_defense_cap)
-                            * (1. - (siege * world.config.siege_suppression_per_point).min(world.config.siege_suppression_cap));
-                        ui.label(format!("After siege suppression: +{:.0}% defense", fort * 100.));
-                    }
-                });
-                if let Some(battle) = battle {
+            }
+            if let Some(battle) = battle.filter(|battle| battle.result.is_none()) {
+                let footer = egui::Rect::from_min_max(panel.min + egui::vec2(12., 294.) * scale, panel.max - egui::vec2(12., 6.) * scale);
+                let mut footer_ui = ui.new_child(egui::UiBuilder::new().id_salt("battle-actions").max_rect(footer));
+                footer_ui.horizontal(|ui| {
                     for (attacker, side) in [(true, attackers), (false, defenders)] {
                         if participant(side, player) {
-                            let allowed = months >= world.config.minimum_retreat_months
+                            let allowed = !inspection && battle.months >= world.config.minimum_retreat_months
                                 && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
                             if ui.add_enabled(allowed, egui::Button::new("Retreat"))
-                                .on_disabled_hover_text("Requires a completed combat month and an adjacent province permitting stationing.").clicked() {
-                                action = Some((province, MilitaryUiAction::Retreat { battle: id, attacker }));
-                            }
+                                .on_disabled_hover_text("Requires a completed combat month and an adjacent province permitting stationing.")
+                                .clicked() { action = Some((province, MilitaryUiAction::Retreat { battle: id, attacker })); }
                         }
                     }
-                }
-                ui.separator();
-                ui.strong("ROUND HISTORY");
-                ui.small(format!("{} rounds per month · both sides strike simultaneously · dice are rolled once per side each round", world.config.rounds_per_month));
-                if rounds.is_empty() { ui.label("Awaiting the first combat month."); }
-                egui::Grid::new(("battle-rounds", id)).num_columns(5).striped(true).spacing(egui::vec2(18. * scale, 5. * scale)).show(ui, |ui| {
-                    for label in ["Round", "Attacker die / bonus", "Attacker losses", "Defender die / bonus", "Defender losses"] { ui.strong(label); } ui.end_row();
-                    for round in rounds.iter().rev() {
-                        ui.label(round.number.to_string());
-                        ui.label(format!("{} / {:+.0}%", round.dice[0], (round.dice_multipliers[0] - 1.) * 100.));
-                        ui.label(format_person_count(round.casualties[0]));
-                        ui.label(format!("{} / {:+.0}%", round.dice[1], (round.dice_multipliers[1] - 1.) * 100.));
-                        ui.label(format_person_count(round.casualties[1])); ui.end_row();
-                    }
                 });
-            });
+            }
+            ui.painter().rect_stroke(panel, 6. * scale, egui::Stroke::new(1.5 * scale, RULE), egui::StrokeKind::Inside);
         });
-    });
     ctx.move_to_top(response.response.layer_id);
     if !open {
         dismiss(ctx);
@@ -163,8 +143,90 @@ pub(in crate::app) fn draw_battle_panel(
     action
 }
 
-fn side_header(
+fn battle_header(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    title: &str,
+    colors: [egui::Color32; 2],
+    scale: f32,
+    open: &mut bool,
+) {
+    let mut font = egui::FontId::proportional(20. * scale);
+    let available = rect.width() - 196. * scale;
+    let measured = ui.painter().layout_no_wrap(title.to_owned(), font.clone(), INK).size().x;
+    font.size *= (available / measured.max(1.)).min(1.);
+    for (index, color) in colors.into_iter().enumerate() {
+        let half = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + index as f32 * rect.width() / 2., rect.top()),
+            egui::pos2(rect.left() + (index + 1) as f32 * rect.width() / 2., rect.bottom()),
+        );
+        ui.painter().rect_filled(
+            half,
+            egui::CornerRadius {
+                nw: if index == 0 {
+                    (5. * scale) as u8
+                } else {
+                    0
+                },
+                ne: if index == 1 {
+                    (5. * scale) as u8
+                } else {
+                    0
+                },
+                sw: 0,
+                se: 0,
+            },
+            color,
+        );
+        let (_, ink) = super::super::province_panel::header_close_colors(color, false, false);
+        ui.painter().with_clip_rect(half).text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            title,
+            font.clone(),
+            ink,
+        );
+    }
+    paint_icon(
+        ui,
+        Icon::Attack,
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(9., 7.) * scale,
+            egui::vec2(28., 28.) * scale,
+        ),
+    );
+    let close = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 21. * scale, rect.center().y),
+        egui::vec2(28., 28.) * scale,
+    );
+    let response = ui.interact(close, egui::Id::new((PANEL_ID, "close")), egui::Sense::click());
+    let (fill, ink) = super::super::province_panel::header_close_colors(
+        colors[1],
+        response.hovered(),
+        response.is_pointer_button_down_on() || response.clicked(),
+    );
+    ui.painter().circle(close.center(), 12. * scale, fill, egui::Stroke::new(1.3 * scale, ink));
+    for sign in [-1., 1.] {
+        ui.painter().line_segment(
+            [
+                close.center() + egui::vec2(-4.5, sign * -4.5) * scale,
+                close.center() + egui::vec2(4.5, sign * 4.5) * scale,
+            ],
+            egui::Stroke::new(1.7 * scale, ink),
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close battle panel")
+    });
+    if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        *open = false;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn side_card(
     ui: &mut egui::Ui,
+    rect: egui::Rect,
     side: &BattleSide,
     index: usize,
     round: Option<&BattleRound>,
@@ -173,174 +235,505 @@ fn side_header(
     reveal: bool,
     scale: f32,
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.strong(
-                egui::RichText::new(if index == 0 {
-                    "ATTACKERS"
+    let inset = rect.shrink2(egui::vec2(8., 2.) * scale);
+    let info_width = inset.width() - 76. * scale;
+    let names = side
+        .initial_manpower
+        .keys()
+        .map(|&owner| army_name(owner, economy, world))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let identity = egui::Rect::from_min_size(
+        inset.min
+            + egui::vec2(
+                0.,
+                if index == 0 {
+                    0.
                 } else {
-                    "DEFENDERS"
+                    20.
+                },
+            ) * scale,
+        egui::vec2(info_width, 20. * scale),
+    );
+    let mut name_font = egui::FontId::proportional(16. * scale);
+    let measured = ui.painter().layout_no_wrap(names.clone(), name_font.clone(), INK).size().x;
+    name_font.size *= (info_width / measured.max(1.)).clamp(0.75, 1.);
+    let mut name_job = egui::text::LayoutJob::default();
+    for (i, &owner) in side.initial_manpower.keys().enumerate() {
+        if i > 0 {
+            name_job.append(
+                " + ",
+                0.,
+                egui::TextFormat {
+                    font_id: name_font.clone(),
+                    color: INK,
+                    ..Default::default()
+                },
+            );
+        }
+        name_job.append(
+            &army_name(owner, economy, world),
+            0.,
+            egui::TextFormat {
+                font_id: name_font.clone(),
+                color: army_owner_color(ui.ctx(), owner),
+                ..Default::default()
+            },
+        );
+    }
+    let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(identity));
+    name_ui.add(egui::Label::new(name_job).truncate().show_tooltip_when_elided(false));
+    let dice = egui::Rect::from_min_size(
+        egui::pos2(inset.right() - 28. * scale, rect.center().y - 14. * scale),
+        egui::vec2(28., 28.) * scale,
+    );
+    dice_face(
+        ui,
+        dice,
+        round.map(|r| r.dice[index]),
+        round.map(|r| r.dice_multipliers[index]),
+        scale,
+    );
+    if reveal {
+        if let Some(plan) = side.plans.get(&side_owner(side)) {
+            let tactic = dice.translate(egui::vec2(-34. * scale, 0.));
+            paint_tactic(ui, plan.tactic, tactic);
+            let details = side
+                .plans
+                .iter()
+                .map(|(&owner, plan)| {
+                    let bonus =
+                        round.and_then(|r| r.tactics[index].get(&owner)).copied().unwrap_or(1.);
+                    format!(
+                        "{}: {}\n{:.0}% composition fit · {:+.0}% damage",
+                        army_name(owner, economy, world),
+                        plan.tactic.name(),
+                        side.tactic_fit(owner, &world.config) * 100.,
+                        (bonus - 1.) * 100.
+                    )
                 })
-                .color(egui::Color32::from_rgb(255, 239, 207)),
-            );
-            let initial: f64 = side.initial_manpower.values().sum();
-            ui.label(format!(
-                "{} soldiers · {} lost · {:.0}% morale",
-                format_people(side.manpower()),
-                format_people((initial - side.manpower()).max(0.)),
-                army_morale(&side.units)
-            ));
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            dice_face(
-                ui,
-                round.map(|r| r.dice[index]),
-                round.map(|r| r.dice_multipliers[index]),
-                scale,
-            );
-            if reveal {
-                for (&owner, plan) in &side.plans {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let rect = ui
-                                .allocate_exact_size(
-                                    egui::vec2(22., 22.) * scale,
-                                    egui::Sense::hover(),
-                                )
-                                .0;
-                            paint_tactic(ui, plan.tactic, rect);
-                            ui.label(plan.tactic.name());
-                        });
-                        let bonus =
-                            round.and_then(|r| r.tactics[index].get(&owner)).copied().unwrap_or(1.);
-                        ui.small(format!(
-                            "{} · {:.0}% fit · {:+.0}% damage",
-                            army_name(owner, economy, world),
-                            side.tactic_fit(owner, &world.config) * 100.,
-                            (bonus - 1.) * 100.
-                        ));
-                    });
-                }
-            }
-        });
-    });
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            ui.interact(tactic, ui.id().with("tactic"), egui::Sense::hover())
+                .on_hover_text(details);
+        }
+    }
+    let initial: f64 = side.initial_manpower.values().sum();
+    let people = |manpower: f64| {
+        format_person_count((manpower.max(0.) * PEOPLE_PER_POPULATION).round() as u64)
+    };
+    let mut stats = vec![
+        (Icon::Population, people(side.manpower()), "Surviving soldiers"),
+        (Icon::Morale, format!("{:.0}%", army_morale(&side.units)), "Current army morale"),
+        (
+            Icon::Cohorts,
+            side.units.iter().filter(|unit| unit.current_manpower > 0.).count().to_string(),
+            "Surviving cohorts",
+        ),
+        (Icon::Cancel, people(initial - side.manpower()), "Soldiers lost in this battle"),
+    ];
+    if reveal {
+        stats.extend([
+            (Icon::Cohorts, side.formation.reserves.len().to_string(), "Cohorts in reserve"),
+            (Icon::SpyFlee, side.routed.len().to_string(), "Cohorts routed from this battle"),
+        ]);
+    }
+    for (i, (kind, value, tooltip)) in stats.into_iter().enumerate() {
+        let fact = egui::Rect::from_min_size(
+            inset.min
+                + egui::vec2(
+                    i as f32 * 98.,
+                    if index == 0 {
+                        20.
+                    } else {
+                        0.
+                    },
+                ) * scale,
+            egui::vec2(98., 18.) * scale,
+        );
+        compact_stat(ui, fact, kind, &value, tooltip, scale);
+    }
 }
 
-fn dice_face(ui: &mut egui::Ui, roll: Option<u8>, multiplier: Option<f64>, scale: f32) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(75., 58.) * scale,
-        egui::Layout::top_down(egui::Align::Center),
+fn compact_stat(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    kind: Icon,
+    value: &str,
+    tooltip: &str,
+    scale: f32,
+) {
+    let art = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 9. * scale, rect.center().y),
+        egui::vec2(18., 18.) * scale,
+    );
+    paint_icon(ui, kind, art);
+    ui.painter().text(
+        egui::pos2(art.right() + 3. * scale, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        value,
+        egui::FontId::proportional(13. * scale),
+        INK,
+    );
+    ui.interact(rect, ui.id().with(tooltip), egui::Sense::hover())
+        .on_hover_text(format!("{tooltip}: {value}"));
+}
+
+fn dice_face(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    roll: Option<u8>,
+    multiplier: Option<f64>,
+    scale: f32,
+) {
+    ui.painter().rect_filled(rect, 4. * scale, egui::Color32::from_rgb(244, 224, 185));
+    ui.painter().rect_stroke(
+        rect,
+        4. * scale,
+        egui::Stroke::new(scale, RULE),
+        egui::StrokeKind::Inside,
+    );
+    let pips: &[(f32, f32)] = match roll {
+        Some(1) => &[(0.5, 0.5)],
+        Some(2) => &[(0.25, 0.25), (0.75, 0.75)],
+        Some(3) => &[(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)],
+        Some(4) => &[(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)],
+        Some(5) => &[(0.25, 0.25), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75), (0.75, 0.75)],
+        Some(6) => {
+            &[(0.25, 0.25), (0.75, 0.25), (0.25, 0.5), (0.75, 0.5), (0.25, 0.75), (0.75, 0.75)]
+        },
+        _ => &[],
+    };
+    for &(x, y) in pips {
+        ui.painter().circle_filled(rect.min + rect.size() * egui::vec2(x, y), 2. * scale, INK);
+    }
+    if roll.is_none() {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "–",
+            egui::FontId::proportional(16. * scale),
+            INK,
+        );
+    }
+    let tooltip = roll.map_or_else(
+        || "Awaiting the first combat roll".to_owned(),
+        |roll| {
+            format!("Current die: {roll}\n{:+.0}% damage", (multiplier.unwrap_or(1.) - 1.) * 100.)
+        },
+    );
+    ui.interact(rect, ui.id().with("dice"), egui::Sense::hover()).on_hover_text(tooltip);
+}
+
+fn terrain_portrait(ctx: &egui::Context, terrain: MilitaryTerrain) -> egui::TextureHandle {
+    use super::super::campaign_widgets::{prepare_portrait, ProvinceLandscape};
+    use crate::game::economy::Terrain;
+    let terrain = match terrain {
+        MilitaryTerrain::Farmland => Terrain::Farmland,
+        MilitaryTerrain::Plains => Terrain::Plains,
+        MilitaryTerrain::Forest => Terrain::Forest,
+        MilitaryTerrain::Hills => Terrain::Hills,
+        MilitaryTerrain::Mountains => Terrain::Mountains,
+        MilitaryTerrain::Desert => Terrain::Desert,
+        MilitaryTerrain::Marsh => Terrain::Marsh,
+    };
+    prepare_portrait(ctx, ProvinceLandscape::Terrain(terrain))
+}
+
+fn battlefield_background(ui: &egui::Ui, rect: egui::Rect, terrain: MilitaryTerrain, scale: f32) {
+    let image = terrain_portrait(ui.ctx(), terrain);
+    let aspect = image.size()[0] as f32 / image.size()[1] as f32;
+    let target = rect.width() / rect.height();
+    let visible = egui::vec2((target / aspect).min(1.), (aspect / target).min(1.));
+    let uv = egui::Rect::from_center_size(egui::pos2(0.5, 0.5), visible);
+    ui.painter().image(image.id(), rect, uv, egui::Color32::WHITE);
+    ui.painter().rect_stroke(rect, 0., egui::Stroke::new(scale, RULE), egui::StrokeKind::Inside);
+}
+
+fn defense_icons(
+    ui: &egui::Ui,
+    header: egui::Rect,
+    terrain: MilitaryTerrain,
+    fortification: u32,
+    attackers: &BattleSide,
+    world: &MilitaryWorld,
+    scale: f32,
+) {
+    let terrain_rect = egui::Rect::from_center_size(
+        egui::pos2(header.right() - 57. * scale, header.center().y),
+        egui::vec2(30., 24.) * scale,
+    );
+    battlefield_background(ui, terrain_rect, terrain, scale);
+    ui.interact(terrain_rect, ui.id().with("battle-terrain"), egui::Sense::hover()).on_hover_ui(
         |ui| {
-            let rect = ui.allocate_exact_size(egui::vec2(36., 36.) * scale, egui::Sense::hover()).0;
-            ui.painter().rect_filled(rect, 5., egui::Color32::from_rgb(244, 224, 185));
-            let pips: &[(f32, f32)] = match roll {
-                Some(1) => &[(0.5, 0.5)],
-                Some(2) => &[(0.25, 0.25), (0.75, 0.75)],
-                Some(3) => &[(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)],
-                Some(4) => &[(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)],
-                Some(5) => &[(0.25, 0.25), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75), (0.75, 0.75)],
-                Some(6) => &[
-                    (0.25, 0.25),
-                    (0.75, 0.25),
-                    (0.25, 0.5),
-                    (0.75, 0.5),
-                    (0.25, 0.75),
-                    (0.75, 0.75),
-                ],
-                _ => &[],
-            };
-            for &(x, y) in pips {
-                ui.painter().circle_filled(
-                    rect.min + rect.size() * egui::vec2(x, y),
-                    2.5 * scale,
-                    egui::Color32::from_rgb(68, 38, 24),
-                );
-            }
-            ui.small(
-                multiplier
-                    .map_or("Awaiting roll".into(), |m| format!("{:+.0}% dice", (m - 1.) * 100.)),
+            ui.label(
+                egui::RichText::new(format!(
+                    "{terrain:?} · Width: {} cohorts",
+                    world.config.combat_widths[terrain as usize]
+                ))
+                .size(14. * scale)
+                .color(INK),
             );
         },
     );
+    if fortification > 0 {
+        let fort_rect = egui::Rect::from_center_size(
+            terrain_rect.center() - egui::vec2(32. * scale, 0.),
+            egui::vec2(24., 24.) * scale,
+        );
+        paint_icon(ui, Icon::Building(BuildingType::CityWalls), fort_rect);
+        let siege: f64 = attackers
+            .formation
+            .front
+            .iter()
+            .chain(&attackers.formation.support)
+            .flatten()
+            .filter_map(|id| attackers.units.iter().find(|u| u.id == *id))
+            .map(|u| world.config.unit(u.unit_type).siege_power * u.manpower_ratio())
+            .sum();
+        let fort = (f64::from(fortification) * world.config.fort_defense_per_level)
+            .min(world.config.fort_defense_cap)
+            * (1.
+                - (siege * world.config.siege_suppression_per_point)
+                    .min(world.config.siege_suppression_cap));
+        ui.interact(fort_rect, ui.id().with("battle-fort"), egui::Sense::hover()).on_hover_text(
+            format!(
+                "Fortifications: level {}\n{:+.0}% defense after siege suppression",
+                fortification,
+                fort * 100.
+            ),
+        );
+    }
 }
 
-fn battlefield_rows(ui: &mut egui::Ui, side: &BattleSide, battle: u64, attacker: bool, scale: f32) {
-    let width = side.formation.front.len();
-    let cell = ((ui.available_width() - width.saturating_sub(1) as f32 * 3. * scale)
-        / width.max(1) as f32)
-        .min(35. * scale);
-    let rows = if attacker {
-        [("Support", &side.formation.support), ("Frontline", &side.formation.front)]
+fn public_composition(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    side: &BattleSide,
+    finished: bool,
+    scale: f32,
+) {
+    let units = if finished {
+        &side.initial_units
     } else {
-        [("Frontline", &side.formation.front), ("Support", &side.formation.support)]
+        &side.units
     };
-    for (label, row) in rows {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3. * scale;
-            let row_width = width as f32 * cell + width.saturating_sub(1) as f32 * 3. * scale;
-            ui.add_space(((ui.available_width() - row_width) / 2.).max(0.));
-            for (slot, id) in row.iter().enumerate() {
-                let unit = id.and_then(|id| {
-                    side.units.iter().find(|u| u.id == id && !side.routed.contains(&id))
-                });
-                let (rect, response) = ui
-                    .allocate_exact_size(egui::vec2(cell, cell + 5. * scale), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 3., egui::Color32::from_black_alpha(95));
-                let flank = slot < side.formation.flank_size
-                    || slot >= width.saturating_sub(side.formation.flank_size);
-                ui.painter().rect_stroke(
-                    rect,
-                    3.,
-                    egui::Stroke::new(
-                        0.8,
-                        if flank {
-                            egui::Color32::from_rgb(213, 157, 81)
-                        } else {
-                            egui::Color32::from_gray(180)
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                if let Some(unit) = unit {
-                    let strength = ui.ctx().animate_value_with_time(
-                        egui::Id::new(("battle-strength", battle, unit.id)),
-                        unit.manpower_ratio() as f32,
-                        0.5,
-                    );
-                    super::super::campaign_widgets::paint_raster_icon(
-                        ui,
-                        Icon::Unit(unit.unit_type),
-                        rect.shrink2(egui::vec2(2., 3.)),
-                        egui::Color32::from_white_alpha((100. + 155. * strength) as u8),
-                    );
-                    let bar = egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + 2., rect.bottom() - 4. * scale),
-                        egui::vec2((cell - 4.) * strength, 3. * scale),
-                    );
-                    ui.painter().rect_filled(bar, 1., egui::Color32::from_rgb(149, 182, 106));
-                    response.on_hover_text(format!(
-                        "{} #{} · {}\n{} soldiers · {:.0}% morale",
-                        unit.unit_type.name(),
-                        unit.id,
-                        if flank {
-                            "Flank"
-                        } else {
-                            label
-                        },
-                        unit.people(),
-                        unit.morale
-                    ));
-                }
-            }
-        });
+    let mut slot = 0;
+    for kind in UnitType::ALL {
+        let count = units
+            .iter()
+            .filter(|unit| unit.unit_type == kind && unit.current_manpower > 0.)
+            .count();
+        if count == 0 {
+            continue;
+        }
+        let tile = egui::Rect::from_min_size(
+            rect.min
+                + egui::vec2(
+                    (slot % 6) as f32 * rect.width() / 6.,
+                    (slot / 6) as f32 * 29. * scale,
+                ),
+            egui::vec2(rect.width() / 6., 28. * scale),
+        );
+        let survivors = side
+            .units
+            .iter()
+            .filter(|unit| unit.unit_type == kind && unit.current_manpower > 0.)
+            .count();
+        super::super::campaign_widgets::paint_raster_icon(
+            ui,
+            Icon::Unit(kind),
+            tile.shrink2(egui::vec2(5., 1.) * scale),
+            egui::Color32::from_white_alpha(if survivors == 0 {
+                90
+            } else {
+                255
+            }),
+        );
+        ui.interact(tile, ui.id().with(("composition", kind)), egui::Sense::hover()).on_hover_text(
+            format!(
+                "{} · {}\n{survivors} surviving cohorts\nDeployment and tactics are visible to battle participants.",
+                kind.name(),
+                cohort_count_label(count)
+            ),
+        );
+        slot += 1;
     }
-    ui.horizontal(|ui| {
-        ui.small(format!(
-            "Left flank · Frontline · Right flank    |    Reserve {} · Routed {}",
-            side.formation.reserves.len(),
-            side.routed.len()
-        ));
+}
+
+fn battlefield_rows(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    side: &BattleSide,
+    battle: u64,
+    attacker: bool,
+    finished: bool,
+    config: &MilitaryConfig,
+    scale: f32,
+) {
+    // A completed battle retains its starting composition, including destroyed
+    // cohorts. Live battles continue to display the authoritative deployment.
+    let initial_formation;
+    let (formation, units) = if finished {
+        initial_formation = deploy_formation(
+            &side.initial_units,
+            &side.plans,
+            side.formation.front.len(),
+            &BTreeSet::new(),
+            config,
+        );
+        (&initial_formation, &side.initial_units)
+    } else {
+        (&side.formation, &side.units)
+    };
+    let width = formation.front.len();
+    if width == 0 {
+        return;
+    }
+    let gap = 6. * scale;
+    let spacing = 2. * scale;
+    let wing = formation.flank_size.min(width / 3);
+    let cell = ((rect.width() - width.saturating_sub(1) as f32 * spacing - 2. * gap)
+        / width as f32)
+        .min(30. * scale);
+    let row_width = width as f32 * cell + width.saturating_sub(1) as f32 * spacing + 2. * gap;
+    let mut rear = formation.support.clone();
+    rear.resize(width, None);
+    // Match the deployment preview's rear reserves while keeping support aligned
+    // with the front slots that protect it during actual combat.
+    let mut reserves: Vec<_> = formation
+        .reserves
+        .iter()
+        .filter_map(|&id| {
+            units.iter().find(|unit| {
+                unit.id == id
+                    && unit.current_manpower > 0.
+                    && (finished || !side.routed.contains(&id))
+                    && !unit.unit_type.is_support()
+            })
+        })
+        .collect();
+    reserves.sort_by_key(|unit| {
+        let plan = side.plans.get(&unit.owner).copied().unwrap_or_default();
+        (unit.unit_type != plan.secondary_unit_type, unit.id)
     });
+    let mut reserves = reserves.into_iter();
+    for slot in &mut rear[wing..width - wing] {
+        if slot.is_none() {
+            *slot = reserves.next().map(|unit| unit.id);
+        }
+    }
+    let rows = if attacker {
+        [&rear, &formation.front]
+    } else {
+        [&formation.front, &rear]
+    };
+    for (row_index, row) in rows.into_iter().enumerate() {
+        for (slot, id) in row.iter().enumerate() {
+            let flank_gaps = usize::from(slot >= wing) + usize::from(slot >= width - wing);
+            let tile = egui::Rect::from_min_size(
+                rect.min
+                    + egui::vec2(
+                        (rect.width() - row_width) / 2.
+                            + slot as f32 * (cell + spacing)
+                            + flank_gaps as f32 * gap,
+                        row_index as f32 * (cell + 8. * scale),
+                    ),
+                egui::vec2(cell, cell + 4. * scale),
+            );
+            ui.painter().rect_filled(tile, 3. * scale, TABLE_STRIPE);
+            ui.painter().rect_stroke(
+                tile,
+                3. * scale,
+                egui::Stroke::new(0.8 * scale, RULE),
+                egui::StrokeKind::Inside,
+            );
+            let initial = id.and_then(|id| units.iter().find(|unit| unit.id == id));
+            let current = id.and_then(|id| {
+                side.units.iter().find(|unit| {
+                    unit.id == id
+                        && unit.current_manpower > 0.
+                        && (finished || !side.routed.contains(&id))
+                })
+            });
+            let Some(unit) = current.or(initial.filter(|_| finished)) else {
+                ui.painter().text(
+                    tile.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "·",
+                    egui::FontId::proportional(20. * scale),
+                    RULE,
+                );
+                continue;
+            };
+            let response =
+                ui.interact(tile, ui.id().with(("cohort", row_index, slot)), egui::Sense::hover());
+            let fallen = current.is_none();
+            let routed = side.routed.contains(&unit.id);
+            let strength = if fallen {
+                0.
+            } else {
+                ui.ctx().animate_value_with_time(
+                    egui::Id::new(("battle-strength", battle, unit.id)),
+                    unit.manpower_ratio() as f32,
+                    0.5,
+                )
+            };
+            super::super::campaign_widgets::paint_raster_icon(
+                ui,
+                Icon::Unit(unit.unit_type),
+                egui::Rect::from_min_size(tile.min, egui::vec2(cell, cell)).shrink(2. * scale),
+                egui::Color32::from_white_alpha(if fallen || routed {
+                    90
+                } else {
+                    (100. + 155. * strength) as u8
+                }),
+            );
+            let track = egui::Rect::from_min_size(
+                egui::pos2(tile.left() + scale, tile.bottom() - 3. * scale),
+                egui::vec2(cell - 2. * scale, 2. * scale),
+            );
+            ui.painter().rect_filled(track, scale, RULE.gamma_multiply(0.45));
+            let bar = egui::Rect::from_min_size(
+                track.min,
+                egui::vec2(track.width() * strength, track.height()),
+            );
+            ui.painter().rect_filled(bar, scale, army_owner_color(ui.ctx(), unit.owner));
+            response.on_hover_ui(|ui| {
+                ui.label(egui::RichText::new(unit.unit_type.name()).size(14. * scale).color(INK));
+                if finished {
+                    ui.label(
+                        egui::RichText::new(if fallen {
+                            "Destroyed · starting deployment"
+                        } else if routed {
+                            "Routed · starting deployment"
+                        } else {
+                            "Survived · starting deployment"
+                        })
+                        .color(INK),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "• Manpower: {}\n• Morale: {:.0}%\n• Training: {:.0}%",
+                        format_person_count(if fallen {
+                            0
+                        } else {
+                            unit.people()
+                        }),
+                        if fallen {
+                            0.
+                        } else {
+                            unit.morale
+                        },
+                        unit.training
+                    ))
+                    .size(14. * scale)
+                    .color(INK),
+                );
+            });
+        }
+    }
 }
 
 #[cfg(test)]

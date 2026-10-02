@@ -22,8 +22,10 @@ pub use world::*;
 
 use std::collections::BTreeMap;
 
-/// Stable map province index.
+/// Stable campaign location index: map provinces followed by the separate capital.
 pub type ProvinceId = usize;
+/// The capital is a separate campaign location reached from these map provinces.
+pub const ROME_APPROACHES: [&str; 3] = ["Etruria", "Latium", "Samnium"];
 /// Stable player index.
 pub type PlayerId = usize;
 /// Stable, never reused unit identifier.
@@ -378,6 +380,8 @@ pub enum MilitaryError {
     UnknownProvince,
     /// Must own the province directly.
     NotDirectlyOwned,
+    /// Enemy occupation prevents province administration.
+    Occupied,
     /// Province is engaged in combat.
     InBattle,
     /// Recruitment has reached its province order limit.
@@ -403,6 +407,7 @@ impl std::fmt::Display for MilitaryError {
         f.write_str(match self {
             Self::UnknownProvince => "Province does not exist",
             Self::NotDirectlyOwned => "Requires a directly owned province",
+            Self::Occupied => "Enemy occupation blocks province administration",
             Self::InBattle => "Force is locked in battle",
             Self::RecruitmentBusy => "Recruitment queue is full",
             Self::MissingRecruitmentTag => "Province lacks the required recruitment tradition",

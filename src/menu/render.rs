@@ -279,6 +279,11 @@ pub(in crate::app) fn augustus_ui_style() -> egui::Style {
             (egui::TextStyle::Monospace, egui::FontId::monospace(30.0)),
         ]
         .into(),
+        #[cfg(debug_assertions)]
+        debug: egui::style::DebugOptions {
+            show_unaligned: false,
+            ..Default::default()
+        },
         ..Default::default()
     };
     style.spacing.item_spacing = egui::Vec2::splat(18.0);

@@ -100,11 +100,15 @@ pub fn build(source: &Path, target: &Path, motion: Motion) {
                             [destination[0] - displacement[0], destination[1] - displacement[1]];
                     }
                 }
-                atlas.put_pixel(
-                    offset_x + x,
-                    offset_y + y,
-                    sample(&pose.pixels, source_point[0], source_point[1]),
-                );
+                let mut pixel = sample(&pose.pixels, source_point[0], source_point[1]);
+                if let Some(rig) = &combat {
+                    let opacity = rig.opacity(
+                        (source_point[0] - pose.left) / pose.width,
+                        (source_point[1] - pose.top) / pose.height,
+                    );
+                    pixel[3] = (f32::from(pixel[3]) * opacity).round() as u8;
+                }
+                atlas.put_pixel(offset_x + x, offset_y + y, pixel);
             }
         }
     }
@@ -162,17 +166,28 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
     let mut crop =
         image::imageops::crop_imm(&cell, left, top, right - left, bottom - top).to_image();
     let centered_width = (ground - left as f32).max(right as f32 - ground) * 2.;
-    let scale = (152. / centered_width).min(152. / crop.height() as f32)
-        // The upright spear adds empty height above the light infantry's head.
-        // Calibrate his actual crown-to-sole stature against the archer, rather
-        // than letting the weapon make an adult soldier look shorter.
-        * if name == "light-infantry" { 1.06 } else { 1.0 };
-    let width = (crop.width() as f32 * scale).round().max(1.) as u32;
-    let height = (crop.height() as f32 * scale).round().max(1.) as u32;
+    let scale = (152. / centered_width).min(152. / crop.height() as f32);
+    // The upright spear adds empty height above the light infantry's head.
+    // Calibrate crown-to-sole stature and silhouette width separately against
+    // the archer, without moving the grounded center.
+    let width_scale = scale
+        * if name == "light-infantry" {
+            1.08
+        } else {
+            1.0
+        };
+    let height_scale = scale
+        * if name == "light-infantry" {
+            1.06
+        } else {
+            1.0
+        };
+    let width = (crop.width() as f32 * width_scale).round().max(1.) as u32;
+    let height = (crop.height() as f32 * height_scale).round().max(1.) as u32;
     crate::premultiply(&mut crop);
     let small =
         image::imageops::resize(&crop, width, height, image::imageops::FilterType::Lanczos3);
-    let x = (SIZE as f32 * 0.5 - (ground - left as f32) * scale).round() as i64;
+    let x = (SIZE as f32 * 0.5 - (ground - left as f32) * width_scale).round() as i64;
     let foot = small
         .enumerate_pixels()
         .filter(|(_, _, pixel)| pixel[3] > 127)

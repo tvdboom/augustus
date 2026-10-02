@@ -626,6 +626,23 @@ impl EconomyWorld {
         Ok(due)
     }
 
+    /// Block closed routes immediately, before another monthly transfer can occur.
+    pub(crate) fn suspend_blocked_trade_routes(&mut self, inputs: &MonthlyInputs) {
+        for index in 0..self.trades.len() {
+            let trade = &self.trades[index];
+            if trade.frequency != TradeFrequency::Monthly || trade.status != TradeStatus::Active {
+                continue;
+            }
+            if let Err(reason) = self.trade_route(trade.party_a, trade.party_b, inputs) {
+                let trade = &mut self.trades[index];
+                trade.status = TradeStatus::Suspended;
+                trade.last_failure = Some(reason);
+                trade.last_delivered_value = 0.0;
+                trade.last_fulfillment = 0.0;
+            }
+        }
+    }
+
     /// Recurring agreements execute in stable creation order; reservations prevent overcommitment.
     pub(super) fn advance_trade(
         &mut self,
@@ -799,7 +816,7 @@ impl EconomyWorld {
             },
             TradeParty::Npc(id) => {
                 let p = self.provinces.get(id).ok_or("Unknown NPC province")?;
-                if p.name == "Latium" {
+                if p.name == "Rome" {
                     return Err("Rome does not permit provincial trade".into());
                 }
                 if p.owner.is_some() {
@@ -821,6 +838,9 @@ impl EconomyWorld {
         let Some(p) = self.provinces.get(province) else {
             return false;
         };
+        if p.occupied {
+            return false;
+        }
         players.iter().all(|&player| {
             if p.owner.is_none() && inputs.hostile_npc(player, province) {
                 return false;

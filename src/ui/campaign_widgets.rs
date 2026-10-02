@@ -1,18 +1,32 @@
 //! Shared illustrated widgets reuse the existing province/city artwork and typography.
 
+use super::spectator::InspectionHover;
+
 use super::province_panel;
-use crate::game::{economy::BuildingType, military::UnitType};
+use crate::game::{
+    economy::BuildingType, military::UnitType, politics::diplomacy::distance_multiplier,
+};
 use bevy_egui::egui;
 
 /// Set map popup typography before any map UI; restore the original menu style on exit.
 pub(in crate::app) fn configure_style(
     mut contexts: bevy_egui::EguiContexts,
     state: bevy::prelude::Res<bevy::prelude::State<super::AppState>>,
+    clock: bevy::prelude::Res<super::GameClock>,
+    terminal: Option<bevy::prelude::Res<super::TerminalPresentation>>,
     mut previous: bevy::prelude::Local<Option<(bool, u32)>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    super::spectator::set_read_only(ctx, terminal.is_some_and(|terminal| terminal.spectating));
+    // Keep every progress display advancing, even when all inspectors are closed.
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("campaign-construction-month-fraction"),
+            (clock.month_progress / super::SECONDS_PER_MONTH).clamp(0., 1.),
+        )
+    });
     if previous.is_none() {
         configure_cursor(ctx);
     }
@@ -75,10 +89,12 @@ pub(super) fn rank_tooltip(
                 .wrap(),
         );
     }
-    ui.separator();
-    ui.label(egui::RichText::new("Bonuses").strong().size(size));
-    for bonus in bonuses {
-        ui.add(egui::Label::new(egui::RichText::new(format!("• {bonus}")).size(size)).wrap());
+    if !bonuses.is_empty() {
+        ui.separator();
+        ui.label(egui::RichText::new("Bonuses").strong().size(size));
+        for bonus in bonuses {
+            ui.add(egui::Label::new(egui::RichText::new(format!("• {bonus}")).size(size)).wrap());
+        }
     }
 }
 
@@ -113,6 +129,15 @@ pub(in crate::app) enum Icon {
     SpySupportRevolt,
     SpyDiscreditRivals,
     BribeNobles,
+    SenatorPetition,
+    SenatorGift,
+    SenatorPatronage,
+    SenatorBribe,
+    SenatorThreaten,
+    SenatorMurder,
+    SenatorBanquet,
+    SenatorDiscredit,
+    SenatorLobby,
     InsultPlayer,
     Trade,
     Control,
@@ -188,6 +213,15 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         Icon::SpySupportRevolt => prepared!("spy-support-revolt"),
         Icon::SpyDiscreditRivals => prepared!("spy-discredit-rivals"),
         Icon::BribeNobles => prepared!("bribe-nobles"),
+        Icon::SenatorPetition => prepared!("senator-petition"),
+        Icon::SenatorGift => prepared!("senator-gift"),
+        Icon::SenatorPatronage => prepared!("senator-patronage"),
+        Icon::SenatorBribe => prepared!("senator-bribe"),
+        Icon::SenatorThreaten => prepared!("senator-threaten"),
+        Icon::SenatorMurder => prepared!("senator-murder"),
+        Icon::SenatorBanquet => prepared!("senator-banquet"),
+        Icon::SenatorDiscredit => prepared!("senator-discredit"),
+        Icon::SenatorLobby => prepared!("senator-lobby"),
         Icon::InsultPlayer => prepared!("insult-player"),
         Icon::Trade => prepared!("trade"),
         Icon::Control => prepared!("control"),
@@ -445,6 +479,7 @@ pub(in crate::app) fn paint_purchase_background(
     rounding: f32,
     scale: f32,
 ) -> egui::Color32 {
+    let enabled = enabled && ui.is_enabled();
     let fill = if !enabled {
         UNAVAILABLE_PURCHASE_FILL
     } else if pressed {
@@ -550,7 +585,7 @@ pub(in crate::app) fn work_queue(
                 let (image, response) =
                     ui.allocate_exact_size(egui::Vec2::splat(icon_size), egui::Sense::hover());
                 paint_icon(ui, art, image);
-                response.on_hover_text(tooltip);
+                response.inspection_hover_text(tooltip);
                 let gap = ui.spacing().item_spacing.x;
                 let width = (ui.available_width() - 22.0 * scale - gap).max(1.0);
                 let (track, _) =
@@ -613,7 +648,8 @@ pub(in crate::app) fn work_queue(
                         "Cancel active work",
                     )
                 });
-                let cancel = cancel.on_hover_text("Cancel active work. Costs are not refunded.");
+                let cancel =
+                    cancel.inspection_hover_text("Cancel active work. Costs are not refunded.");
                 if can_cancel && cancel.clicked() {
                     action = Some(WorkQueueAction::CancelActive);
                 }
@@ -640,7 +676,7 @@ pub(in crate::app) fn work_queue(
                         if can_cancel && response.secondary_clicked() {
                             *action = Some(WorkQueueAction::CancelQueued(*index));
                         }
-                        response.on_hover_text(if can_cancel {
+                        response.inspection_hover_text(if can_cancel {
                             format!("{tooltip}\nRight-click to remove and refund its cost.")
                         } else {
                             tooltip.clone()
@@ -756,7 +792,7 @@ pub(in crate::app) fn stat(
         ui.label(value);
     })
     .response
-    .on_hover_text(tooltip)
+    .inspection_hover_text(tooltip)
 }
 
 /// Province terrain, settlement and activity banners have distinct cached illustrations.
@@ -769,6 +805,8 @@ pub(in crate::app) enum ProvinceLandscape {
     Army,
     Diplomacy,
     Trade,
+    Notifications,
+    Scandals,
     Policies,
     RomeSenate,
     RomeEvents,
@@ -800,6 +838,13 @@ pub(in crate::app) fn prepare_portrait(
         },
         ProvinceLandscape::Trade => {
             ("trade", include_bytes!("../../assets/images/cities/trade-panel-banner.png"))
+        },
+        ProvinceLandscape::Notifications => (
+            "notifications",
+            include_bytes!("../../assets/images/cities/notifications-panel-banner.png"),
+        ),
+        ProvinceLandscape::Scandals => {
+            ("scandals", include_bytes!("../../assets/images/cities/scandals-panel-banner.png"))
         },
         ProvinceLandscape::Policies => {
             ("policies", include_bytes!(concat!(env!("OUT_DIR"), "/panel-banners/policies.png")))
@@ -880,6 +925,7 @@ pub(in crate::app) fn portrait(
         ProvinceLandscape::RomeProvinces => 0.35,
         ProvinceLandscape::RomeSpies => 0.32,
         ProvinceLandscape::RomeSenate => 0.69,
+        ProvinceLandscape::Scandals => 0.4,
         _ => 0.5,
     };
     let (x, y_min, y_max) = if aspect > target {
@@ -902,6 +948,105 @@ pub(in crate::app) fn portrait(
         egui::StrokeKind::Inside,
     );
     rect
+}
+
+/// Align the visible content below portraits, including inset section backgrounds.
+pub(in crate::app) fn space_after_portrait(
+    ui: &mut egui::Ui,
+    portrait: egui::Rect,
+    scale: f32,
+    content_inset: f32,
+) {
+    let top = portrait.bottom() + (8.0 - content_inset) * scale;
+    ui.add_space(top - ui.next_widget_position().y);
+}
+
+/// Network actions share centered icons, text, dimensions and hover states.
+pub(in crate::app) fn network_action_button(
+    ui: &mut egui::Ui,
+    symbol: Icon,
+    label: &str,
+    enabled: bool,
+    scale: f32,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.spacing_mut().button_padding.x = 4.0 * scale;
+        ui.spacing_mut().icon_spacing = 3.0 * scale;
+        ui.visuals_mut().widgets.inactive.bg_fill = province_panel::TABLE_STRIPE;
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = province_panel::TABLE_STRIPE;
+        ui.visuals_mut().widgets.hovered.bg_fill = egui::Color32::from_rgb(224, 210, 181);
+        ui.visuals_mut().widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(224, 210, 181);
+        ui.visuals_mut().widgets.active.bg_fill = egui::Color32::from_rgb(207, 180, 137);
+        ui.visuals_mut().widgets.active.weak_bg_fill = egui::Color32::from_rgb(207, 180, 137);
+        let response = ui.add_sized([98.0 * scale, 30.0 * scale], egui::Button::new(""));
+        let color = ui.style().interact(&response).text_color();
+        let text = ui.painter().layout_no_wrap(
+            label.to_owned(),
+            egui::TextStyle::Button.resolve(ui.style()),
+            color,
+        );
+        let icon_size = 20.0 * scale;
+        let gap = 3.0 * scale;
+        let left = response.rect.center().x - (icon_size + gap + text.size().x) * 0.5;
+        paint_icon(
+            ui,
+            symbol,
+            egui::Rect::from_min_size(
+                egui::pos2(left, response.rect.center().y - icon_size * 0.5),
+                egui::Vec2::splat(icon_size),
+            ),
+        );
+        ui.painter().galley(
+            egui::pos2(left + icon_size + gap, response.rect.center().y - text.size().y * 0.5),
+            text,
+            color,
+        );
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        response
+    })
+    .inner
+}
+
+/// Diplomacy and trade share the same territorial distance value and portrait treatment.
+pub(in crate::app) fn territorial_distance_badge(
+    ui: &mut egui::Ui,
+    portrait: egui::Rect,
+    distance: Option<usize>,
+    scale: f32,
+    hover_text: &str,
+) {
+    let multiplier = distance_multiplier(distance).ok();
+    let value = multiplier.map_or_else(
+        || "—".into(),
+        |value| format!("×{}", format!("{value:.2}").trim_end_matches('0').trim_end_matches('.')),
+    );
+    let text = ui.painter().layout_no_wrap(
+        format!("Distance modifier {value}"),
+        egui::FontId::proportional(12.0 * scale),
+        egui::Color32::WHITE,
+    );
+    let size = egui::vec2(text.size().x + 34.0 * scale, 27.0 * scale);
+    let rect = egui::Rect::from_min_size(
+        portrait.right_bottom() - size - egui::vec2(7.0, 7.0) * scale,
+        size,
+    );
+    ui.painter().rect_filled(rect, 3.0 * scale, egui::Color32::from_black_alpha(180));
+    paint_icon(
+        ui,
+        Icon::PoliticalDistance,
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(5.0, 4.0) * scale,
+            egui::vec2(19.0, 19.0) * scale,
+        ),
+    );
+    ui.painter().galley(
+        rect.min + egui::vec2(28.0 * scale, (rect.height() - text.size().y) * 0.5),
+        text,
+        egui::Color32::WHITE,
+    );
+    ui.interact(rect, ui.id().with("territorial-distance-badge"), egui::Sense::hover())
+        .inspection_hover_text(hover_text);
 }
 
 /// Keep landscape labels over the image; the city badge opens its building inspector.
@@ -954,6 +1099,62 @@ pub(in crate::app) fn landscape_badges(
     false
 }
 
+/// Inset player color shared by the province, spy, and army directories.
+pub(super) fn directory_owner_marker(
+    ui: &mut egui::Ui,
+    color: egui::Color32,
+    row_height: f32,
+    scale: f32,
+) -> egui::Rect {
+    let (swatch, _) = ui.allocate_exact_size(
+        egui::vec2(6.0 * scale, row_height * (34.0 / 50.0)),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(swatch, 2.0 * scale, color);
+    swatch
+}
+
+pub(super) fn paint_directory_row(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    response: &egui::Response,
+    row: usize,
+    scale: f32,
+) {
+    let fill = if response.is_pointer_button_down_on() || response.clicked() {
+        egui::Color32::from_rgb(199, 163, 111)
+    } else if response.hovered() || response.has_focus() {
+        egui::Color32::from_rgb(231, 213, 181)
+    } else if row.is_multiple_of(2) {
+        province_panel::TABLE_STRIPE
+    } else {
+        province_panel::PAPER
+    };
+    ui.painter().rect_filled(rect, 3.0 * scale, fill);
+    ui.painter().rect_stroke(
+        rect,
+        3.0 * scale,
+        egui::Stroke::new(scale, province_panel::RULE),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Keep province names at the directory body size and truncate long names.
+pub(super) fn directory_province_name(ui: &mut egui::Ui, name: &str, width: f32, scale: f32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 34.0 * scale),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_size(egui::vec2(width, 34.0 * scale));
+            ui.add(
+                egui::Label::new(egui::RichText::new(name).strong())
+                    .truncate()
+                    .halign(egui::Align::LEFT),
+            );
+        },
+    );
+}
+
 /// The map's global popup style must match its compact widgets, not the main menu's 23px body.
 pub(in crate::app) fn map_style(scale: f32) -> egui::Style {
     let mut style = super::augustus_ui_style();
@@ -976,6 +1177,7 @@ pub(in crate::app) fn map_style(scale: f32) -> egui::Style {
     style.visuals.window_fill = province_panel::PAPER;
     style.visuals.panel_fill = province_panel::PAPER;
     style.visuals.extreme_bg_color = province_panel::TABLE_STRIPE;
+    style.visuals.text_edit_bg_color = Some(province_panel::PAPER);
     style.visuals.faint_bg_color = province_panel::TABLE_STRIPE;
     style.visuals.window_stroke = egui::Stroke::new(1.0, province_panel::RULE);
     style.visuals.selection.bg_fill = egui::Color32::from_rgb(202, 177, 137);
@@ -994,5 +1196,6 @@ pub(in crate::app) fn map_style(scale: f32) -> egui::Style {
     style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 210, 180);
     style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(226, 210, 180);
     style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(195, 145, 87);
+    style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(226, 210, 180);
     style
 }

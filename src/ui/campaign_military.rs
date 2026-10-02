@@ -3,10 +3,12 @@
 //! Rendering returns a typed action so the campaign bridge owns transactional
 //! diplomacy, civilian population, and global-resource mutations.
 
+use super::spectator::InspectionHover;
 use std::collections::BTreeSet;
 
 use super::campaign_widgets::{
-    icon, paint_icon, paint_purchase_background, stat, work_queue, Icon, WorkQueueAction,
+    directory_owner_marker, directory_province_name, icon, paint_directory_row, paint_icon,
+    paint_purchase_background, stat, work_queue, Icon, WorkQueueAction,
 };
 use super::resource_hud::format_food_demand;
 use bevy::prelude::*;
@@ -19,8 +21,8 @@ use crate::game::military::*;
 mod battle_panel;
 #[path = "military_orders.rs"]
 mod orders;
-pub(in crate::app) use battle_panel::{draw_battle_panel, open_battle_panel, selected_battle};
-pub(in crate::app) use orders::draw_orders_menu;
+pub(in crate::app) use battle_panel::{draw_battle_panel, open_battle_panel};
+pub(in crate::app) use orders::{draw_orders_menu, prepare_orders};
 
 /// One player intent dispatched by the campaign bridge after rendering.
 pub(in crate::app) enum MilitaryUiAction {
@@ -98,6 +100,7 @@ pub(in crate::app) fn open_army_tab(ctx: &egui::Context, province: usize, player
 }
 
 const ARMY_PANEL_ID: &str = "campaign-army-panel";
+const ARMY_COLLAPSED_ID: &str = "campaign-army-collapsed";
 const ARMY_TITLE_SEARCH_ID: &str = "campaign-army-title-search";
 const ARMY_PROVINCE_CLICK_ID: &str = "campaign-army-province-click";
 
@@ -115,6 +118,7 @@ struct ArmyTitleSearch {
 struct ArmyPanelSelection {
     province: usize,
     player: usize,
+    owner: ForceOwner,
     panel: ArmyPanel,
 }
 
@@ -130,6 +134,7 @@ pub(super) fn selected_army_province(ctx: &egui::Context) -> Option<usize> {
 fn set_selected_army(ctx: &egui::Context, selected: Option<ArmyPanelSelection>) {
     orders::clear(ctx);
     ctx.data_mut(|data| {
+        data.remove::<bool>(egui::Id::new(ARMY_COLLAPSED_ID));
         data.remove::<ArmyTitleSearch>(egui::Id::new(ARMY_TITLE_SEARCH_ID));
         if let Some(selected) = selected {
             data.insert_temp(egui::Id::new(ARMY_PANEL_ID), selected);
@@ -137,6 +142,30 @@ fn set_selected_army(ctx: &egui::Context, selected: Option<ArmyPanelSelection>) 
             data.remove::<ArmyPanelSelection>(egui::Id::new(ARMY_PANEL_ID));
         }
     });
+    sync_map_selection(ctx);
+}
+
+/// Retain the order origin without rendering a card while another inspector is in use.
+pub(super) fn collapse_army_panel(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(ARMY_COLLAPSED_ID), true));
+}
+
+pub(super) fn army_details_open(ctx: &egui::Context) -> bool {
+    selected_army(ctx).is_some()
+        && !ctx
+            .data(|data| data.get_temp::<bool>(egui::Id::new(ARMY_COLLAPSED_ID)).unwrap_or(false))
+        && !orders::is_open(ctx)
+}
+
+pub(super) fn cancel_orders(ctx: &egui::Context) {
+    orders::clear(ctx);
+}
+
+fn sync_map_selection(ctx: &egui::Context) {
+    let selection = selected_army(ctx)
+        .filter(|army| army.panel == ArmyPanel::Stationary)
+        .map(|army| (army.province, orders::destination(ctx)));
+    crate::map::set_army_order_selection(ctx, selection);
 }
 
 /// Escape closes the independent army window before the game menu is opened.
@@ -164,12 +193,13 @@ pub(in crate::app) fn open_army_panel(
         Some(ArmyPanelSelection {
             province,
             player,
+            owner: ForceOwner::Player(player),
             panel: movement.map_or(ArmyPanel::Stationary, ArmyPanel::Movement),
         }),
     );
 }
 
-/// A second map click on the same army closes its window.
+/// Reopen hidden details; a second click on the expanded army closes its window.
 pub(in crate::app) fn toggle_map_army_panel(
     ctx: &egui::Context,
     province: usize,
@@ -186,12 +216,42 @@ pub(in crate::app) fn toggle_map_army_panel(
 }
 
 fn toggle_army_panel(ctx: &egui::Context, province: usize, player: usize, panel: ArmyPanel) {
+    toggle_force_panel(ctx, province, player, ForceOwner::Player(player), panel);
+}
+
+/// Spectators inspect the actual force, including another player's army or local defenders.
+pub(in crate::app) fn toggle_inspection_army_panel(
+    ctx: &egui::Context,
+    province: usize,
+    player: usize,
+    owner: ForceOwner,
+    movement: Option<u64>,
+) {
+    battle_panel::dismiss(ctx);
+    toggle_force_panel(
+        ctx,
+        province,
+        player,
+        owner,
+        movement.map_or(ArmyPanel::Stationary, ArmyPanel::Movement),
+    );
+}
+
+fn toggle_force_panel(
+    ctx: &egui::Context,
+    province: usize,
+    player: usize,
+    owner: ForceOwner,
+    panel: ArmyPanel,
+) {
     let selected = ArmyPanelSelection {
         province,
         player,
+        owner,
         panel,
     };
-    set_selected_army(ctx, (selected_army(ctx) != Some(selected)).then_some(selected));
+    let close = selected_army(ctx) == Some(selected) && army_details_open(ctx);
+    set_selected_army(ctx, (!close).then_some(selected));
 }
 
 /// One owner's province force, or one distinct force currently marching from it.
@@ -216,7 +276,10 @@ impl ArmyOverviewRow {
 
 /// The caller supplies the current, visibility-filtered military view without dated reports.
 fn army_overview_rows(world: &MilitaryWorld, player: usize) -> Vec<ArmyOverviewRow> {
-    let own = ForceOwner::Player(player);
+    army_overview_rows_for_owner(world, ForceOwner::Player(player))
+}
+
+fn army_overview_rows_for_owner(world: &MilitaryWorld, own: ForceOwner) -> Vec<ArmyOverviewRow> {
     let mut rows = Vec::new();
     for (province, state) in world.provinces.iter().enumerate() {
         let own_units = province_force_units(world, province, own);
@@ -350,7 +413,7 @@ fn rank_ladder(
             if available && response.clicked() {
                 *promotion = Some(rank);
             }
-            response.on_hover_ui(|ui| {
+            response.inspection_hover_ui(|ui| {
                 let mut rows = Vec::new();
                 if let Some(req) = requirements {
                     rows.extend([
@@ -370,7 +433,7 @@ fn rank_ladder(
                         (
                             influence >= req.influence,
                             format!(
-                                "Influence to pay: {}/{:.0}",
+                                "Influence cost: {}/{:.0}",
                                 influence.round() as u64,
                                 req.influence
                             ),
@@ -388,7 +451,7 @@ fn rank_ladder(
     });
 }
 
-/// National military career and separate owned and visiting army ledgers.
+/// National military career and one province ledger for owned and visiting armies.
 pub(in crate::app) fn overview(
     ui: &mut egui::Ui,
     world: &MilitaryWorld,
@@ -401,7 +464,12 @@ pub(in crate::app) fn overview(
 ) -> Option<ProvinceId> {
     let own = ForceOwner::Player(player);
     let mut rows = army_overview_rows(world, player);
-    rows.retain(|row| row.province < economy.provinces.len());
+    rows.retain(|row| {
+        row.province < economy.provinces.len()
+            && (row.owner == own
+                || (matches!(row.owner, ForceOwner::Player(_))
+                    && economy.provinces[row.province].owner == Some(player)))
+    });
     rows.sort_by(|a, b| {
         economy.provinces[a.province].name.cmp(&economy.provinces[b.province].name).then_with(
             || {
@@ -414,15 +482,7 @@ pub(in crate::app) fn overview(
             },
         )
     });
-    let own_rows: Vec<_> = rows.iter().filter(|row| row.owner == own).collect();
-    let friendly_rows: Vec<_> = rows
-        .iter()
-        .filter(|row| {
-            row.owner != own
-                && matches!(row.owner, ForceOwner::Player(_))
-                && economy.provinces[row.province].owner == Some(player)
-        })
-        .collect();
+    let rows: Vec<_> = rows.iter().collect();
     let height = (ui.clip_rect().bottom() - ui.next_widget_position().y).max(0.);
     let mut selected_province = None;
     egui::ScrollArea::vertical()
@@ -431,45 +491,32 @@ pub(in crate::app) fn overview(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_width((ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.));
+            super::campaign_widgets::portrait(
+                ui,
+                super::campaign_widgets::ProvinceLandscape::Military,
+                76.0 * scale,
+            );
             super::policy_widgets::section(ui, scale, "MILITARY RANK");
             rank_ladder(ui, world, player, influence, scale, promotion);
             ui.add_space(10. * scale);
-            super::policy_widgets::section(ui, scale, "ARMIES");
-            if own_rows.is_empty() {
+            overview_table(
+                ui,
+                &rows,
+                world,
+                economy,
+                player,
+                colors,
+                scale,
+                &mut selected_province,
+            );
+            if rows.is_empty() {
                 ui.label("You have no armies.");
-            } else {
-                overview_table(
-                    ui,
-                    &own_rows,
-                    world,
-                    economy,
-                    player,
-                    colors,
-                    scale,
-                    &mut selected_province,
-                );
-            }
-            ui.add_space(10. * scale);
-            super::policy_widgets::section(ui, scale, "FRIENDLY ARMIES");
-            if friendly_rows.is_empty() {
-                ui.label("No friendly armies in your provinces.");
-            } else {
-                overview_table(
-                    ui,
-                    &friendly_rows,
-                    world,
-                    economy,
-                    player,
-                    colors,
-                    scale,
-                    &mut selected_province,
-                );
             }
         });
     selected_province
 }
 
-const OVERVIEW_FRACTIONS: [f32; 6] = [0., 0.24, 0.49, 0.75, 0.875, 1.];
+const OVERVIEW_FRACTIONS: [f32; 6] = [0., 0.24, 0.62, 0.75, 0.875, 1.];
 
 fn overview_cells(rect: egui::Rect, scale: f32) -> [egui::Rect; 5] {
     std::array::from_fn(|index| {
@@ -527,7 +574,7 @@ fn overview_table(
     scale: f32,
     selected_province: &mut Option<ProvinceId>,
 ) {
-    use super::province_panel::{INK, PAPER, RULE, TABLE_STRIPE};
+    use super::province_panel::{INK, PAPER, RULE};
     let width = ui.available_width().max(1.);
     let (header, _) = ui.allocate_exact_size(egui::vec2(width, 34. * scale), egui::Sense::hover());
     ui.painter().rect_filled(header, 2. * scale, egui::Color32::from_rgb(73, 69, 61));
@@ -562,41 +609,35 @@ fn overview_table(
                 ),
             )
         });
-        ui.painter().rect_filled(
-            rect,
-            0.,
-            if response.hovered() || response.has_focus() {
-                egui::Color32::from_rgb(229, 217, 190)
-            } else if index.is_multiple_of(2) {
-                PAPER
-            } else {
-                TABLE_STRIPE
-            },
-        );
+        paint_directory_row(ui, rect, &response, index, scale);
         let cell = overview_cells(rect, scale);
         let color = match row.owner {
             ForceOwner::Player(id) => colors.get(id).copied().unwrap_or(RULE),
             ForceOwner::Local(_) => super::province_panel::NEUTRAL,
         };
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(rect.min, egui::vec2(3. * scale, height)),
-            0.,
-            color,
+        let mut marker_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink(7. * scale))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        if row.owner == ForceOwner::Player(player) {
-            overview_text(ui, cell[0], &economy.provinces[row.province].name, 13., INK, scale);
-        } else {
-            let province = egui::Rect::from_min_max(
-                cell[0].min,
-                egui::pos2(cell[0].right(), cell[0].center().y),
-            );
-            let owner = egui::Rect::from_min_max(
-                egui::pos2(cell[0].left(), cell[0].center().y),
-                cell[0].max,
-            );
-            overview_text(ui, province, &economy.provinces[row.province].name, 13., INK, scale);
-            overview_text(ui, owner, &military_owner_name(row.owner, world), 11., INK, scale);
-        }
+        let marker = directory_owner_marker(&mut marker_ui, color, rect.height(), scale);
+        let province_cell = egui::Rect::from_min_max(
+            egui::pos2(marker.right() + 8. * scale, rect.center().y - 17. * scale),
+            egui::pos2(cell[0].right(), rect.center().y + 17. * scale),
+        );
+        let mut province_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(province_cell)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        province_ui.set_clip_rect(province_ui.clip_rect().intersect(province_cell));
+        let name_width = province_ui.available_width().max(1.);
+        directory_province_name(
+            &mut province_ui,
+            &economy.provinces[row.province].name,
+            name_width,
+            scale,
+        );
         let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(cell[1]));
         for (unit_index, &(kind, count)) in composition.iter().enumerate() {
             let min = cell[1].min
@@ -618,22 +659,11 @@ fn overview_table(
             );
         }
         if let Some(tactic) = row.tactic {
-            let image = egui::Rect::from_center_size(
-                egui::pos2(cell[2].left() + 11. * scale, cell[2].center().y),
-                egui::vec2(22., 22.) * scale,
-            );
+            let image =
+                egui::Rect::from_center_size(cell[2].center(), egui::vec2(26., 26.) * scale);
             paint_tactic(ui, tactic, image);
-            overview_text(
-                ui,
-                egui::Rect::from_min_max(
-                    egui::pos2(image.right() + 4. * scale, cell[2].top()),
-                    cell[2].max,
-                ),
-                tactic.name(),
-                12.,
-                INK,
-                scale,
-            );
+            ui.interact(image, response.id.with("tactic"), egui::Sense::hover())
+                .inspection_hover_text(tactic.name());
         } else {
             overview_text(ui, cell[2], "?", 12., INK, scale);
         }
@@ -650,11 +680,6 @@ fn overview_table(
             },
             scale,
         );
-        ui.painter().hline(
-            rect.x_range(),
-            rect.bottom(),
-            egui::Stroke::new(scale, RULE.gamma_multiply(0.3)),
-        );
         if response.clicked() {
             if row.owner == ForceOwner::Player(player) {
                 open_army_panel(ui.ctx(), row.province, player, row.movement);
@@ -662,6 +687,7 @@ fn overview_table(
                 *selected_province = Some(row.province);
             }
         }
+        ui.add_space(3. * scale);
     }
 }
 
@@ -672,7 +698,7 @@ fn military_banner(
     can_recruit: bool,
     tab: &mut MilitaryTab,
     scale: f32,
-) {
+) -> egui::Rect {
     let banner = super::campaign_widgets::portrait(
         ui,
         super::campaign_widgets::ProvinceLandscape::Military,
@@ -705,7 +731,7 @@ fn military_banner(
         egui::pos2(banner.right() - margin, bottom),
     );
     ui.interact(rank_rect, ui.id().with("military-rank-badge"), egui::Sense::hover())
-        .on_hover_text("Current military rank.");
+        .inspection_hover_text("Current military rank.");
     paint_army_banner_badge(
         ui,
         rank_rect,
@@ -715,7 +741,7 @@ fn military_banner(
         badge_scale,
     );
     if !can_recruit {
-        return;
+        return banner;
     }
     let response = ui
         .interact(switch_rect, ui.id().with("military-recruitment-badge"), egui::Sense::click())
@@ -752,6 +778,7 @@ fn military_banner(
         ),
         egui::StrokeKind::Inside,
     );
+    banner
 }
 
 /// Province Military is a compact ledger; only the player's rows open an army panel.
@@ -775,7 +802,8 @@ pub(in crate::app) fn show(
     let tab_id = egui::Id::new(("province-military-tab", province, player));
     let mut tab =
         ui.ctx().data_mut(|data| data.get_temp::<MilitaryTab>(tab_id)).unwrap_or_default();
-    let can_recruit = economic.owner == Some(player);
+    let inspection = super::spectator::read_only(ui.ctx());
+    let can_recruit = super::spectator::domestic_view(ui.ctx(), economic.owner == Some(player));
     if !can_recruit {
         tab = MilitaryTab::Army;
     }
@@ -806,11 +834,20 @@ pub(in crate::app) fn show(
         },
         _ => MilitaryRank::Centurion,
     };
-    military_banner(ui, rank, can_recruit, &mut tab, scale);
+    let banner = military_banner(ui, rank, can_recruit, &mut tab, scale);
+    super::campaign_widgets::space_after_portrait(ui, banner, scale, 0.0);
     ui.ctx().data_mut(|data| data.insert_temp(tab_id, tab));
     let mut action = None;
     if tab == MilitaryTab::Recruitment {
-        action = recruitment_view(ui, world, economy, province, player, false);
+        action = ui
+            .scope(|ui| {
+                if inspection {
+                    ui.visuals_mut().disabled_alpha = 1.0;
+                    ui.disable();
+                }
+                recruitment_view(ui, world, economy, province, player, false)
+            })
+            .inner;
     } else {
         let all_units: Vec<_> =
             armies.iter().flat_map(|(_, units)| units.iter().cloned()).collect();
@@ -838,13 +875,21 @@ pub(in crate::app) fn show(
                         &world.config,
                         army_name(*force_owner, economy, world),
                         color,
-                        own,
-                        own && economic.owner == Some(player)
+                        own || inspection,
+                        !inspection
+                            && own
+                            && economic.owner == Some(player)
                             && !world.province_in_battle(province),
                         scale,
                     );
                     if clicked {
-                        toggle_army_panel(ui.ctx(), province, player, ArmyPanel::Stationary);
+                        toggle_force_panel(
+                            ui.ctx(),
+                            province,
+                            player,
+                            *force_owner,
+                            ArmyPanel::Stationary,
+                        );
                     }
                     if disband {
                         action = Some(MilitaryUiAction::DisbandArmy);
@@ -852,7 +897,7 @@ pub(in crate::app) fn show(
                     ui.add_space(6. * scale);
                 }
                 for movement in world.movements.iter().filter(|movement| {
-                    movement.owner == owner
+                    (movement.owner == owner || inspection)
                         && (movement.origin == province || movement.destination() == Some(province))
                 }) {
                     let destination = movement
@@ -874,10 +919,11 @@ pub(in crate::app) fn show(
                         scale,
                     );
                     if clicked {
-                        toggle_army_panel(
+                        toggle_force_panel(
                             ui.ctx(),
-                            province,
+                            movement.origin,
                             player,
+                            movement.owner,
                             ArmyPanel::Movement(movement.id),
                         );
                     }
@@ -885,7 +931,7 @@ pub(in crate::app) fn show(
                 }
             });
     }
-    action
+    action.filter(|_| !inspection)
 }
 
 /// Render the selected army without depending on the province inspector's visibility.
@@ -901,17 +947,25 @@ pub(in crate::app) fn draw_army_panel(
     hostile: impl Fn(ForceOwner, ForceOwner) -> bool,
 ) -> Option<(usize, MilitaryUiAction)> {
     let selected = selected_army(ctx)?;
-    if selected.player != player {
+    if selected.player != player && !super::spectator::read_only(ctx) {
         set_selected_army(ctx, None);
         return None;
     }
+    let player = if super::spectator::read_only(ctx) {
+        selected.player
+    } else {
+        player
+    };
     let province = selected.province;
     let panel = selected.panel;
-    let owner = ForceOwner::Player(player);
+    let owner = selected.owner;
     let Some(economic) = economy.provinces.get(province) else {
         set_selected_army(ctx, None);
         return None;
     };
+    if orders::is_open(ctx) {
+        return None;
+    }
     let exists = match panel {
         ArmyPanel::Stationary => !province_force_units(world, province, owner).is_empty(),
         ArmyPanel::Movement(id) => {
@@ -922,17 +976,25 @@ pub(in crate::app) fn draw_army_panel(
         set_selected_army(ctx, None);
         return None;
     }
+    if !army_details_open(ctx) {
+        return None;
+    }
     let scale = super::viewport_ui_scale(ctx.content_rect().size());
     let screen = ctx.content_rect();
     let bottom = ctx
         .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("practice-players-panel-rect")))
         .map_or(screen.bottom() - 8. * scale, |rect| rect.bottom());
     let width = (640. * scale).min(screen.width() - 16. * scale);
-    let color = ctx
-        .data(|data| data.get_temp::<egui::Color32>(egui::Id::new("campaign-active-player-color")))
-        .unwrap_or(super::PLAYER_COLORS[player % super::PLAYER_COLORS.len()]);
+    let color = if super::spectator::read_only(ctx) {
+        army_owner_color(ctx, owner)
+    } else {
+        ctx.data(|data| {
+            data.get_temp::<egui::Color32>(egui::Id::new("campaign-active-player-color"))
+        })
+        .unwrap_or(super::PLAYER_COLORS[player % super::PLAYER_COLORS.len()])
+    };
     let panel_id = egui::Id::new(ARMY_PANEL_ID);
-    let choices: Vec<_> = army_overview_rows(world, player)
+    let choices: Vec<_> = army_overview_rows_for_owner(world, owner)
         .into_iter()
         .filter(|row| row.owner == owner)
         .filter_map(|row| {
@@ -950,6 +1012,7 @@ pub(in crate::app) fn draw_army_panel(
                 ArmyPanelSelection {
                     province: row.province,
                     player,
+                    owner,
                     panel: row.movement.map_or(ArmyPanel::Stationary, ArmyPanel::Movement),
                 },
                 label,
@@ -992,6 +1055,10 @@ pub(in crate::app) fn draw_army_panel(
                         ctx.request_repaint();
                     }
                     egui::Frame::new().inner_margin(10. * scale).show(ui, |ui| {
+                        if super::spectator::read_only(ctx) {
+                            ui.visuals_mut().disabled_alpha = 1.0;
+                            ui.disable();
+                        }
                         ui.set_width(width - 20. * scale);
                         ui.set_min_height(450. * scale);
                         action = match panel {
@@ -1018,7 +1085,7 @@ pub(in crate::app) fn draw_army_panel(
     if !open {
         set_selected_army(ctx, None);
     }
-    action.map(|action| (province, action))
+    action.filter(|_| !super::spectator::read_only(ctx)).map(|action| (province, action))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1178,7 +1245,7 @@ fn army_detail_banner(
             MilitaryUiAction::DisbandArmy,
         ),
     ] {
-        let enabled = availability.is_ok();
+        let enabled = availability.is_ok() && ui.is_enabled();
         let rect = egui::Rect::from_min_size(
             egui::pos2(
                 banner.right() - 8. * scale - (2. - index as f32) * 112. * badge_scale
@@ -1197,7 +1264,7 @@ fn army_detail_banner(
         } else {
             response
         };
-        let response = response.on_hover_text(availability.err().unwrap_or(tip));
+        let response = response.inspection_hover_text(availability.err().unwrap_or(tip));
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
         if response.clicked() {
             action = Some(value);
@@ -1276,7 +1343,9 @@ fn stationary_army_panel(
 ) -> Option<MilitaryUiAction> {
     let economic = economy.provinces.get(province)?;
     let terrain = graph.get(province)?.terrain;
-    let owner = ForceOwner::Player(player);
+    let owner = selected_army(ui.ctx())
+        .filter(|army| army.province == province)
+        .map_or(ForceOwner::Player(player), |army| army.owner);
     let army = province_force_units(world, province, owner);
     let in_battle = world.province_in_battle(province);
     let mergeable = UnitType::ALL.into_iter().any(|kind| {
@@ -1331,7 +1400,7 @@ fn stationary_army_panel(
         let can_retreat = battle.months >= world.config.minimum_retreat_months
             && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
         if ui.add_enabled(can_retreat, egui::Button::new("Retreat"))
-            .on_hover_text("Available after one combat month when an adjacent province permits stationing. Surrounded troops keep fighting.")
+            .inspection_hover_text("Available after one combat month when an adjacent province permits stationing. Surrounded troops keep fighting.")
             .clicked() {
             action = Some(MilitaryUiAction::Retreat { battle: battle.id, attacker });
         }
@@ -1366,7 +1435,10 @@ fn movement_army_panel(
         deployment_editor(ui, &plan, &movement.units, location.terrain, &world.config);
     }
     ui.small(format!("Marching to {}", destination.name));
-    ui.add(egui::ProgressBar::new(movement.interpolation() as f32).desired_height(12.));
+    ui.add(
+        egui::ProgressBar::new(crate::map::movement_visual_progress(ui.ctx(), movement))
+            .desired_height(12.),
+    );
     (plan != previous).then_some(MilitaryUiAction::SaveMovementPlan {
         order: id,
         plan,
@@ -1384,8 +1456,9 @@ fn recruitment_view(
 ) -> Option<MilitaryUiAction> {
     let state = world.provinces.get(province)?;
     let economic = economy.provinces.get(province)?;
-    let directly_owned = economic.owner == Some(player);
-    let in_battle = world.province_in_battle(province);
+    let directly_owned = super::spectator::domestic_view(ui.ctx(), economic.owner == Some(player));
+    let occupied =
+        economic.occupied || world.province_occupied_by_enemy(province, ForceOwner::Player(player));
     let mut action = None;
     if !directly_owned {
         if let Some(project) = &state.recruitment {
@@ -1425,7 +1498,15 @@ fn recruitment_view(
         ((empty_height - 5. * ui.spacing().item_spacing.y) / 6.).max(62. * scale).floor();
     let speed = economy.config.recruitment_speed[economic.policies.recruitment as usize].max(0.001);
     let active = state.recruitment.as_ref().map(|project| {
-        let progress = recruitment_completion(ui, project, speed);
+        let progress = recruitment_completion(
+            ui,
+            project,
+            if occupied {
+                0.0
+            } else {
+                speed
+            },
+        );
         (
             Icon::Unit(project.unit_type),
             progress,
@@ -1458,10 +1539,14 @@ fn recruitment_view(
         if let Some(queue_action) = work_queue(
             ui,
             egui::Id::new(("recruitment-queue", province)),
-            "Recruiting",
+            if occupied {
+                "Recruitment paused: enemy occupation"
+            } else {
+                "Recruiting"
+            },
             active,
             &queued,
-            directly_owned,
+            directly_owned && !occupied,
             true,
             scale,
         ) {
@@ -1496,8 +1581,8 @@ fn recruitment_view(
             ui.horizontal(|ui| {
                 for &kind in row {
                     let def = world.config.unit(kind);
-                    let reason = if in_battle {
-                        Some("Recruitment is unavailable during battle")
+                    let reason = if occupied {
+                        Some("Enemy occupation blocks recruitment")
                     } else if state.recruitment_queue_full() {
                         Some("Recruitment queue is full")
                     } else if def
@@ -1634,7 +1719,7 @@ fn recruitment_view(
                     } else {
                         response
                     };
-                    response.on_hover_ui(|ui| {
+                    response.inspection_hover_ui(|ui| {
                         recruitment_hover(ui, kind, &world.config, speed, reason, scale)
                     });
                 }
@@ -1714,7 +1799,7 @@ fn recruitment_hover(
                         ui.label(egui::RichText::new(value).strong().size(17.0 * scale));
                     })
                     .response
-                    .on_hover_text(explanation);
+                    .inspection_hover_text(explanation);
                 }
             });
             ui.add_space(10.0 * scale);
@@ -1854,7 +1939,7 @@ fn tactic_capabilities(ui: &mut egui::Ui, kind: UnitType, config: &MilitaryConfi
                         .size(14.0 * scale)
                         .color(tactic_fit_color(suitability)),
                 )
-                .on_hover_text("Unit suitability for this tactic. Higher fit increases its bonus when it counters an enemy tactic. Even 0% fit does not remove normal attack damage.");
+                .inspection_hover_text("Unit suitability for this tactic. Higher fit increases its bonus when it counters an enemy tactic. Even 0% fit does not remove normal attack damage.");
                 ui.end_row();
             }
         });
@@ -2123,7 +2208,7 @@ fn stationed_army_row(
             },
         );
         ui.interact(badge, response.id.with(("stat", symbol)), egui::Sense::hover())
-            .on_hover_text(tip);
+            .inspection_hover_text(tip);
     }
     for (index, (kind, count)) in composition.iter().enumerate() {
         let min = rect.left_bottom()
@@ -2143,14 +2228,15 @@ fn stationed_army_row(
         let unit_rect =
             egui::Rect::from_min_size(image.min, egui::vec2(cell_width - 2., icon_size) * scale);
         ui.interact(unit_rect, response.id.with(("unit", *kind)), egui::Sense::hover())
-            .on_hover_text(kind.name());
+            .inspection_hover_text(kind.name());
     }
-    let disband = if can_disband {
+    let disband = if can_disband || super::spectator::read_only(ui.ctx()) {
         let button_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - 92. * scale, rect.top() + 8. * scale),
             egui::vec2(84., 23.) * scale,
         );
-        let button = ui.place(button_rect, egui::Button::new(""));
+        let button =
+            ui.add_enabled_ui(can_disband, |ui| ui.place(button_rect, egui::Button::new(""))).inner;
         paint_icon(
             ui,
             Icon::Cancel,
@@ -2167,10 +2253,10 @@ fn stationed_army_row(
             INK,
         );
         button.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Disband army")
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_disband, "Disband army")
         });
         button
-            .on_hover_text(
+            .inspection_hover_text(
                 "Disband this army. Soldiers will return to their respective population classes.",
             )
             .clicked()
@@ -2255,37 +2341,43 @@ fn tactic_choice(
     units: &[Unit],
     config: &MilitaryConfig,
 ) -> egui::Response {
+    let scale = super::viewport_ui_scale(ui.ctx().content_rect().size());
     let fit = tactic_effectiveness(units.iter(), tactic, config);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(340., 78.), egui::Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 78. * scale), egui::Sense::click());
     let paper = if selected || response.hovered() {
         egui::Color32::from_rgb(226, 210, 180)
     } else {
         super::province_panel::PAPER
     };
-    ui.painter().rect_filled(rect, 2., paper);
+    ui.painter().rect_filled(rect, 2. * scale, paper);
     ui.painter().rect_stroke(
         rect,
-        2.,
-        egui::Stroke::new(1., super::province_panel::RULE),
+        2. * scale,
+        egui::Stroke::new(scale, super::province_panel::RULE),
         egui::StrokeKind::Inside,
     );
-    let at = |x, y| rect.min + egui::vec2(x, y);
+    let at = |x, y| rect.min + egui::vec2(x, y) * scale;
     let paint_symbol = |kind, x, y, size| {
-        paint_tactic(ui, kind, egui::Rect::from_min_size(at(x, y), egui::vec2(size, size)));
+        paint_tactic(
+            ui,
+            kind,
+            egui::Rect::from_min_size(at(x, y), egui::Vec2::splat(size * scale)),
+        );
     };
     paint_symbol(tactic, 7., 5., 40.);
     ui.painter().text(
         at(27., 65.),
         egui::Align2::CENTER_CENTER,
         format!("{:.0}%", fit * 100.),
-        egui::FontId::proportional(12.),
+        egui::FontId::proportional(12. * scale),
         tactic_fit_color(fit),
     );
     ui.painter().text(
         at(59., 17.),
         egui::Align2::LEFT_CENTER,
         tactic.name(),
-        egui::FontId::proportional(16.),
+        egui::FontId::proportional(16. * scale),
         super::province_panel::INK,
     );
     for (row, &counter) in config.counters[tactic as usize].iter().enumerate() {
@@ -2295,7 +2387,7 @@ fn tactic_choice(
             at(85., y + 11.),
             egui::Align2::LEFT_CENTER,
             format!("+{:.1}%", config.tactic_bonus[tactic as usize] * fit * 100.),
-            egui::FontId::proportional(13.),
+            egui::FontId::proportional(13. * scale),
             egui::Color32::from_rgb(74, 117, 58),
         );
     }
@@ -2310,14 +2402,14 @@ fn tactic_choice(
             at(205., y + 11.),
             egui::Align2::LEFT_CENTER,
             format!("{:.0}%", (config.countered_multiplier - 1.) * 100.),
-            egui::FontId::proportional(13.),
+            egui::FontId::proportional(13. * scale),
             egui::Color32::from_rgb(154, 57, 47),
         );
     }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tactic.name())
     });
-    response
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// One icon-button opens the tactic list with real composition fit and counters.
@@ -2354,15 +2446,17 @@ fn edit_plan(
                 egui::Align::Center,
             );
             paint_dropdown_arrow(ui, rect, scale);
-            let popup = egui::Popup::menu(&tactic_button).show(|ui| {
-                ui.set_width(340. * scale);
-                for tactic in CombatTactic::ALL {
-                    if tactic_choice(ui, tactic, plan.tactic == tactic, units, config).clicked() {
-                        plan.tactic = tactic;
-                        ui.close();
+            let popup = egui::Popup::menu(&tactic_button)
+                .frame(egui::Frame::popup(ui.style()).inner_margin(4. * scale))
+                .show(|ui| {
+                    ui.set_width(252. * scale);
+                    for tactic in CombatTactic::ALL {
+                        if tactic_choice(ui, tactic, plan.tactic == tactic, units, config).clicked() {
+                            plan.tactic = tactic;
+                            ui.close();
+                        }
                     }
-                }
-            });
+                });
             if let Some(popup) = popup {
                 if popup.response.layer_id.order == tactic_button.layer_id.order {
                     ui.ctx().set_sublayer(tactic_button.layer_id, popup.response.layer_id);
@@ -2397,7 +2491,7 @@ fn edit_plan(
                 if let Some(kind) = unit_type_dropdown(ui, &response, *value, units, scale) {
                     *value = kind;
                 }
-                response.on_hover_text(format!(
+                response.inspection_hover_text(format!(
                     "{label}: {}. Choose a preferred cohort type for this formation role.",
                     value.name()
                 ));
@@ -2423,7 +2517,19 @@ fn edit_plan(
                 .gap(0.)
                 .frame(egui::Frame::popup(ui.style()).inner_margin(4. * scale))
                 .show(|ui| {
-                    ui.set_width(140. * scale);
+                    let width = (1..=5)
+                        .map(|size| {
+                            ui.painter()
+                                .layout_no_wrap(
+                                    format!("{size} per side"),
+                                    egui::TextStyle::Button.resolve(ui.style()),
+                                    super::province_panel::INK,
+                                )
+                                .size()
+                                .x
+                        })
+                        .fold(0., f32::max);
+                    ui.set_width(width + 12. * scale);
                     for size in [1, 2, 3, 4, 5] {
                         if ui
                             .add(
@@ -2431,6 +2537,7 @@ fn edit_plan(
                                     .left_text(format!("{size} per side"))
                                     .min_size(egui::vec2(ui.available_width(), 28. * scale)),
                             )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
                             plan.flank_size = size;
@@ -2443,7 +2550,7 @@ fn edit_plan(
                     ui.ctx().set_sublayer(response.layer_id, popup.response.layer_id);
                 }
             }
-            response.on_hover_text(
+            response.inspection_hover_text(
                 "Cohort slots per wing (up to 5 on each side). Terrain may reduce the effective wing width.",
             );
         });
@@ -2488,14 +2595,39 @@ fn unit_type_dropdown(
         .gap(0.)
         .frame(egui::Frame::popup(ui.style()).inner_margin(4. * scale))
         .show(|ui| {
-            ui.set_width(220. * scale);
-            egui::ScrollArea::vertical().max_height(260. * scale).show(ui, |ui| {
-                for kind in UnitType::ALL.into_iter().filter(|kind| {
+            let choices: Vec<_> = UnitType::ALL
+                .into_iter()
+                .filter(|kind| {
                     !kind.is_support()
                         && units
                             .iter()
                             .any(|unit| unit.unit_type == *kind && unit.current_manpower > 0.)
-                }) {
+                })
+                .collect();
+            let text_width = choices
+                .iter()
+                .map(|kind| {
+                    ui.painter()
+                        .layout_no_wrap(
+                            kind.name().to_owned(),
+                            egui::FontId::proportional(14. * scale),
+                            super::province_panel::INK,
+                        )
+                        .size()
+                        .x
+                })
+                .fold(0., f32::max);
+            let scroll_width = if choices.len() as f32 * (32. * scale + ui.spacing().item_spacing.y)
+                - ui.spacing().item_spacing.y
+                > 260. * scale
+            {
+                ui.spacing().scroll.allocated_width()
+            } else {
+                0.
+            };
+            ui.set_width(text_width + 46. * scale + scroll_width);
+            egui::ScrollArea::vertical().max_height(260. * scale).show(ui, |ui| {
+                for kind in choices {
                     let (rect, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), 32. * scale),
                         egui::Sense::click(),
@@ -2567,7 +2699,7 @@ fn formation_role_card(
         egui::FontId::proportional(11. * scale),
         super::province_panel::INK,
     );
-    (rect, response)
+    (rect, response.on_hover_cursor(egui::CursorIcon::PointingHand))
 }
 
 /// Read-only preview of the automatically deployed cohorts and their selected roles.
@@ -2731,7 +2863,7 @@ fn deployment_slot(ui: &mut egui::Ui, unit: Option<&Unit>, cell: f32) {
     }
     response
         .on_hover_cursor(egui::CursorIcon::Default)
-        .on_hover_text(unit.map_or("Empty position", |unit| unit.unit_type.name()));
+        .inspection_hover_text(unit.map_or("Empty position", |unit| unit.unit_type.name()));
 }
 
 /// Use the singular label for one surviving cohort.
@@ -2798,7 +2930,7 @@ fn army_unit_type_row(ui: &mut egui::Ui, units: &[Unit], config: &MilitaryConfig
             );
             response
                 .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_ui(|ui| army_unit_type_hover(ui, kind, &cohorts, config, scale));
+                .inspection_hover_ui(|ui| army_unit_type_hover(ui, kind, &cohorts, config, scale));
         }
     });
 }
@@ -2907,7 +3039,7 @@ fn formation_row(ui: &mut egui::Ui, formation: &Formation, units: &[Unit]) {
                         1.,
                         egui::Color32::from_rgb(104, 122, 83),
                     );
-                    response.on_hover_text(format!(
+                    response.inspection_hover_text(format!(
                         "{} · {}\n{} manpower ({:.1}% strength)\nMorale {:.1}% · Training {:.0}",
                         unit.unit_type.name(),
                         if is_support {
@@ -2928,7 +3060,7 @@ fn formation_row(ui: &mut egui::Ui, formation: &Formation, units: &[Unit]) {
                         1.5,
                         egui::Color32::from_rgb(191, 171, 143),
                     );
-                    response.on_hover_text(if is_support {
+                    response.inspection_hover_text(if is_support {
                         "Empty support slot"
                     } else if flank {
                         "Empty flank slot"
@@ -2941,7 +3073,7 @@ fn formation_row(ui: &mut egui::Ui, formation: &Formation, units: &[Unit]) {
     }
     if !formation.reserves.is_empty() {
         ui.horizontal_wrapped(|ui| {
-            ui.small(format!("Reserve {}",formation.reserves.len())).on_hover_text("Reserves fill vacancies after casualties or routing; surviving deployed units retain their positions.");
+            ui.small(format!("Reserve {}",formation.reserves.len())).inspection_hover_text("Reserves fill vacancies after casualties or routing; surviving deployed units retain their positions.");
             let reserves:Vec<_>=units.iter().filter(|u|formation.reserves.contains(&u.id)).cloned().collect();
             unit_composition(ui,&reserves);
         });
@@ -2974,7 +3106,7 @@ fn battle_view(
     let suppression =
         (siege * config.siege_suppression_per_point).min(config.siege_suppression_cap);
     ui.horizontal_wrapped(|ui| {
-        ui.small(format!("{:?} · {} slots",battle.terrain,config.combat_widths[battle.terrain as usize])).on_hover_text(format!("Defender terrain bonus: +{:.0}%",(config.terrain_defense[battle.terrain as usize]-1.)*100.));
+        ui.small(format!("{:?} · {} cohorts wide",battle.terrain,config.combat_widths[battle.terrain as usize]));
         stat(ui,Icon::Building(BuildingType::CityWalls),&format!("+{:.0}%",fort*100.),&format!("Level {} fortification: base defense +{:.0}%. Total siege power {:.1} could suppress {:.0}% of that bonus. Actual suppression depends on private deployment. Protected support fights at {:.0}% power; exposed support takes {:.0}% extra casualties.",battle.fortification_level,fort*100.,siege,suppression*100.,config.support_effectiveness*100.,(config.exposed_support_casualties-1.)*100.));
     });
     for (attacker, label, side) in
@@ -3019,7 +3151,7 @@ fn battle_view(
                 plan.tactic.name(),
                 side.tactic_fit(force_owner, config) * 100.
             ))
-            .on_hover_text(detail);
+            .inspection_hover_text(detail);
         }
         if side.units.iter().any(|unit| unit.owner == owner) {
             let own_units: Vec<_> =
@@ -3082,7 +3214,7 @@ fn battle_view(
         if side.units.iter().any(|u| u.owner == owner) {
             let allowed = battle.months >= config.minimum_retreat_months
                 && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
-            if ui.add_enabled(allowed,egui::Button::new("Retreat")).on_hover_text("Available after one full combat month if an adjacent province permits stationing. Surrounded troops keep fighting.").clicked(){*action=Some(MilitaryUiAction::Retreat{battle:battle.id,attacker});}
+            if ui.add_enabled(allowed,egui::Button::new("Retreat")).inspection_hover_text("Available after one full combat month if an adjacent province permits stationing. Surrounded troops keep fighting.").clicked(){*action=Some(MilitaryUiAction::Retreat{battle:battle.id,attacker});}
         }
     }
 }
@@ -3183,7 +3315,7 @@ fn cohort_facts(
     private: bool,
 ) {
     icon(ui, Icon::Unit(unit.unit_type), 36.)
-        .on_hover_text(unit_definition_tip(unit.unit_type, config));
+        .inspection_hover_text(unit_definition_tip(unit.unit_type, config));
     let meter_width = 84.;
     let text_width =
         (ui.available_width() - meter_width - reserved_width - ui.spacing().item_spacing.x * 2.)
@@ -3191,7 +3323,7 @@ fn cohort_facts(
     ui.allocate_ui_with_layout(egui::vec2(text_width,40.),egui::Layout::top_down(egui::Align::Min),|ui| {
         ui.add(egui::Label::new(egui::RichText::new(unit.unit_type.name()).strong()).wrap());
         ui.horizontal_wrapped(|ui| {
-            ui.small(cohort_manpower_text(unit)).on_hover_text(format!("{:.1}% strength. Cohorts regain manpower and morale each supplied month according to military rank.",unit.manpower_ratio()*100.));
+            ui.small(cohort_manpower_text(unit)).inspection_hover_text(format!("{:.1}% strength. Cohorts regain manpower and morale each supplied month according to military rank.",unit.manpower_ratio()*100.));
             if let Some(role)=role{ui.small(role);}else{
                 stat(ui,Icon::Food,&format!("{:.1}",unit.food_demand(config)),"Monthly Food upkeep. All units share the owner's supply ratio, including movement and combat.");
             }
@@ -3226,7 +3358,7 @@ fn condition_meter(ui: &mut egui::Ui, label: &str, value: f64, color: egui::Colo
         egui::FontId::proportional(12.),
         egui::Color32::from_rgb(57, 43, 37),
     );
-    response.on_hover_text(tip);
+    response.inspection_hover_text(tip);
 }
 
 /// Group cohort images by type so force size is readable without eleven text labels.
@@ -3236,7 +3368,7 @@ fn unit_composition(ui: &mut egui::Ui, units: &[Unit]) {
         if count > 0 {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.;
-                icon(ui, Icon::Unit(kind), 26.).on_hover_text(format!(
+                icon(ui, Icon::Unit(kind), 26.).inspection_hover_text(format!(
                     "{} · {}",
                     kind.name(),
                     cohort_count_label(count)

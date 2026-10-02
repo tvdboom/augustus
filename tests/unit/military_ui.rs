@@ -1,5 +1,164 @@
 use super::*;
 
+use crate::egui_capture as capture;
+
+#[test]
+fn spectator_army_panels_reveal_foreign_and_local_forces_without_actions() {
+    for owner in [ForceOwner::Player(1), ForceOwner::Local(0)] {
+        let (mut world, economy, graph) = military_fixture();
+        world.seed_unit(0, owner, UnitType::Archers).unwrap();
+        let units = world.provinces[0].forces.get_mut(&owner).unwrap();
+        units[0].training = 93.0;
+        let mut damaged = units[0].clone();
+        damaged.id += 1000;
+        damaged.current_manpower = 4.0;
+        units[0].current_manpower = 4.0;
+        units.push(damaged);
+        let ctx = egui::Context::default();
+        super::super::spectator::set_read_only(&ctx, true);
+        toggle_inspection_army_panel(&ctx, 0, 1, owner, None);
+        let mut capture = capture::Capture::default();
+        let mut render = |time, events| {
+            let mut action = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    action = draw_army_panel(
+                        ui.ctx(),
+                        &world,
+                        &economy,
+                        &graph,
+                        0,
+                        |_| true,
+                        |_| None,
+                        |_, _| MilitaryAccess::Peaceful,
+                        |a, b| a != b,
+                    );
+                },
+            );
+            if time <= 0.1 {
+                capture.frame(&ctx, &output, &format!("spectator-army-{owner:?}"));
+            }
+            output.textures_delta.clear();
+            assert!(action.is_none(), "Spectators cannot issue army commands");
+            output
+        };
+        render(0.0, vec![]);
+        let output = render(0.1, vec![]);
+        text_position(&output, "Italia");
+        text_position(&output, "Deployment");
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Cohort capabilities")));
+        for (index, label) in ["Merge", "Disband"].into_iter().enumerate() {
+            let position = text_position(&output, label);
+            render(0.2 + index as f64, click_events(position, true));
+            render(0.3 + index as f64, click_events(position, false));
+        }
+        assert_eq!(selected_army(&ctx).unwrap().owner, owner);
+        // Disabled deployment/tactic controls still expose information on hover.
+        let position = text_position(&output, "2 cohorts");
+        render(3.0, vec![egui::Event::PointerMoved(position)]);
+        render(4.0, vec![]);
+        let output = render(4.1, vec![]);
+        text_position(&output, "Cohort capabilities");
+        text_position(&output, "Training");
+        text_position(&output, "93%");
+    }
+}
+
+#[test]
+fn spectator_inspects_the_selected_foreign_marching_army() {
+    let (mut world, economy, graph) = military_fixture();
+    let owner = ForceOwner::Player(1);
+    world.seed_unit(0, owner, UnitType::Archers).unwrap();
+    let mut units = world.provinces[0].forces.remove(&owner).unwrap();
+    units[0].training = 94.0;
+    world.movements.push(MovementOrder {
+        id: 42,
+        owner,
+        units,
+        origin: 0,
+        route: vec![0],
+        progress: 0.5,
+        required_progress: 2.0,
+        plan: BattlePlan::default(),
+        withdrawing: false,
+    });
+    let ctx = egui::Context::default();
+    super::super::spectator::set_read_only(&ctx, true);
+    toggle_inspection_army_panel(&ctx, 0, 1, owner, Some(42));
+    let mut pointer = None;
+    for frame in 0..5 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                time: Some(frame as f64),
+                events: if frame == 2 {
+                    pointer
+                        .map(|position| vec![egui::Event::PointerMoved(position)])
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+            |ui| {
+                assert!(draw_army_panel(
+                    ui.ctx(),
+                    &world,
+                    &economy,
+                    &graph,
+                    0,
+                    |_| true,
+                    |_| None,
+                    |_, _| MilitaryAccess::Peaceful,
+                    |a, b| a != b
+                )
+                .is_none());
+            },
+        );
+        output.textures_delta.clear();
+        if frame == 1 {
+            text_position(&output, "Marching to Italia");
+            text_position(&output, "Deployment");
+            pointer = Some(text_position(&output, "1 cohort"));
+        }
+        if frame == 4 {
+            text_position(&output, "94%");
+        }
+    }
+}
+
+#[test]
+fn spectator_recruitment_is_inspectable_but_cannot_recruit() {
+    let (world, economy, graph) = military_fixture();
+    let ctx = egui::Context::default();
+    super::super::spectator::set_read_only(&ctx, true);
+    render_military(&ctx, &world, &economy, &graph, 0.0, vec![]);
+    let (output, _) = render_military(&ctx, &world, &economy, &graph, 0.1, vec![]);
+    let position = text_position(&output, "Recruit units");
+    render_military(&ctx, &world, &economy, &graph, 0.2, click_events(position, true));
+    let (output, action) =
+        render_military(&ctx, &world, &economy, &graph, 0.3, click_events(position, false));
+    assert!(action.is_none());
+    let position = text_position(&output, "Light Infantry");
+    render_military(&ctx, &world, &economy, &graph, 0.4, click_events(position, true));
+    let (_, action) =
+        render_military(&ctx, &world, &economy, &graph, 0.5, click_events(position, false));
+    assert!(action.is_none());
+}
+
 #[test]
 fn army_badges_show_unsigned_zero_strength_and_morale() {
     let (mut world, economy, graph) = military_fixture();
@@ -520,6 +679,13 @@ fn render_overview(
             );
         },
     );
+    if time == 0. {
+        capture::Capture::default().frame(
+            ctx,
+            &output,
+            &format!("army-overview-{width}-{scale}-{}-forces", army_overview_rows(world, 0).len()),
+        );
+    }
     output.textures_delta.clear();
     (output, selected)
 }
@@ -574,7 +740,7 @@ fn rank_hover_lists_requirements_and_readable_monthly_bonuses() {
             "• Previous rank: Centurion",
             "• Army manpower: 0/200",
             "• Battles won: 0/2",
-            "• Influence to pay: 180/500",
+            "• Influence cost: 180/500",
             "• Influence: +5 per month",
         ] {
             assert!(labels.contains(&expected), "Missing {expected}: {labels:?}");
@@ -594,7 +760,7 @@ fn rank_hover_lists_requirements_and_readable_monthly_bonuses() {
         ] {
             assert!(!labels.iter().any(|label| label.contains(removed)));
         }
-        let last_requirement = text_position(&output, "• Influence to pay: 180/500");
+        let last_requirement = text_position(&output, "• Influence cost: 180/500");
         let bonuses = text_position(&output, "Bonuses");
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::LineSegment { points, .. } if points[0].y > last_requirement.y
@@ -658,7 +824,7 @@ fn rank_cards_only_accept_the_next_fully_earned_promotion() {
     assert_eq!(draw(0.7, click_events(imperator, false), &world).1, None);
 }
 #[test]
-fn overview_groups_armies_and_foreign_row_opens_the_province() {
+fn overview_combines_armies_with_directory_styling_and_foreign_row_opens_the_province() {
     let (mut world, mut economy, _) = military_fixture();
     economy.provinces[0].name = "Africa Proconsularis et Numidia".into();
     for kind in UnitType::ALL {
@@ -668,21 +834,13 @@ fn overview_groups_armies_and_foreign_row_opens_the_province() {
     for (width, scale) in [(796., 1.), (380., 1.), (380., 0.85)] {
         let ctx = egui::Context::default();
         let (output, _) = render_overview(&ctx, &world, &economy, width, scale, 0., vec![]);
-        for label in [
-            "MILITARY RANK",
-            "ARMIES",
-            "FRIENDLY ARMIES",
-            "Province",
-            "Units",
-            "Tactic",
-            "Morale",
-            "Training",
-            "Player 2",
-            "?",
-        ] {
+        for label in ["MILITARY RANK", "Province", "Units", "Tactic", "Morale", "Training", "?"] {
             text_position(&output, label);
         }
         for forbidden in [
+            "ARMIES",
+            "FRIENDLY ARMIES",
+            "Player 2",
             "Recruit units",
             "Available cohorts",
             "ARMY ORDERS",
@@ -693,6 +851,81 @@ fn overview_groups_armies_and_foreign_row_opens_the_province() {
             "1 armies · 9 cohorts",
         ] {
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == forbidden)));
+        }
+        for label in ["Province", "Units", "Tactic", "Morale", "Training"] {
+            assert_eq!(
+                output
+                    .shapes
+                    .iter()
+                    .filter(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == label))
+                    .count(),
+                1,
+                "Owned and friendly armies must share one table header"
+            );
+        }
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if CombatTactic::ALL.iter().any(|tactic| tactic.name() == text.galley.job.text))));
+        let markers: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if [egui::Color32::RED, egui::Color32::BLUE].contains(&rect.fill) =>
+                {
+                    Some(rect)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0].fill, egui::Color32::RED);
+        assert_eq!(markers[1].fill, egui::Color32::BLUE);
+        let names: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == economy.provinces[0].name => {
+                    Some(text)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names.len(), 2, "Both armies must display the same province name");
+        for (marker, name) in markers.iter().zip(&names) {
+            let row = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if [
+                            super::super::province_panel::PAPER,
+                            super::super::province_panel::TABLE_STRIPE,
+                        ]
+                        .contains(&rect.fill)
+                            && rect.rect.contains(marker.rect.center())
+                            && (rect.rect.left() + 7. * scale - marker.rect.left()).abs() < 0.1 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .expect("Each owner marker must belong to an army row");
+            assert!((marker.rect.width() - 6. * scale).abs() < 0.1);
+            assert!((marker.rect.height() / row.height() - 0.68).abs() < 0.001);
+            assert!((marker.rect.center().y - row.center().y).abs() < 0.1);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(border) if border.rect == row
+                    && border.stroke.color == super::super::province_panel::RULE
+                    && (border.stroke.width - scale).abs() < 0.1
+                    && border.corner_radius == egui::CornerRadius::from(3. * scale))));
+            assert!((name.pos.x - marker.rect.right() - 8. * scale).abs() < 0.1);
+            assert!(name
+                .galley
+                .job
+                .sections
+                .iter()
+                .all(|section| section.format.font_id.size == 14. * scale));
         }
         for clipped in &output.shapes {
             if let egui::Shape::Text(text) = &clipped.shape {
@@ -706,7 +939,7 @@ fn overview_groups_armies_and_foreign_row_opens_the_province() {
             }
         }
         if width > 500. {
-            let row = text_position(&output, "Player 2");
+            let row = markers[1].rect.center();
             render_overview(&ctx, &world, &economy, width, scale, 0.1, click_events(row, true));
             let (_, selected) = render_overview(
                 &ctx,
@@ -748,9 +981,11 @@ fn overview_shows_visiting_armies_without_an_owned_army_in_the_province() {
     world.seed_unit(0, ForceOwner::Player(1), UnitType::Archers).unwrap();
     let ctx = egui::Context::default();
     let (output, _) = render_overview(&ctx, &world, &economy, 796., 1., 0., vec![]);
-    text_position(&output, "You have no armies.");
-    text_position(&output, "FRIENDLY ARMIES");
-    let row = text_position(&output, "Player 2");
+    for removed in ["You have no armies.", "FRIENDLY ARMIES"] {
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == removed)));
+    }
+    let row = text_position(&output, &economy.provinces[0].name);
     render_overview(&ctx, &world, &economy, 796., 1., 0.1, click_events(row, true));
     let (_, selected) =
         render_overview(&ctx, &world, &economy, 796., 1., 0.2, click_events(row, false));
@@ -2007,7 +2242,7 @@ fn frontline_selector_changes_the_preference_without_creating_cohorts() {
     assert_eq!(world.provinces[0].forces[&ForceOwner::Player(0)].len(), 2);
 }
 #[test]
-fn engaged_army_disables_tactic_changes_and_recruitment() {
+fn engaged_army_locks_tactics_but_allows_recruitment() {
     let (mut world, economy, graph) = military_fixture();
     let owner = ForceOwner::Player(0);
     let local = ForceOwner::Local(0);
@@ -2030,7 +2265,7 @@ fn engaged_army_disables_tactic_changes_and_recruitment() {
     render_military(&ctx, &world, &economy, &graph, 0.5, click_events(recruit, true));
     let (_, action) =
         render_military(&ctx, &world, &economy, &graph, 0.6, click_events(recruit, false));
-    assert!(action.is_none());
+    assert!(matches!(action, Some(MilitaryUiAction::Recruit(UnitType::LightInfantry))));
 }
 #[test]
 fn foreign_army_and_battle_show_morale_but_hide_training_and_positions() {
@@ -2641,6 +2876,7 @@ fn unavailable_recruitment_cards_keep_the_default_cursor_and_do_not_recruit() {
         (UnitType::LightInfantry, 1),
         (UnitType::LightInfantry, 2),
         (UnitType::LightInfantry, 3),
+        (UnitType::LightInfantry, 4),
     ] {
         let (mut world, mut economy, graph) = military_fixture();
         match shortage {
@@ -2662,6 +2898,11 @@ fn unavailable_recruitment_cards_keep_the_default_cursor_and_do_not_recruit() {
                         )
                         .unwrap();
                 }
+            },
+            4 => {
+                world.seed_unit(0, ForceOwner::Player(1), UnitType::HeavyInfantry).unwrap();
+                world.provinces[0].occupation = Some(ForceOwner::Player(1));
+                economy.provinces[0].occupied = true;
             },
             _ => assert!(!recruitment_tags(&economy.provinces[0].name)
                 .contains(&world.config.unit(kind).special_tag.unwrap())),

@@ -175,7 +175,7 @@ pub struct ProvincePolitics {
     pub state: PoliticalState,
     /// Sentiment toward each player; retained across state transitions.
     pub relations: Vec<f64>,
-    /// Control distribution in a directly owned province; the owner starts at 100.
+    /// Player Control in directly owned land; any remaining share belongs to local rebels.
     pub owned_shares: Vec<f64>,
     /// Independently configured recurring diplomatic programs per player.
     pub support: Vec<MonthlySupport>,
@@ -299,6 +299,31 @@ impl ProvincePolitics {
                 *control = (*control - amount).max(0.0);
             },
             _ => return Err(PoliticalError::Ineligible),
+        }
+        Ok(())
+    }
+
+    /// Transfer an owner's Control to local rebels, releasing the province at zero.
+    pub fn apply_rebellion_control_loss(&mut self, amount: f64) -> Result<(), PoliticalError> {
+        valid_amount(amount)?;
+        let PoliticalState::Owned {
+            owner,
+        } = self.state
+        else {
+            return Err(PoliticalError::Ineligible);
+        };
+        if self.owned_shares.iter().all(|share| *share == 0.0) {
+            self.owned_shares[owner] = 100.0;
+        }
+        self.owned_shares[owner] = (self.owned_shares[owner] - amount).max(0.0);
+        if self.owned_shares[owner] <= 1e-7 {
+            self.owned_shares[owner] = 0.0;
+            self.state = PoliticalState::Independent {
+                local: (100.0 - self.owned_shares.iter().sum::<f64>()).max(0.0),
+                shares: self.owned_shares.clone(),
+            };
+            self.support.fill(MonthlySupport::default());
+            self.clear_pending();
         }
         Ok(())
     }
@@ -431,9 +456,11 @@ impl ProvincePolitics {
             PoliticalState::Owned {
                 owner,
             } if *owner != player => {
-                let mut local = 0.0;
+                if self.owned_shares.iter().all(|share| *share == 0.0) {
+                    self.owned_shares[*owner] = 100.0;
+                }
+                let mut local = (100.0 - self.owned_shares.iter().sum::<f64>()).max(0.0);
                 resolve_control(&mut local, &mut self.owned_shares, &gains, &reductions);
-                self.owned_shares[*owner] += local;
             },
             _ => return Err(PoliticalError::Ineligible),
         }
@@ -804,8 +831,14 @@ impl ProvincePolitics {
             } => {
                 self.change_relation(overlord, tribute.relation_delta());
                 let relation = ((self.relation(overlord) - 50.0) / 10.0).min(0.0);
-                let military =
-                    garrison_bonus(stationed_power.get(overlord).copied().unwrap_or(0.0), config);
+                let military = if let Some(occupier) =
+                    occupation.filter(|player| *player != overlord)
+                {
+                    self.change_relation(occupier, -config.occupation_relation_loss);
+                    -garrison_bonus(stationed_power.get(occupier).copied().unwrap_or(0.0), config)
+                } else {
+                    garrison_bonus(stationed_power.get(overlord).copied().unwrap_or(0.0), config)
+                };
                 let control_support = paid_control_support.max(0.0);
                 let total = relation + military + control_support;
                 self.last_control_change = ControlBreakdown {
@@ -830,7 +863,7 @@ impl ProvincePolitics {
                     self.owned_shares[owner] = 100.0;
                 }
                 for player in 0..self.relations.len() {
-                    if player == owner {
+                    if player == owner && occupation.is_some() {
                         continue;
                     }
                     let power = stationed_power.get(player).copied().unwrap_or(0.0);
@@ -838,26 +871,31 @@ impl ProvincePolitics {
                         continue;
                     }
                     let hostile = occupation == Some(player);
-                    let cap = if hostile {
+                    let cap = if hostile || player == owner {
                         config.garrison_cap
                     } else {
                         config.invited_garrison_cap
                     };
                     let gain = garrison_bonus_with_cap(power, cap, config.garrison_half_saturation);
-                    let _ = self.queue_control_gain(player, gain);
+                    if player == owner {
+                        // A liberating garrison restores the owner's share; public political
+                        // pressure remains restricted to foreign claimants.
+                        self.pending_gains[player] += gain;
+                    } else {
+                        let _ = self.queue_control_gain(player, gain);
+                    }
                     if hostile {
                         self.change_relation(player, -config.occupation_relation_loss);
                     }
                 }
-                let mut local = 0.0;
+                let mut local = (100.0 - self.owned_shares.iter().sum::<f64>()).max(0.0);
                 resolve_control(
                     &mut local,
                     &mut self.owned_shares,
                     &self.pending_gains,
                     &self.pending_reductions,
                 );
-                // Direct ownership has no local-government share.
-                self.owned_shares[owner] += local;
+                // Local rebel Control persists until a player gains that share.
             },
             PoliticalState::Rome => {},
         }

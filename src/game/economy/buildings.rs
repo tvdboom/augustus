@@ -371,6 +371,9 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can construct buildings".into());
         }
+        if p.occupied {
+            return Err("Enemy occupation blocks construction".into());
+        }
         if p.construction_queue_full() {
             return Err("Construction queue is full (maximum 10 orders)".into());
         }
@@ -415,6 +418,9 @@ impl EconomyWorld {
         let p = self.provinces.get(province).ok_or("Unknown province")?;
         if p.owner != Some(player) {
             return Err("Only the direct owner can begin a wonder".into());
+        }
+        if p.occupied {
+            return Err("Enemy occupation blocks construction".into());
         }
         if p.construction_queue_full() {
             return Err("Construction queue is full (maximum 10 orders)".into());
@@ -468,6 +474,9 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can assign construction labor".into());
         }
+        if p.occupied {
+            return Err("Enemy occupation blocks construction".into());
+        }
         if !count.is_finite() || count < 0.0 || count > p.population[3] {
             return Err(
                 "Slave assignment must be between zero and the province's slave population".into(),
@@ -488,6 +497,9 @@ impl EconomyWorld {
         if p.owner != Some(player) {
             return Err("Only the direct owner can cancel construction".into());
         }
+        if p.occupied {
+            return Err("Enemy occupation blocks construction".into());
+        }
         if p.construction.take().is_none() {
             return Err("No construction is in progress".into());
         }
@@ -506,6 +518,9 @@ impl EconomyWorld {
         let p = self.provinces.get(province).ok_or("Unknown province")?;
         if p.owner != Some(player) {
             return Err("Only the direct owner can cancel construction".into());
+        }
+        if p.occupied {
+            return Err("Enemy occupation blocks construction".into());
         }
         if p.construction_queue.get(index).is_none() {
             return Err("Unknown queued construction".into());
@@ -540,6 +555,9 @@ impl EconomyWorld {
     /// Complete construction after production; labor remains excluded for the whole month.
     pub(super) fn advance_construction(&mut self, events: &mut Vec<EconomyEvent>) {
         for (province, state) in self.provinces.iter_mut().enumerate() {
+            if state.occupied {
+                continue;
+            }
             state.validate_slave_assignment();
             let Some(mut project) = state.construction.take() else {
                 continue;

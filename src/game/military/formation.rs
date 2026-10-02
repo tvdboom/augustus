@@ -116,6 +116,25 @@ pub fn tactic_effectiveness<'a>(
     }
 }
 
+/// Choose the highest composition fit, keeping the first tactic when fits tie.
+pub fn best_composition_tactic<'a>(
+    units: impl Iterator<Item = &'a Unit> + Clone,
+    config: &MilitaryConfig,
+) -> CombatTactic {
+    CombatTactic::ALL
+        .into_iter()
+        .map(|tactic| (tactic, tactic_effectiveness(units.clone(), tactic, config)))
+        .reduce(|best, candidate| {
+            if candidate.1 > best.1 {
+                candidate
+            } else {
+                best
+            }
+        })
+        .unwrap()
+        .0
+}
+
 /// Deterministic deployment with per-owner plans and strongest same-type cohorts first.
 /// `routed` troops cannot return to the current battle.
 pub fn deploy_formation(

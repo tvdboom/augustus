@@ -196,9 +196,10 @@ fn map_army_clicks_toggle_owned_armies_and_open_foreign_military() {
     view.open_province_section(1, 3);
     let mut detail = ProvincePanelOpen(Some(MapDetail::Province(1)));
     open_map_army(&ctx, &mut view, &mut detail, 0, ForceOwner::Player(0), None, 0);
-    assert_eq!(view.open, Some(CampaignTab::Province));
+    assert_eq!(view.open, None);
     assert_eq!(view.province, Some(1));
-    assert_eq!(detail.0, Some(MapDetail::Province(1)));
+    assert_eq!(detail.0, None);
+    assert_eq!(view.last_detail, None);
     assert_eq!(campaign_military::selected_army_province(&ctx), Some(0));
     open_map_army(&ctx, &mut view, &mut detail, 0, ForceOwner::Player(0), None, 0);
     assert_eq!(campaign_military::selected_army_province(&ctx), None);
@@ -242,8 +243,10 @@ fn army_overview_navigation_keeps_military_selected_when_map_detail_updates() {
 #[test]
 fn integration_adds_the_relation_shift_once_and_preserves_prior_unrest() {
     use crate::game::economy::{EconomicProvince, Terrain};
-    let mut campaign = Campaign::default();
-    campaign.politics = vec![ProvincePolitics::independent(1)];
+    let mut campaign = Campaign {
+        politics: vec![ProvincePolitics::independent(1)],
+        ..Default::default()
+    };
     campaign.politics[0].state = PoliticalState::Vassal {
         overlord: 0,
         control: 100.0,

@@ -1,8 +1,357 @@
 use super::*;
 use crate::game::military::BattlePlan;
 
-#[path = "egui_capture.rs"]
-mod revolt_capture;
+fn preview_order() -> MovementOrder {
+    MovementOrder {
+        id: 91,
+        owner: ForceOwner::Player(0),
+        units: vec![],
+        origin: 0,
+        route: vec![1, 2],
+        progress: 0.,
+        required_progress: 1.3,
+        plan: BattlePlan::default(),
+        withdrawing: false,
+    }
+}
+
+fn preview_fraction(ctx: &egui::Context, fraction: f32) {
+    ctx.data_mut(|data| {
+        data.insert_temp(egui::Id::new("campaign-construction-month-fraction"), fraction)
+    });
+}
+
+#[test]
+fn moving_units_and_progress_bars_advance_continuously_across_months() {
+    let ctx = egui::Context::default();
+    let mut order = preview_order();
+    preview_fraction(&ctx, 0.);
+    assert_eq!(movement_visual_progress(&ctx, &order), 0.);
+    for fraction in [0.25, 0.5, 0.75, 0.9999] {
+        preview_fraction(&ctx, fraction);
+        assert!((movement_visual_progress(&ctx, &order) - fraction / 2.).abs() < 1e-5);
+        assert_eq!(
+            movement_visual_progress(&ctx, &order),
+            crate::map::movement_visual_progress(&ctx, &order)
+        );
+    }
+    let before = movement_visual_progress(&ctx, &order);
+    order.progress = 1.;
+    preview_fraction(&ctx, 0.);
+    assert!((movement_visual_progress(&ctx, &order) - before).abs() < 0.0001);
+    preview_fraction(&ctx, 0.9);
+    assert!(
+        (movement_visual_progress(&ctx, &order) - 0.95).abs() < 1e-5,
+        "Fractional crossing durations must not reach the destination early and stop"
+    );
+    order.origin = 1;
+    order.route.remove(0);
+    order.progress = 0.;
+    order.required_progress = 1.;
+    preview_fraction(&ctx, 0.2);
+    assert!((movement_visual_progress(&ctx, &order) - 0.2).abs() < 1e-5);
+}
+
+#[test]
+fn moving_units_start_at_their_departure_time_and_stop_while_paused() {
+    let ctx = egui::Context::default();
+    let mut order = preview_order();
+    preview_fraction(&ctx, 0.6);
+    assert_eq!(
+        movement_visual_progress(&ctx, &order),
+        0.,
+        "A mid-month order must not teleport forward"
+    );
+    preview_fraction(&ctx, 0.8);
+    let progress = movement_visual_progress(&ctx, &order);
+    assert!((progress - 0.2 / 1.4).abs() < 1e-5);
+    for _ in 0..4 {
+        assert_eq!(movement_visual_progress(&ctx, &order), progress);
+    }
+    preview_fraction(&ctx, 0.99999);
+    let before = movement_visual_progress(&ctx, &order);
+    order.progress = 1.;
+    preview_fraction(&ctx, 0.);
+    assert!((movement_visual_progress(&ctx, &order) - before).abs() < 1e-5);
+}
+
+#[test]
+fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
+    use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
+    let graph = vec![
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![1],
+        },
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![0],
+        },
+    ];
+    let order = |kind| {
+        let mut world = MilitaryWorld::new(2);
+        world.config.movement_scale = 3.;
+        let own = ForceOwner::Player(0);
+        let unit = world.seed_unit(0, own, kind).unwrap();
+        world
+            .order_movement(0, 1, own, &[unit], None, &graph, |_, _| MilitaryAccess::Peaceful)
+            .unwrap();
+        world.movements.remove(0)
+    };
+    let start = egui::pos2(40., 100.);
+    let bend = egui::pos2(500., 100.);
+    let end = egui::pos2(500., 400.);
+    let mut capture = crate::egui_capture::Capture::default();
+    let mut draw = |ctx: &egui::Context, order: &MovementOrder, month, wall_time, name| {
+        preview_fraction(ctx, month);
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600., 460.))),
+            time: Some(wall_time),
+            ..Default::default()
+        });
+        let fraction = movement_visual_progress(ctx, order);
+        let army = start.lerp(bend, fraction);
+        paint_march_arrows(
+            &ctx.layer_painter(egui::LayerId::background()),
+            &[army, bend, end],
+            fraction * start.distance(bend) * 2.,
+            48.,
+            egui::Color32::from_rgb(213, 179, 119),
+        );
+        let mut output = ctx.end_pass();
+        capture.frame(ctx, &output, name);
+        output.textures_delta.clear();
+        let tips: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Path(path) if path.points.len() == 3 && !path.closed => {
+                    Some(path.points[1])
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(!tips.is_empty());
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|shape| matches!(shape.shape, egui::Shape::LineSegment { .. })),
+            "March routes contain only chevrons, without a center line or trails"
+        );
+        for shape in &output.shapes {
+            if let egui::Shape::Path(path) = &shape.shape {
+                assert!(!path.closed);
+                assert_eq!(path.fill, egui::Color32::TRANSPARENT);
+                let tip = path.points[1];
+                if tip.y == start.y {
+                    assert!(tip.x >= army.x && tip.x <= bend.x);
+                    assert!(path.points[0].x < tip.x && path.points[2].x < tip.x);
+                } else {
+                    assert_eq!(tip.x, end.x);
+                    assert!(tip.y > bend.y && tip.y <= end.y);
+                    assert!(path.points[0].y < tip.y && path.points[2].y < tip.y);
+                }
+            }
+        }
+        assert!(tips.iter().any(|tip| tip.y > bend.y), "Arrows show the rest of the route");
+        tips
+    };
+    let slow = order(UnitType::Catapult);
+    let fast = order(UnitType::LightCavalry);
+    let slow_ctx = egui::Context::default();
+    let fast_ctx = egui::Context::default();
+    let slow_start = draw(&slow_ctx, &slow, 0., 0., "march-arrows-slow-start");
+    let fast_start = draw(&fast_ctx, &fast, 0., 0., "march-arrows-fast-start");
+    assert_eq!(slow_start, fast_start);
+    let slow_moving = draw(&slow_ctx, &slow, 0.05, 0.05, "march-arrows-slow-moving");
+    let fast_moving = draw(&fast_ctx, &fast, 0.05, 0.05, "march-arrows-fast-moving");
+    let slow_travel = slow_moving[0].x - slow_start[0].x;
+    let fast_travel = fast_moving[0].x - fast_start[0].x;
+    assert!(slow_travel > 0. && fast_travel > slow_travel);
+    assert_eq!(draw(&slow_ctx, &slow, 0.05, 10., "march-arrows-paused"), slow_moving);
+}
+
+#[test]
+fn marching_sprites_face_each_route_leg_and_keep_their_owner_banner_upright() {
+    use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
+    let atlas = atlas();
+    let origin = atlas.provinces.iter().position(|p| p.name == "Aegyptus").unwrap();
+    let destination = atlas.provinces.iter().position(|p| p.name == "Cyrenaica").unwrap();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 640.));
+    let a = atlas.provinces[origin].visual_center;
+    let b = atlas.provinces[destination].visual_center;
+    let projection = Projection {
+        origin: viewport.center(),
+        scale: 55.,
+        center: [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+    };
+    let mut graph = vec![
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![],
+        };
+        atlas.provinces.len()
+    ];
+    graph[origin].neighbors.push(destination);
+    graph[destination].neighbors.push(origin);
+    let mut world = MilitaryWorld::new(atlas.provinces.len());
+    let own = ForceOwner::Player(0);
+    let units: Vec<_> = [UnitType::HeavyInfantry, UnitType::LightCavalry, UnitType::WarElephants]
+        .into_iter()
+        .map(|kind| world.seed_unit(origin, own, kind).unwrap())
+        .collect();
+    world
+        .order_movement_route(origin, own, &units, None, &[destination, origin], &graph, |_, _| {
+            MilitaryAccess::Peaceful
+        })
+        .unwrap();
+    let ctx = egui::Context::default();
+    let ownership = ProvinceOwnership {
+        player_colors: vec![egui::Color32::from_rgb(210, 44, 60)],
+        ..Default::default()
+    };
+    let mut anchors = Anchors::default();
+    let mut capture = crate::egui_capture::Capture::default();
+    let mut draw = |world: &MilitaryWorld, west: bool, name: &str| {
+        preview_fraction(&ctx, 0.);
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        paint(
+            &ctx.layer_painter(egui::LayerId::background()),
+            world,
+            &ownership,
+            &projection,
+            4.,
+            0.,
+            viewport,
+            &[],
+            &[],
+            &[],
+            &mut anchors,
+        );
+        let mut output = ctx.end_pass();
+        let sprites: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                let egui::Shape::Mesh(mesh) = &shape.shape else {
+                    return None;
+                };
+                (mesh.vertices.len() == 4 && mesh.vertices[0].uv.x != mesh.vertices[1].uv.x)
+                    .then_some(mesh.vertices[1].uv.x - mesh.vertices[0].uv.x)
+            })
+            .collect();
+        assert_eq!(sprites.len(), 3);
+        assert!(
+            sprites.iter().all(|width| if west {
+                *width < 0.
+            } else {
+                *width > 0.
+            }),
+            "Every representative sprite must face the current leg of the route"
+        );
+        assert!(output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "P1")
+        ));
+        capture.frame(&ctx, &output, name);
+        output.textures_delta.clear();
+    };
+    draw(&world, true, "march-facing-west");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    assert_eq!(world.movements[0].origin, destination);
+    draw(&world, false, "march-facing-east");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    assert!(world.movements.is_empty());
+    draw(&world, false, "march-facing-arrived");
+}
+
+#[test]
+fn moving_units_leave_and_arrive_at_the_stationary_army_anchor() {
+    use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
+    let ctx = egui::Context::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600., 900.));
+    let atlas = atlas();
+    let origin = atlas.provinces.iter().position(|p| p.name == "Samnium").unwrap();
+    let destination = atlas.provinces.iter().position(|p| p.name == "Latium").unwrap();
+    let geo = atlas.provinces[origin].visual_center;
+    let projection = Projection {
+        origin: viewport.center(),
+        scale: 72.,
+        center: geo,
+    };
+    let mut world = MilitaryWorld::new(atlas.provinces.len());
+    let owner = ForceOwner::Player(0);
+    let unit = world.seed_unit(origin, owner, UnitType::HeavyInfantry).unwrap();
+    let mut graph = vec![
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![]
+        };
+        atlas.provinces.len()
+    ];
+    graph[origin].neighbors.push(destination);
+    graph[destination].neighbors.push(origin);
+    let mut anchors = Anchors::default();
+    let mut draw = |world: &MilitaryWorld, fraction| {
+        preview_fraction(&ctx, fraction);
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let rects = paint(
+            &painter,
+            world,
+            &ProvinceOwnership::default(),
+            &projection,
+            4.,
+            0.,
+            viewport,
+            &[],
+            &[],
+            &[],
+            &mut anchors,
+        );
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        rects[0].center()
+    };
+    let stationary = draw(&world, 0.);
+    world
+        .order_movement(origin, destination, owner, &[unit], None, &graph, |_, _| {
+            MilitaryAccess::Peaceful
+        })
+        .unwrap();
+    world.movements[0].required_progress = 1.3;
+    assert!(
+        draw(&world, 0.).distance(stationary) < 0.01,
+        "Departure must reuse the stationary anchor"
+    );
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    let halfway = draw(&world, 0.);
+    assert!(halfway.distance(stationary) > 1.);
+    let arriving = draw(&world, 0.99999);
+    assert!(!world.movements.is_empty(), "Presentation must not resolve an arrival");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    assert!(world.movements.is_empty());
+    assert!(
+        draw(&world, 0.).distance(arriving) < 0.1,
+        "Arrival must reuse the same destination anchor"
+    );
+}
+
+use crate::egui_capture as revolt_capture;
 
 #[test]
 fn revolt_infantry_remains_visible_at_wide_zoom_and_under_landmarks() {
@@ -58,7 +407,7 @@ fn revolt_infantry_remains_visible_at_wide_zoom_and_under_landmarks() {
 }
 
 #[test]
-fn a_revolt_battle_shows_both_armies_and_combat_art_at_wide_zoom() {
+fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
     let context = egui::Context::default();
     let province = atlas().provinces.iter().position(|p| p.name == "Africa Proconsularis").unwrap();
     let mut world = MilitaryWorld::new(atlas().provinces.len());
@@ -80,47 +429,66 @@ fn a_revolt_battle_shows_both_armies_and_combat_art_at_wide_zoom() {
         )
         .unwrap();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
-    let projection = Projection {
-        origin: viewport.center(),
-        scale: 18. * MIN_ZOOM,
-        center: atlas().provinces[province].visual_center,
-    };
-    context.begin_pass(egui::RawInput {
-        screen_rect: Some(viewport),
-        ..Default::default()
-    });
-    let painter = context.layer_painter(egui::LayerId::background());
-    let markers = paint(
-        &painter,
-        &world,
-        &ProvinceOwnership::default(),
-        &projection,
-        MIN_ZOOM,
-        0.,
-        viewport,
-        &[viewport],
-        &[],
-        &[],
-        &mut Anchors::default(),
-    );
-    assert_eq!(markers.len(), 4, "both armies and their banners must appear immediately");
-    let hits = context
-        .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
-        .unwrap();
-    assert!(hits.iter().any(|hit| hit.owner == rebel));
-    assert!(hits.iter().any(|hit| hit.owner == player));
-    let banners: Vec<_> = hits.iter().filter(|hit| hit.rect.height() == 12.).collect();
-    assert_eq!(banners.len(), 2);
-    assert!(!banners[0].rect.intersects(banners[1].rect), "opposing owner labels overlap");
-    let cache = context
-        .data(|data| data.get_temp::<Textures>(egui::Id::new("military-sprite-sheet-cache")))
-        .unwrap();
-    for kind in [UnitType::LightInfantry, UnitType::HeavyInfantry] {
-        assert!(cache.combat[kind as usize].is_some());
+    let threshold = world.config.sprite_zoom_threshold as f32;
+    let mut anchors = Anchors::default();
+    let mut capture = revolt_capture::Capture::default();
+    for zoom in [MIN_ZOOM, threshold, threshold + 0.25, threshold + 0.5, MIN_ZOOM] {
+        let projection = Projection {
+            origin: viewport.center(),
+            scale: 18. * zoom,
+            center: atlas().provinces[province].visual_center,
+        };
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        let painter = context.layer_painter(egui::LayerId::background());
+        let markers = paint(
+            &painter,
+            &world,
+            &ProvinceOwnership::default(),
+            &projection,
+            zoom,
+            0.,
+            viewport,
+            &[viewport],
+            &[],
+            &[],
+            &mut anchors,
+        );
+        let hits = context
+            .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+            .unwrap();
+        let mut output = context.end_pass();
+        capture.frame(
+            &context,
+            &output,
+            if zoom <= threshold {
+                "revolt-combat-hidden"
+            } else {
+                "revolt-combat"
+            },
+        );
+        output.textures_delta.clear();
+        if zoom <= threshold {
+            assert!(
+                markers.is_empty() && hits.is_empty(),
+                "Zoomed-out battles disappear with their hit targets"
+            );
+            assert!(audible_battles(&context).is_empty());
+            continue;
+        }
+        assert_eq!(markers.len(), 4, "Both armies and banners are visible at close zoom");
+        assert!(hits.iter().any(|hit| hit.owner == rebel));
+        assert!(hits.iter().any(|hit| hit.owner == player));
+        let banners: Vec<_> = hits.iter().filter(|hit| hit.rect.height() == 12.).collect();
+        assert_eq!(banners.len(), 2);
+        assert!(!banners[0].rect.intersects(banners[1].rect), "Opposing owner labels overlap");
+        let expected = egui::Color32::from_white_alpha(troop_alpha(zoom, threshold));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Mesh(mesh) if mesh.vertices.iter().all(|vertex| vertex.color == expected))),
+            "Battle sprites must use the ordinary unit fade");
     }
-    let mut output = context.end_pass();
-    revolt_capture::Capture::default().frame(&context, &output, "revolt-combat");
-    output.textures_delta.clear();
 }
 
 #[test]
@@ -230,8 +598,8 @@ fn several_cohorts_of_one_type_still_show_three_figures() {
 }
 
 #[test]
-fn rome_starts_with_light_cavalry_and_shows_all_four_army_types() {
-    let defenders = crate::game::military::initial_defenders("Latium");
+fn rome_has_fifty_cohorts_including_all_four_guard_types() {
+    let defenders = crate::game::military::initial_defenders("Rome");
     assert_eq!(defenders.len(), 50);
     assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 6);
     let mut world = MilitaryWorld::new(1);
@@ -253,11 +621,13 @@ fn rome_starts_with_light_cavalry_and_shows_all_four_army_types() {
 }
 
 #[test]
-fn rome_keeps_four_full_size_figures_with_their_ground_anchors_in_latium() {
+fn romes_garrison_is_hidden_while_latium_shows_its_normal_defenders() {
     let context = egui::Context::default();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
     let province = atlas().provinces.iter().position(|p| p.name == "Latium").unwrap();
-    let mut world = MilitaryWorld::new(atlas().provinces.len());
+    let rome = atlas().provinces.len();
+    let mut world = MilitaryWorld::new(rome + 1);
+    world.seed_local_defenders(rome, "Rome").unwrap();
     for kind in crate::game::military::initial_defenders("Latium") {
         world.seed_unit(province, ForceOwner::Local(province), kind).unwrap();
     }
@@ -288,14 +658,19 @@ fn rome_keeps_four_full_size_figures_with_their_ground_anchors_in_latium() {
         );
         assert_eq!(
             markers.len(),
-            5,
-            "Rome's four types and badge should be visible at zoom {zoom}"
+            3,
+            "Only Latium's two normal types and badge should be visible at zoom {zoom}"
         );
-        for (&kind, sprite) in types.iter().zip(&markers[..4]) {
+        let hits = context
+            .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+            .unwrap();
+        assert!(hits.iter().all(|hit| hit.province == province));
+        assert_eq!(world.provinces[rome].forces[&ForceOwner::Local(rome)].len(), 50);
+        for (&kind, sprite) in types.iter().zip(&markers[..2]) {
             let expected = troop_size(zoom) * troop_scale(kind) * 2.;
             assert!(
                 (sprite.width() - expected).abs() < 0.001,
-                "Rome must use the common unit size"
+                "Latium must use the common unit size"
             );
             let feet = egui::pos2(
                 sprite.center().x,
@@ -303,17 +678,17 @@ fn rome_keeps_four_full_size_figures_with_their_ground_anchors_in_latium() {
             );
             assert!(
                 atlas().provinces[province].contains(projection.inverse(feet)),
-                "Rome's {kind:?} ground anchor leaves Latium at zoom {zoom}"
+                "Latium's {kind:?} ground anchor leaves its province at zoom {zoom}"
             );
         }
-        assert!(atlas().provinces[province].contains(projection.inverse(markers[4].center())));
+        assert!(atlas().provinces[province].contains(projection.inverse(markers[2].center())));
         let mut output = context.end_pass();
         output.textures_delta.clear();
     }
 }
 
 #[test]
-fn the_same_unit_is_the_same_size_in_rome_and_samnium() {
+fn the_same_unit_is_the_same_size_in_latium_and_samnium() {
     let context = egui::Context::default();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
     for zoom in [3., 4., 6., 8.] {

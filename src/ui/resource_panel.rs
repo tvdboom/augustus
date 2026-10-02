@@ -1,8 +1,8 @@
 //! Province-level production card for food, metal, and stone.
 
 use super::{
-    campaign, format_hud_number, hud_delta_color, hud_resource_positions, ProvinceOwnership,
-    HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_NAMES, HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT,
+    campaign, format_hud_number, hud_delta_color, hud_resource_positions, hud_resource_width,
+    ProvinceOwnership, HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_NAMES, MAP_RESOURCE_STRIP_HEIGHT,
 };
 use bevy_egui::egui;
 
@@ -41,11 +41,12 @@ pub(in crate::app) fn show(
     let pointer = context.input(|input| input.pointer.hover_pos());
     let positions = hud_resource_positions();
     let hovered = positions.into_iter().enumerate().take(3).find_map(|(index, x)| {
+        let width = hud_resource_width(index);
         let hit = egui::Rect::from_min_size(
             screen.min + egui::vec2(x, 0.0) * scale,
-            egui::vec2(HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT) * scale,
+            egui::vec2(width, MAP_RESOURCE_STRIP_HEIGHT) * scale,
         );
-        (x + HUD_RESOURCE_WIDTH <= date_left - HUD_RESOURCE_GROUP_PADDING
+        (x + width <= date_left - HUD_RESOURCE_GROUP_PADDING
             && pointer.is_some_and(|point| hit.contains(point)))
         .then_some(index)
     });

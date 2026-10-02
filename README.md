@@ -11,6 +11,12 @@
 
 ## Gameplay
 
+In local practice, **Ctrl+Shift+Up** boosts the active player's resources and population, grants
+the Influence and Senate support needed for the next political rank, and adds **three cohorts of
+every unit type** to each directly owned province. Use the Senate promotion button to claim the
+office. The shortcut clears that player's monthly promotion limit and Consul return cooldown;
+Consul appointments still require an open seat.
+
 ### Provinces and geography
 
 The map contains **54 provinces**, including eight cities with unique building options. Area and
@@ -144,16 +150,33 @@ positive/negative effect lists above the map banner; the chamber itself has no f
 The color legend below the chamber lists Neutral and every player with approval counts in parentheses.
 Exact faction confidence stays hidden.
 
+Basic starting conditions are neutral: content Nobles do not earn Aristocrat confidence just by
+existing, net monthly Coin income up to 30 does not earn Merchant confidence, normally supplied
+rations do not earn Populares confidence, and the first province does not earn Imperialist confidence.
+Aristocrats reward happy Nobles (with a larger happy population increasing the benefit), higher office,
+Forums and wonders. Merchants reward net income above 30 after monthly costs, Markets and fulfilled
+recurring routes with real deliveries. Provincials reward vassals, favorable relations and delivered
+rural trade. Populares reward happier Citizens/Plebeians and generous rations in proportion to the
+food actually supplied. Imperialists reward armies, earned military ranks, victories and territorial
+Control beyond one province-equivalent. Positive conditions accumulate support; negative conditions
+remove it, while paid senator actions can earn support separately.
+
 Click a senator for petitions, gifts, patronage, bribery, threats, murder, public banquets,
 discrediting a rival patron, or lobbying. **Lobby senator** costs 20 Influence upfront
 and 4 Influence per month, listed as **Senator lobbying** in the Influence hover. It grants gradual favor
-only in paid months and stops charging once the senator approves; you can end it at any time.
-Patronage and threats build confidence for six months; bribery acts
-immediately and appears as **Senator bribery** in the sestertii outflow. Risky actions have seeded
-detection chances and create discoverable evidence.
+only in paid months and continues to maintain support until cancelled. **Bribe** costs 80 sestertii
+upfront and 8 per month, builds confidence faster than lobbying, and risks exposure with every payment.
+Recurring payments and upfront costs appear separately in the currency outflow panels.
+Petitions build goodwill over three months; gifts and public banquets over four months, affecting
+only the selected senator. Patronage and threats build confidence for six months. Earned personal
+confidence gradually fades, including during unpaid months, without erasing support earned through
+ordinary faction preferences. Risky actions have seeded detection chances and create discoverable evidence.
 Exposure causes a larger immediate loss; murder replaces the senator with a neutral newcomer and
-clears every player's confidence in that seat. Each seat permits one personal action per month.
-Personal actions use illustrated cards with separate titles, icons, and currency costs.
+clears every player's confidence and active effects in that seat. Each player can maintain one ongoing
+action per senator alongside any temporary actions. Different players can compete for the same senator
+without seeing each other's actions. Your own ongoing action has a cross in its card's top-right corner
+to cancel it, and only your own ongoing actions mark seats in the chamber. Personal actions use
+illustrated cards with separate titles, icons, and currency costs; exact confidence stays hidden.
 
 Scandals have three severity levels and affect only one or two relevant factions. Exposure consumes
 real evidence and removes confidence immediately, rather than applying a recurring penalty.
