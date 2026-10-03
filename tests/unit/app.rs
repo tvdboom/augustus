@@ -24,7 +24,12 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
         .provinces
         .iter()
         .map(|province| {
-            (province.owner, province.population, province.production(&campaign.economy.config).1)
+            (
+                province.owner,
+                province.population,
+                province.production(&campaign.economy.config).1,
+                province.capacity(&campaign.economy.config),
+            )
         })
         .collect();
 
@@ -45,7 +50,7 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
     assert_eq!(campaign.military.rank(owner), crate::game::military::MilitaryRank::Centurion);
     let boosted_resources = wallet.resources;
     assert_eq!(campaign.economy.players[1].practice_storage_bonus, [0.0; 3]);
-    for (id, (province, (owner, population, output))) in
+    for (id, (province, (owner, population, output, capacity))) in
         campaign.economy.provinces.iter().zip(before_populations).enumerate()
     {
         let forces = &campaign.military.provinces[id].forces;
@@ -81,6 +86,17 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
                     1.0
                 })
         );
+        let added_population = province.total_population() - population.into_iter().sum::<f64>();
+        let expected_capacity = capacity + added_population * 100.0;
+        assert!(
+            (province.capacity(&campaign.economy.config) - expected_capacity).abs()
+                < expected_capacity.max(1.0) * 1e-12
+        );
+        if owner == Some(0) {
+            assert!(
+                province.capacity(&campaign.economy.config) > province.total_population() * 90.0
+            );
+        }
         let factor = if owner == Some(0) {
             10.0
         } else {
@@ -95,6 +111,39 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
     campaign.economy.recalculate_storage();
     campaign.economy.players[0].clamp_storage();
     assert_eq!(campaign.economy.players[0].resources, boosted_resources);
+}
+
+#[test]
+fn practice_capacity_boost_stacks_for_overcrowded_provinces_and_survives_months() {
+    let mut ownership = ProvinceOwnership::default();
+    ownership.start_game(&[egui::Color32::RED]);
+    let mut campaign = campaign::Campaign::default();
+    campaign.start(&ownership, 1);
+    let mut resources = HudResources::default();
+    resources.start_players(1, &ownership);
+    let id = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    campaign.economy.provinces[id].population = [1_000_000.0; 4];
+    let area = campaign.economy.provinces[id].capacity_area;
+
+    for _ in 0..3 {
+        let province = &campaign.economy.provinces[id];
+        let population = province.total_population();
+        let capacity = province.capacity(&campaign.economy.config);
+        apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
+        let province = &campaign.economy.provinces[id];
+        let added_population = province.total_population() - population;
+        let expected_capacity = capacity + added_population * 100.0;
+        assert!(
+            (province.capacity(&campaign.economy.config) - expected_capacity).abs()
+                < expected_capacity * 1e-12
+        );
+        assert!(province.capacity(&campaign.economy.config) > province.total_population() * 90.0);
+        assert_eq!(province.capacity_area, area);
+    }
+
+    let capacity = campaign.economy.provinces[id].capacity(&campaign.economy.config);
+    campaign.advance_month();
+    assert_eq!(campaign.economy.provinces[id].capacity(&campaign.economy.config), capacity);
 }
 
 #[test]

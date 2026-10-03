@@ -150,16 +150,20 @@ impl std::fmt::Display for PoliticalError {
         } = self
         {
             return if *action == senate::SenatorAction::Lobby {
-                f.write_str("You are already lobbying this senator. Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.")
+                f.write_str(
+                    "You are already lobbying this senator. Cancel it using the card's cross.",
+                )
             } else if *action == senate::SenatorAction::Bribe {
-                f.write_str("You are already bribing this senator. Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.")
+                f.write_str(
+                    "You are already bribing this senator. Cancel it using the card's cross.",
+                )
             } else {
                 let months = if *months_remaining == 1 {
                     "month"
                 } else {
                     "months"
                 };
-                write!(f, "You already have an active {} arrangement with this senator ({months_remaining} {months} remaining). Only one ongoing action is allowed at a time. Use the cross on its card to cancel the action.", match action {
+                write!(f, "Active {}: {months_remaining} {months} remaining. Cancel it using the card's cross.", match action {
                     senate::SenatorAction::Patronage => "patronage",
                     _ => "coercion",
                 })
@@ -169,11 +173,11 @@ impl std::fmt::Display for PoliticalError {
             Self::InvalidAmount => "Choose a finite, nonnegative amount.",
             Self::InsufficientFunds => "Insufficient funds for this action.",
             Self::MissingTarget => "The selected target no longer exists.",
-            Self::Ineligible => "The current office or province state does not permit this action.",
+            Self::Ineligible => "Your rank or this province blocks the action.",
             Self::AlreadyUsed => "This action is still on cooldown.",
-            Self::CampaignFinished => "The campaign has ended. Senator actions are no longer available.",
-            Self::SenatorIsNeutral => "This senator is neutral and has no patron to discredit. Select a senator who supports another player.",
-            Self::RivalPatronRequired => "This senator supports you. Select a senator who supports another player to weaken their patron.",
+            Self::CampaignFinished => "The campaign has ended.",
+            Self::SenatorIsNeutral => "This senator is neutral and has no patron. Select a senator who supports another player.",
+            Self::RivalPatronRequired => "This senator supports you. Select a senator who supports another player.",
             Self::SenatorArrangementActive { .. } => unreachable!(),
             Self::NoConsulSeat => "Both Consul seats are occupied.",
             Self::ScandalRequired => "An unexpired scandal against this player is required.",

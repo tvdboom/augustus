@@ -479,7 +479,7 @@ impl EconomyWorld {
             // This prevents transport loss cancelling out of the acceptance test.
             let given = agreement.b_gives.value(values, self.config.trade.influence_value);
             if received + 1e-9 < given * required {
-                return Err(format!("NPC requires {required:.2}× its offered value after transport loss ({received:.1} received / {given:.1} given)"));
+                return Err(format!("NPC needs {required:.2}× offered value after transport ({received:.1} received / {given:.1} given)."));
             }
             quote.required_value_ratio = Some(required);
             quote.fulfillment = self.npc_fulfillment(npc, agreement, efficiency);
@@ -515,7 +515,7 @@ impl EconomyWorld {
     ) -> Result<(u64, Option<TradePoliticalEffect>), String> {
         let quote = self.quote_trade(&agreement, inputs)?;
         if quote.fulfillment + 1e-9 < 1.0 {
-            return Err("The NPC cannot sustain the full proposed amounts; reduce the offer before accepting. The 80% tolerance applies only to an existing route.".into());
+            return Err("Reduce the offer; the NPC cannot supply it in full. New routes require 100% supply.".into());
         }
         agreement.id = self.next_trade_id;
         agreement.accepted = [true, matches!(agreement.party_b, TradeParty::Npc(_))];

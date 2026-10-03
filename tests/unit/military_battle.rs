@@ -113,6 +113,8 @@ fn text(output: &egui::FullOutput) -> Vec<String> {
 #[test]
 fn live_battle_card_shows_current_state_and_stays_open_without_a_result_strip() {
     let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+    world.battles[0].defenders.plans.get_mut(&ForceOwner::Player(1)).unwrap().tactic =
+        CombatTactic::Envelopment;
     let ctx = context();
     open_battle_panel(&ctx, id, 0);
     ctx.data_mut(|data| data.insert_temp(egui::Id::new("battle-review-capture"), true));
@@ -269,6 +271,8 @@ fn pointer(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
 #[test]
 fn current_combat_modifiers_are_available_on_icon_hover() {
     let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+    world.battles[0].defenders.plans.get_mut(&ForceOwner::Player(1)).unwrap().tactic =
+        CombatTactic::Envelopment;
     world.battles[0].advance_month(&world.config);
     let ctx = context();
     open_battle_panel(&ctx, id, 0);
@@ -277,6 +281,21 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
     let (output, _) = render(&ctx, &world, &economy, 0, size, 0.4, vec![]);
     let (panel, _) = panel_rect(ctx.content_rect());
     let round = world.battles[0].rounds.last().unwrap();
+    for (index, color) in
+        [egui::Color32::from_rgb(32, 116, 58), egui::Color32::from_rgb(166, 44, 34)]
+            .into_iter()
+            .enumerate()
+    {
+        let modifier =
+            ((round.tactics[index][&ForceOwner::Player(index)] - 1.) * 100.).round() as i32;
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == format!("{modifier:+}%")
+                    && text.galley.job.sections[0].format.color == color
+            )),
+            "Actual tactic modifier must show its sign and color for side {index}"
+        );
+    }
     let attackers = &world.battles[0].attackers;
     let tactic = attackers.plans[&ForceOwner::Player(0)].tactic;
     let (slot, cohort) = attackers
@@ -303,16 +322,16 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
         .collect();
     let targets = [
         (
-            egui::pos2(panel.right() - 32., panel.top() + 67.),
+            egui::pos2(panel.right() - 128., panel.top() + 67.),
             format!("Current die: {}", round.dice[0]),
         ),
-        (egui::pos2(panel.right() - 66., panel.top() + 67.), tactic.name().to_owned()),
+        (egui::pos2(panel.right() - 94., panel.top() + 67.), tactic.name().to_owned()),
         (
-            egui::pos2(panel.right() - 32., panel.top() + 269.),
+            egui::pos2(panel.right() - 128., panel.top() + 273.),
             format!("Current die: {}", round.dice[1]),
         ),
         (
-            egui::pos2(panel.right() - 66., panel.top() + 269.),
+            egui::pos2(panel.right() - 94., panel.top() + 273.),
             world.battles[0].defenders.plans[&ForceOwner::Player(1)].tactic.name().to_owned(),
         ),
         (egui::pos2(panel.right() - 57., panel.top() + 21.), "Forest · Width: 10 cohorts".into()),
@@ -345,6 +364,9 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
             labels.iter().any(|s| s.contains(&expected)),
             "Missing icon tooltip {expected}: {labels:?}"
         );
+        assert!(!labels.iter().any(
+            |label| label.contains("composition fit") || label.contains("starting deployment")
+        ));
         if expected.starts_with("• Manpower") {
             assert!(labels.iter().any(|s| s == cohort.unit_type.name()));
             assert!(!labels.iter().any(|s| s.contains('#') || s.contains("Frontline")));

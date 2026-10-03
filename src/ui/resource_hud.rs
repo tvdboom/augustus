@@ -87,6 +87,16 @@ pub(in crate::app) fn format_hud_delta(value: f64) -> String {
     }
 }
 
+/// Statistics cards show whole units without abbreviated fractional values.
+pub(in crate::app) fn format_statistic(value: f64) -> String {
+    let rounded = value.round();
+    if rounded == 0.0 {
+        "0".into()
+    } else {
+        format!("{rounded:.0}")
+    }
+}
+
 /// Food consumption uses whole units, with one minus sign and unsigned zero.
 pub(in crate::app) fn format_food_demand(amount: f64) -> String {
     let magnitude = amount.abs().floor();

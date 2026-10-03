@@ -153,7 +153,8 @@ impl Toast {
             title,
             body: &self.text,
             month,
-            warning: self.level != ToastLevel::Info,
+            owner: None,
+            row: 0,
             critical: self.level == ToastLevel::Error,
             actionable: self.action.is_some(),
         }
@@ -363,6 +364,7 @@ pub(in crate::app) fn draw(
     audio: Res<Audio>,
     assets: Res<AssetServer>,
     campaign: Res<super::campaign::Campaign>,
+    practice: Res<LocalPractice>,
     terminal: Res<TerminalPresentation>,
 ) {
     if terminal.spectating
@@ -381,6 +383,8 @@ pub(in crate::app) fn draw(
     let right_inset = 12.0 * scale;
     let max_width = (viewport.width() - right_inset - 28.0 * scale).min(420.0 * scale);
     let mut clicked = None;
+    let colors: Vec<_> =
+        practice.players.iter().map(|p| super::PLAYER_COLORS[p.color_index]).collect();
     egui::Area::new(egui::Id::new("augustus_toasts"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-right_inset, 76.0 * scale))
         .order(egui::Order::Foreground)
@@ -391,7 +395,11 @@ pub(in crate::app) fn draw(
             for (index, toast) in toasts.0.iter_mut().enumerate() {
                 if let Some(notice) = &toast.notice {
                     ui.push_id(notice.id, |ui| {
-                        if super::campaign_notices::card(ui, notice, scale).clicked() {
+                        if super::campaign_notices::card(
+                            ui, notice, &campaign, &colors, index, scale,
+                        )
+                        .clicked()
+                        {
                             clicked =
                                 Some((index, toast.action.unwrap_or(ToastAction::OpenGovernance)));
                         }

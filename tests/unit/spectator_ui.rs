@@ -26,7 +26,11 @@ fn spectator_status_is_only_text_at_the_bottom_right() {
             let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
             assert!(screen.contains_rect(bounds));
             assert!(bounds.left() > screen.center().x);
-            assert!(bounds.top() > screen.bottom() - 50.0);
+            assert!(bounds.top() > screen.bottom() - 64.0 * viewport_ui_scale(size));
+            assert_eq!(
+                text.galley.job.sections[0].format.font_id.size,
+                32.0 * viewport_ui_scale(size)
+            );
         }
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(_))));
         output.textures_delta.clear();

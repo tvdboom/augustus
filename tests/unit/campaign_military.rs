@@ -101,6 +101,7 @@ fn defeat_blocks_owned_province_work_and_trade_until_a_relief_army_wins() {
     );
     let relief = c.military.seed_unit(2, owner, UnitType::HeavyInfantry).unwrap();
     c.order_army(2, 0, 0, &[relief], &[0], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    assert_eq!(c.military.movements[0].attack_target, Some(enemy));
     while c.military.battles.is_empty() {
         c.advance_live_month();
     }
@@ -131,6 +132,7 @@ fn attack_order_detaches_selected_units_and_engages_only_on_arrival() {
     c.military.config.base_manpower_damage = 0.;
     c.military.config.base_morale_damage = 0.;
     c.order_army(0, 0, 1, &[sent], &[1], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    assert_eq!(c.military.movements[0].attack_target, Some(ForceOwner::Local(1)));
     assert!(c.npc_wars[0][1]);
     assert!(c.military.battles.is_empty());
     assert_eq!(c.military.provinces[0].forces[&own][0].id, stays);
@@ -196,6 +198,7 @@ fn pressure_preserves_defenders_caps_control_and_ends_when_troops_leave() {
     c.politics[1].relations[0] = 50.;
     c.politics[1].gain_control_now(0, 39.8).unwrap();
     c.order_army(0, 0, 1, &[id], &[1], BattlePlan::default(), ArmyOrderKind::Pressure).unwrap();
+    assert_eq!(c.military.movements[0].attack_target, None);
     for _ in 0..4 {
         c.advance_month();
     }
@@ -492,7 +495,7 @@ fn an_unguarded_revolt_leaves_hostile_light_infantry_in_its_province() {
         .find(|notice| notice.kind == NoticeKind::SlaveRevolt)
         .unwrap();
     assert_eq!(notice.action, NoticeAction::OpenProvince(0));
-    assert!(notice.body.contains("hostile rebel army now stands in the province"));
+    assert!(notice.body.contains("Unopposed rebels"));
     assert!(notice.body.contains("2.25 Control per month"));
     assert!(c.military.provinces[0].forces[&rebel]
         .iter()
@@ -829,8 +832,8 @@ fn province_access_is_local_and_notifies_the_guest_immediately_on_each_change() 
     }
     let notices = c.notifications.drain_for(1);
     assert_eq!(notices.len(), 3);
-    assert_eq!(notices[0].title, "Military access granted to Test 0");
-    assert_eq!(notices[1].title, "Military access revoked to Test 0");
+    assert_eq!(notices[0].title, "Military access granted");
+    assert_eq!(notices[1].title, "Military access revoked");
     assert_eq!(notices[2].kind, NoticeKind::MilitaryAccessGranted);
     assert!(c.notifications.history_for(0).next().is_none());
     c.set_province_access(0, 0, 1, true).unwrap();
@@ -863,7 +866,7 @@ fn revoking_province_access_marches_all_guests_to_an_owned_province() {
     assert_eq!(order.progress, 0.0);
     let notice = c.notifications.drain_for(1).pop().unwrap();
     assert_eq!(notice.kind, NoticeKind::MilitaryAccessRevoked);
-    assert_eq!(notice.title, "Military access revoked to Test 0");
+    assert_eq!(notice.title, "Military access revoked");
     assert!(notice.body.contains("Units marching to Test 2."));
     // Even closed transit provinces cannot strand a fixed peaceful withdrawal order.
     for _ in 0..100 {

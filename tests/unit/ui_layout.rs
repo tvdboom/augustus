@@ -51,6 +51,8 @@ fn spectator_uses_regular_province_sections_and_cannot_change_policies() {
         .spawn((bevy_egui::EguiContext::default(), bevy_egui::PrimaryEguiContext))
         .id();
     let ctx = app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut().clone();
+    // Inspect the settled layout rather than the entrance fade's tinted colors.
+    ctx.global_style_mut(|style| style.animation_time = 0.0);
     spectator::set_read_only(&ctx, true);
     let initial = app.world().resource::<Campaign>().clone();
     let mut capture = capture::Capture::default();
@@ -76,6 +78,22 @@ fn spectator_uses_regular_province_sections_and_cannot_change_policies() {
                 capture.frame(&ctx, &output, &format!("spectator-province-{province}-{section}"));
                 output.textures_delta.clear();
                 if frame == 1 {
+                    let panel = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect) if rect.fill == province_panel::PAPER => {
+                                Some(rect.rect)
+                            },
+                            _ => None,
+                        })
+                        .max_by(|a, b| a.area().total_cmp(&b.area()))
+                        .expect("The province inspector must remain visible in spectator mode");
+                    assert!((panel.left() - 10.0).abs() < 0.1);
+                    assert!(
+                        (1000.0 - panel.bottom() - panel.left()).abs() < 0.1,
+                        "Spectator inspectors must have equal left and bottom margins: {panel:?}"
+                    );
                     assert!(
                         output.shapes.iter().any(|shape| matches!(&shape.shape,
                         egui::Shape::Text(text) if text.galley.job.text == "Policies")),
@@ -408,7 +426,7 @@ fn render_spy_overview(
 ) -> (egui::FullOutput, Option<usize>, Option<String>) {
     let mut search = "Achaia".to_owned();
     let mut result = (None, None);
-    let output = ctx.run_ui(
+    let mut output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -423,6 +441,7 @@ fn render_spy_overview(
             result = politics_spies(ui, campaign, 0, &[], &mut search, 1.0);
         },
     );
+    output.textures_delta.clear();
     (output, result.0, result.1)
 }
 
@@ -435,6 +454,102 @@ fn overview_spy_row(output: &egui::FullOutput) -> egui::Rect {
             _ => None,
         })
         .expect("Achaia overview row")
+}
+
+#[test]
+fn spy_overview_disabled_actions_keep_the_default_cursor_and_explain_the_action() {
+    for owned in [true, false] {
+        let ctx = layout_context();
+        ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+        ctx.global_style_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        campaign_widgets::configure_cursor(&ctx);
+        let mut campaign = fixture();
+        let reason = if owned {
+            campaign.politics[2].state = PoliticalState::Owned {
+                owner: 1,
+            };
+            campaign.economy.provinces[2].owner = Some(1);
+            "Unavailable under this province's government"
+        } else {
+            campaign.actors[0].influence = 0.0;
+            "Not enough Influence to deploy a spy"
+        };
+        let (output, _, _) = render_spy_overview(&ctx, &mut campaign, 0.0, vec![]);
+        let row = overview_spy_row(&output);
+        let mut time = 0.1;
+        for (index, &(_, label, icon)) in SPY_ACTIONS.iter().enumerate() {
+            let texture = campaign_widgets::texture(&ctx, icon);
+            let pointer = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                        Some(mesh.calc_bounds().center())
+                    },
+                    _ => None,
+                })
+                .expect("Spy action icon");
+            let disabled = !owned || index == 5;
+            // Start on the clickable row so a stale pointing cursor cannot hide the bug.
+            let (row_hover, _, _) = render_spy_overview(
+                &ctx,
+                &mut campaign,
+                time,
+                vec![egui::Event::PointerMoved(row.left_center() + egui::vec2(40.0, 0.0))],
+            );
+            assert_eq!(row_hover.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+            render_spy_overview(
+                &ctx,
+                &mut campaign,
+                time + 0.1,
+                vec![egui::Event::PointerMoved(pointer)],
+            );
+            render_spy_overview(&ctx, &mut campaign, time + 0.9, vec![]);
+            let (hover, _, _) = render_spy_overview(&ctx, &mut campaign, time + 1.0, vec![]);
+            assert_eq!(
+                hover.platform_output.cursor_icon,
+                if disabled {
+                    egui::CursorIcon::Default
+                } else {
+                    egui::CursorIcon::PointingHand
+                },
+                "{label} cursor"
+            );
+            let tooltip = if disabled {
+                format!("{label}: {reason}")
+            } else {
+                label.to_owned()
+            };
+            assert!(
+                hover.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == tooltip
+                )),
+                "Missing hover label: {tooltip}"
+            );
+            if disabled {
+                for (offset, pressed) in [(1.1, true), (1.2, false)] {
+                    let (_, target, message) = render_spy_overview(
+                        &ctx,
+                        &mut campaign,
+                        time + offset,
+                        vec![egui::Event::PointerButton {
+                            pos: pointer,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        }],
+                    );
+                    assert!(target.is_none() && message.is_none());
+                    assert!(campaign.espionage.missions.is_empty());
+                }
+            }
+            time += 2.0;
+        }
+    }
 }
 
 #[test]
@@ -476,7 +591,30 @@ fn spy_overview_icon_actions_deploy_recall_and_flee_without_opening_province() {
     output = next;
     assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
         egui::Shape::Text(text) if text.galley.job.text.contains("months active"))));
-    spy_text_position(&output, "Discredit rivals");
+    let title = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Discredit rivals" => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+            },
+            _ => None,
+        })
+        .expect("Active mission title");
+    let icon = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh)
+                if (mesh.calc_bounds().width() - 20.0).abs() < 0.1
+                    && (mesh.calc_bounds().center().y - title.center().y).abs() < 0.1 =>
+            {
+                Some(mesh.calc_bounds())
+            },
+            _ => None,
+        })
+        .expect("Active mission icon");
+    assert!((title.left() - icon.right() - 8.0).abs() < 0.1);
     let row = overview_spy_row(&output);
     let recall = egui::pos2(row.right() - 52.0, row.center().y);
     output.textures_delta.clear();
@@ -788,11 +926,11 @@ fn spy_network_shows_cumulative_results_detection_and_adjacent_exit_choices() {
         spy_text_position(&output, value);
         spy_text_position(&output, "Sestertii spent");
         spy_text_position(&output, "Detection");
-        spy_text_position(&output, "1%/mo");
+        spy_text_position(&output, "0.5%/mo");
         campaign.economy.provinces[province].happiness[0] = 50.0;
         output.textures_delta.clear();
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 0.05, vec![]);
-        spy_text_position(&output, "4%/mo");
+        spy_text_position(&output, "2%/mo");
         campaign.economy.provinces[province].happiness[0] = 100.0;
         let recall = spy_text_position(&output, "Recall");
         let flee = spy_text_position(&output, "Flee");
@@ -811,7 +949,7 @@ fn spy_network_shows_cumulative_results_detection_and_adjacent_exit_choices() {
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 1.1, vec![]);
         output.textures_delta.clear();
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 1.2, vec![]);
-        spy_text_position(&output, "7%/mo");
+        spy_text_position(&output, "3.5%/mo");
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text.contains("Return after six months"))));
         let primitives = ctx.tessellate(output.shapes.clone(), output.pixels_per_point);
@@ -1065,9 +1203,25 @@ fn coin_flow_shows_trade_deals_spy_upkeep_and_negative_expenses() {
                 );
                 assert_eq!(row_value("Trade deals"), "0");
                 assert_eq!(row_value("Recruitment effort"), "0");
-                assert!(row_value("Noble wages").starts_with('-'));
+                assert_eq!(row_value("Noble wages"), "0");
                 assert!(row_value("Army wages").starts_with('-'));
                 assert!(row_value("TOTAL OUTFLOW").starts_with('-'));
+                for label in [
+                    "Taxes",
+                    "Tributes",
+                    "TOTAL INCOME",
+                    "Noble wages",
+                    "Army wages",
+                    "Civic spending",
+                    "Recruitment effort",
+                    "Spy upkeep",
+                    "TOTAL OUTFLOW",
+                ] {
+                    assert!(
+                        row_value(label).parse::<i64>().is_ok(),
+                        "Fractional amount in {label}"
+                    );
+                }
                 assert!(!rows
                     .iter()
                     .any(|text| matches!(text.galley.job.text.as_str(), "Deals" | "-0" | "+0")));
@@ -2369,15 +2523,21 @@ fn provincial_income_tooltips_show_illustrated_contributors_without_formulas() {
 }
 
 #[test]
-fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_one_decimal() {
+fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_precision() {
     use crate::game::economy::BuildingType;
 
-    for (terrain, military, city) in [(0.7, false, false), (1.0, true, true), (1.2, false, true)] {
+    for (terrain, military, city, practice_bonus) in [
+        (0.7, false, false, 0.0),
+        (1.0, true, true, 0.0),
+        (1.2, false, true, 0.0),
+        (0.7, false, true, 1_000_000.0),
+    ] {
         let ctx = layout_context();
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         let mut campaign = fixture();
         let p = &mut campaign.economy.provinces[0];
         p.has_city = city;
+        p.practice_capacity_bonus = practice_bonus;
         p.buildings[BuildingType::Baths as usize] = u32::from(city);
         if !military {
             campaign.military.provinces[0].forces.clear();
@@ -2514,7 +2674,7 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_one_decima
                 super::super::resource_hud::hud_delta_color(terrain - 1.0)
             },
         );
-        for (label, amount) in [
+        for (label, amount, decimals) in [
             (
                 "City",
                 if city {
@@ -2522,8 +2682,9 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_one_decima
                 } else {
                     0.0
                 },
+                0,
             ),
-            ("Buildings", p.building_effects(&campaign.economy.config).capacity),
+            ("Buildings", p.building_effects(&campaign.economy.config).capacity, 1),
         ] {
             check_bullet(
                 &output,
@@ -2531,7 +2692,7 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_one_decima
                 &if amount == 0.0 {
                     "0".into()
                 } else {
-                    format!("+{amount:.1}")
+                    format!("+{amount:.decimals$}")
                 },
                 if amount == 0.0 {
                     egui::Color32::BLACK
@@ -2539,6 +2700,18 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_one_decima
                     super::super::resource_hud::hud_delta_color(1.0)
                 },
             );
+        }
+        if practice_bonus > 0.0 {
+            check_bullet(
+                &output,
+                "Practice boost",
+                "+1000000",
+                super::super::resource_hud::hud_delta_color(1.0),
+            );
+        } else {
+            assert!(!text_shapes(&output)
+                .iter()
+                .any(|(_, galley)| { galley.job.text == "• Practice boost:" }));
         }
     }
 }
@@ -2673,20 +2846,15 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
         render(0.1, Some(columns[2]));
         render(1.0, None);
         let growth = render(1.1, None);
-        check_bullet(&growth, "Births", "+0.105", super::super::resource_hud::hud_delta_color(1.0));
+        check_bullet(&growth, "Births", "+0.1", super::super::resource_hud::hud_delta_color(1.0));
         check_bullet(
             &growth,
             "Natural deaths",
-            "-0.060",
+            "-0.1",
             super::super::resource_hud::hud_delta_color(-1.0),
         );
         check_bullet(&growth, "Famine deaths", "0", egui::Color32::BLACK);
-        check_bullet(
-            &growth,
-            "Migration",
-            "-0.006",
-            super::super::resource_hud::hud_delta_color(-1.0),
-        );
+        check_bullet(&growth, "Migration", "0", egui::Color32::BLACK);
         render(2.0, Some(columns[3]));
         render(3.0, None);
         let happiness = render(3.1, None);
@@ -3524,7 +3692,7 @@ fn own_diplomacy_shows_unboxed_player_rows_and_immediate_access_notices() {
     assert!(campaign.province_access_granted(0, 0, 1));
     let notices = campaign.notifications.drain_for(1);
     assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].title, "Military access granted to Italia");
+    assert_eq!(notices[0].title, "Military access granted");
 }
 
 #[test]
@@ -4927,9 +5095,15 @@ fn province_notice_cards_filter_history_and_click_through_to_the_related_panel()
                 |root| {
                     root.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                         panel_style(ui, 1.0);
-                        if let Some(notice) =
-                            province_notifications(ui, &campaign, 0, 0, &mut filters, 1.0)
-                        {
+                        if let Some(notice) = province_notifications(
+                            ui,
+                            &campaign,
+                            0,
+                            0,
+                            &PLAYER_COLORS,
+                            &mut filters,
+                            1.0,
+                        ) {
                             selected = Some(notice);
                         }
                     });

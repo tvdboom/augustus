@@ -663,7 +663,7 @@ pub(in crate::app) fn select_page(ctx: &egui::Context, player: usize, page: usiz
     });
 }
 
-/// Opening Trade from the menu or an alert starts at the route overview and keeps draft amounts.
+/// Trade alerts open the route overview while keeping draft amounts.
 pub(in crate::app) fn open_routes(ctx: &egui::Context, player: usize) {
     let key = egui::Id::new(("national-trade-view", player));
     ctx.data_mut(|data| {

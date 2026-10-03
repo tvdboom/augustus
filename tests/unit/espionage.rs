@@ -848,7 +848,7 @@ fn guaranteed_detection_creates_real_player_evidence_before_discovery() {
 fn detection_formula_uses_reduced_monthly_risk_and_scandals_have_distinct_bloc_effects() {
     let config = EspionageConfig::default();
     for (happiness, risk) in
-        [(-10.0, 0.01), (0.0, 0.01), (50.0, 0.04), (100.0, 0.07), (110.0, 0.07)]
+        [(-10.0, 0.005), (0.0, 0.005), (50.0, 0.02), (100.0, 0.035), (110.0, 0.035)]
     {
         assert!((detection_chance(happiness, &config) - risk).abs() < 1e-9);
     }
@@ -864,6 +864,10 @@ fn monthly_detection_outcomes_match_the_displayed_risk_across_assignments() {
     for config in [
         EspionageConfig {
             detection_range: [0.02, 0.10],
+            ..Default::default()
+        },
+        EspionageConfig {
+            detection_range: [0.01, 0.07],
             ..Default::default()
         },
         EspionageConfig::default(),
@@ -947,7 +951,10 @@ fn fleeing_doubles_the_cumulative_recall_risk_and_caps_it() {
 #[test]
 fn motion_evidence_survives_expiration_but_cannot_be_spent_twice() {
     let mut state = EspionageState::new(4);
-    let config = EspionageConfig::default();
+    let config = EspionageConfig {
+        evidence_lifetime: 24,
+        ..Default::default()
+    };
     let id = state.grant(
         0,
         ScandalTarget::Player(1),
@@ -967,9 +974,58 @@ fn motion_evidence_survives_expiration_but_cannot_be_spent_twice() {
 }
 
 #[test]
+fn newly_discovered_scandals_are_permanent_after_their_source_ends() {
+    let mut state = EspionageState::new(4);
+    let config = EspionageConfig::default();
+    let id = state.grant(
+        0,
+        ScandalTarget::Player(1),
+        ScandalKind::Espionage,
+        Severity::Medium,
+        None,
+        9,
+        5,
+        &config,
+    );
+    assert_eq!(state.scandals[0].validity_label(5), "Permanent");
+    state.advance_month(1200, &mut [], &[], &mut [], &config);
+    assert!(state.holds_evidence(0, id, 1, 1200));
+    state.consume(0, id, 1200).unwrap();
+    assert!(state.scandals.is_empty(), "Deliberate use still spends the scandal");
+}
+
+#[test]
+fn timed_scandals_expire_once_at_their_stated_deadline() {
+    let mut state = EspionageState::new(4);
+    let config = EspionageConfig {
+        evidence_lifetime: 120,
+        ..Default::default()
+    };
+    let id = state.grant(
+        0,
+        ScandalTarget::Player(1),
+        ScandalKind::Espionage,
+        Severity::Medium,
+        None,
+        9,
+        5,
+        &config,
+    );
+    assert_eq!(state.scandals[0].validity_label(124), "1 month remaining");
+    assert!(state.advance_month(124, &mut [], &[], &mut [], &config).is_empty());
+    let events = state.advance_month(125, &mut [], &[], &mut [], &config);
+    assert!(
+        matches!(events.as_slice(), [EspionageEvent::EvidenceExpired(scandal)] if scandal.id == id && scandal.holder == 0)
+    );
+    assert!(state.scandals.is_empty());
+    assert!(state.advance_month(126, &mut [], &[], &mut [], &config).is_empty());
+}
+
+#[test]
 fn foreign_attack_is_discoverable_in_perpetrator_holdings_with_origin_preserved() {
     let config = EspionageConfig {
         detection_range: [0.0, 0.0],
+        evidence_lifetime: 24,
         ..Default::default()
     };
     let mut state = EspionageState::new(7);

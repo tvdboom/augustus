@@ -17,7 +17,7 @@ pub struct EspionageConfig {
     pub recall_months: u32,
     /// Relation penalty when an NPC catches a spy.
     pub npc_detection_relation_loss: f64,
-    /// Maximum lifetime of ordinary evidence in months.
+    /// Lifetime of discovered scandals in months; `u32::MAX` means permanent.
     pub evidence_lifetime: u32,
     /// Monthly chance to create an NPC's hidden scandal.
     pub npc_generation_chance: f64,
@@ -37,10 +37,10 @@ impl Default for EspionageConfig {
         Self {
             deployment_influence: [10.0, 5.0, 15.0, 20.0, 20.0, 20.0],
             monthly_coin: 5.0,
-            detection_range: [0.01, 0.07],
+            detection_range: [0.005, 0.035],
             recall_months: 6,
             npc_detection_relation_loss: 10.0,
-            evidence_lifetime: 24,
+            evidence_lifetime: u32::MAX,
             npc_generation_chance: 0.05,
             npc_pool_cap: 3,
             npc_discovery_chance: 0.15,
@@ -132,6 +132,19 @@ pub enum ScandalKind {
 }
 
 impl ScandalKind {
+    /// Local failures and compromised elites can undermine provincial legitimacy.
+    /// Senate-only misconduct and exposed spies do not establish a provincial claim.
+    pub fn grants_provincial_control(self) -> bool {
+        !matches!(
+            self,
+            Self::Espionage
+                | Self::PoliticalBribery
+                | Self::SenatorCoercion
+                | Self::SenatorMurder
+                | Self::PoliticalSmear
+        )
+    }
+
     /// Readable evidence label.
     pub fn label(self) -> &'static str {
         match self {
@@ -263,7 +276,7 @@ impl Severity {
             Self::Major => 1.5,
         }
     }
-    /// Scandal leverage against independent NPC control.
+    /// One-time provincial leverage, shared by control and relation settlements.
     pub fn control_gain(self) -> f64 {
         match self {
             Self::Minor => 5.0,
@@ -271,6 +284,17 @@ impl Severity {
             Self::Major => 10.0,
         }
     }
+}
+
+/// Spending evidence grants one provincial benefit; Senate use remains separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScandalUse {
+    /// Undermine provincial legitimacy for immediate political control.
+    Control,
+    /// Settle the evidence privately for improved provincial sentiment.
+    Relation,
+    /// Negotiate the existing temporary NPC trade valuation benefit.
+    Trade,
 }
 
 /// Real player action or an NPC province whose government can be blackmailed.
@@ -301,10 +325,36 @@ pub struct Scandal {
     pub source_id: u64,
     /// Discovery month.
     pub acquired: u32,
-    /// Exclusive expiry month.
+    /// Exclusive expiry month; `u32::MAX` means permanent until used.
     pub expires: u32,
     /// Evidence supporting the active removal motion survives expiry until its vote.
     pub reserved_for_motion: bool,
+}
+
+impl Scandal {
+    /// Reserved scandals remain in the inventory until their vote resolves.
+    pub fn is_current(&self, month: u32) -> bool {
+        self.expires == u32::MAX || self.expires > month || self.reserved_for_motion
+    }
+
+    /// Visible lifetime shared by inventory rows and discovery notifications.
+    pub fn validity_label(&self, month: u32) -> String {
+        if self.reserved_for_motion {
+            "Reserved until vote".into()
+        } else if self.expires == u32::MAX {
+            "Permanent".into()
+        } else {
+            let remaining = self.expires.saturating_sub(month);
+            format!(
+                "{remaining} {} remaining",
+                if remaining == 1 {
+                    "month"
+                } else {
+                    "months"
+                }
+            )
+        }
+    }
 }
 
 /// One active policy/condition activation or a retained completed action.
@@ -439,6 +489,8 @@ pub enum EspionageEvent {
     Recalled(PlayerId, ProvinceId),
     /// Holder acquired an evidence item.
     EvidenceDiscovered(PlayerId, u64),
+    /// A timed, unreserved scandal expired and left its holder's inventory.
+    EvidenceExpired(Scandal),
     /// A surviving spy reduces one randomly selected population class's Happiness.
     PopulationUndermined(PlayerId, ProvinceId, usize, f64),
 }
@@ -631,7 +683,7 @@ impl EspionageState {
             province,
             kind,
             severity,
-            expires: Some(month + config.evidence_lifetime),
+            expires: Some(month.saturating_add(config.evidence_lifetime)),
         });
         id
     }
@@ -712,7 +764,7 @@ impl EspionageState {
             s.id == id
                 && s.holder == holder
                 && s.target == ScandalTarget::Player(target)
-                && s.expires > month
+                && s.is_current(month)
                 && !s.reserved_for_motion
         })
     }
@@ -729,7 +781,7 @@ impl EspionageState {
             .scandals
             .iter_mut()
             .find(|s| {
-                s.id == id && s.holder == holder && s.expires > month && !s.reserved_for_motion
+                s.id == id && s.holder == holder && s.is_current(month) && !s.reserved_for_motion
             })
             .ok_or(PoliticalError::ScandalRequired)?;
         scandal.reserved_for_motion = true;
@@ -757,7 +809,7 @@ impl EspionageState {
             .scandals
             .iter()
             .position(|s| {
-                s.id == id && s.holder == holder && s.expires > month && !s.reserved_for_motion
+                s.id == id && s.holder == holder && s.is_current(month) && !s.reserved_for_motion
             })
             .ok_or(PoliticalError::ScandalRequired)?;
         let scandal = self.scandals.remove(index);
@@ -781,7 +833,9 @@ impl EspionageState {
         let evidence = self
             .scandals
             .iter()
-            .find(|s| s.id == id && s.holder == player && s.expires > month)
+            .find(|s| {
+                s.id == id && s.holder == player && s.is_current(month) && !s.reserved_for_motion
+            })
             .ok_or(PoliticalError::ScandalRequired)?;
         let ScandalTarget::Province(province) = evidence.target else {
             return Err(PoliticalError::Ineligible);
@@ -808,7 +862,9 @@ impl EspionageState {
         let evidence = self
             .scandals
             .iter()
-            .find(|s| s.id == id && s.holder == player && s.expires > month)
+            .find(|s| {
+                s.id == id && s.holder == player && s.is_current(month) && !s.reserved_for_motion
+            })
             .ok_or(PoliticalError::ScandalRequired)?;
         let ScandalTarget::Province(province) = evidence.target else {
             return Err(PoliticalError::Ineligible);
@@ -1065,7 +1121,14 @@ impl EspionageState {
                 true
             }
         });
-        self.scandals.retain(|s| s.expires > month || s.reserved_for_motion);
+        self.scandals.retain(|scandal| {
+            if scandal.is_current(month) {
+                true
+            } else {
+                events.push(EspionageEvent::EvidenceExpired(scandal.clone()));
+                false
+            }
+        });
         self.favorable_trade.retain(|b| b.expires > month);
         events
     }
@@ -1073,7 +1136,7 @@ impl EspionageState {
     /// Reconcile policy activations so ending and restarting a source gets a new identity.
     fn sync_opportunities(&mut self, provinces: &[SpyProvince], month: u32) {
         self.opportunities.retain(|o| match o.expires {
-            Some(expiry) => expiry > month,
+            Some(expiry) => expiry == u32::MAX || expiry > month,
             None => match o.province {
                 Some(id) => provinces.get(id).is_some_and(|p| {
                     p.owner == Some(o.player)
@@ -1139,7 +1202,7 @@ impl EspionageState {
             province,
             source_id,
             acquired: month,
-            expires: month + config.evidence_lifetime,
+            expires: month.saturating_add(config.evidence_lifetime),
             reserved_for_motion: false,
         });
         id

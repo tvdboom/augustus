@@ -539,6 +539,7 @@ fn overview_text(
     label: &str,
     size: f32,
     color: egui::Color32,
+    align: egui::Align,
     scale: f32,
 ) {
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(cell));
@@ -549,7 +550,12 @@ fn overview_text(
     job.wrap.max_rows = (cell.height() / row_height).floor().max(1.) as usize;
     job.wrap.break_anywhere = job.wrap.max_rows == 1;
     let galley = painter.layout_job(job);
-    painter.galley(cell.left_center() - egui::vec2(0., galley.size().y * 0.5), galley, color);
+    let x = if align == egui::Align::Center {
+        cell.center().x - galley.size().x * 0.5
+    } else {
+        cell.left()
+    };
+    painter.galley(egui::pos2(x, cell.center().y - galley.size().y * 0.5), galley, color);
 }
 
 fn overview_metric(ui: &egui::Ui, cell: egui::Rect, symbol: Icon, value: &str, scale: f32) {
@@ -561,7 +567,7 @@ fn overview_metric(ui: &egui::Ui, cell: egui::Rect, symbol: Icon, value: &str, s
     paint_icon(ui, symbol, image);
     let value_cell =
         egui::Rect::from_min_max(egui::pos2(image.right() + 3. * scale, cell.top()), cell.max);
-    overview_text(ui, value_cell, value, 12., super::province_panel::INK, scale);
+    overview_text(ui, value_cell, value, 12., super::province_panel::INK, egui::Align::Min, scale);
 }
 
 fn overview_table(
@@ -582,7 +588,12 @@ fn overview_table(
         .into_iter()
         .zip(["Province", "Units", "Tactic", "Morale", "Training"])
     {
-        overview_text(ui, cell, label, 12., PAPER, scale);
+        let align = if label == "Tactic" {
+            egui::Align::Center
+        } else {
+            egui::Align::Min
+        };
+        overview_text(ui, cell, label, 12., PAPER, align, scale);
     }
     for (index, row) in rows.iter().enumerate() {
         let composition: Vec<_> = UnitType::ALL
@@ -665,7 +676,7 @@ fn overview_table(
             ui.interact(image, response.id.with("tactic"), egui::Sense::hover())
                 .inspection_hover_text(tactic.name());
         } else {
-            overview_text(ui, cell[2], "?", 12., INK, scale);
+            overview_text(ui, cell[2], "?", 12., INK, egui::Align::Center, scale);
         }
         let (morale, training) = row.averages();
         overview_metric(ui, cell[3], Icon::Morale, &format!("{morale:.0}%"), scale);

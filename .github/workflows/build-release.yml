@@ -92,7 +92,8 @@ jobs:
           if-no-files-found: error
 
   native:
-    name: Native ${{ matrix.channel }}
+    # Keep skipped jobs readable before GitHub expands the matrix.
+    name: Native Windows and Linux
     needs: quality
     strategy:
       fail-fast: false

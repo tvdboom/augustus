@@ -108,9 +108,6 @@ pub(in crate::app) fn draw_map_hud(
         panels.campaign_ui.close_province_selector();
         if index == 0 {
             panels.governance.0 = !panels.governance.0;
-            if panels.governance.0 {
-                panels.campaign_ui.overview_section = 0;
-            }
             panels.campaign_ui.open = None;
         } else {
             let tab = [
@@ -124,9 +121,6 @@ pub(in crate::app) fn draw_map_hud(
                 Some(tab)
             };
             panels.governance.0 = false;
-            if tab == campaign_panel::CampaignTab::Trade && panels.campaign_ui.open == Some(tab) {
-                campaign_trade::open_routes(context, practice.active_player);
-            }
         }
         panels.province.0 = None;
         play_click(&sound, &audio, &assets);
@@ -171,7 +165,7 @@ pub(in crate::app) fn draw_map_hud(
     }
 }
 
-/// The player standard always returns to the founding province's overview.
+/// The player standard returns to the founding province with the remembered tab.
 pub(in crate::app) fn open_main_province(
     practice: &LocalPractice,
     view: &mut campaign_panel::CampaignUi,
@@ -183,7 +177,7 @@ pub(in crate::app) fn open_main_province(
     else {
         return false;
     };
-    view.open_province_section(province, 0);
+    view.open_province(province);
     detail.0 = Some(MapDetail::Province(province));
     governance.0 = false;
     map_view.focus_province(province);
@@ -281,6 +275,7 @@ pub(in crate::app) fn draw_governance_panel(
     let mut requested_event = None;
     let mut requested_notice = None;
     let mut requested_scandal = None;
+    let mut scandal_command = None;
     let mut spy_message = None;
     let (changed, close_clicked, target) = governance_panel::show_overview(
         context,
@@ -319,13 +314,27 @@ pub(in crate::app) fn draw_governance_panel(
                     target
                 },
                 4 => {
-                    requested_scandal =
-                        campaign_scandals::overview(ui, &campaign, player, scandal_filters, scale);
+                    let response = campaign_scandals::overview(
+                        ui,
+                        &campaign,
+                        player,
+                        &colors,
+                        scandal_filters,
+                        scale,
+                    );
+                    requested_scandal = response.selected;
+                    scandal_command = response.command;
                     None
                 },
                 5 => {
-                    requested_notice =
-                        campaign_notices::overview(ui, &campaign, player, notice_filters, scale);
+                    requested_notice = campaign_notices::overview(
+                        ui,
+                        &campaign,
+                        player,
+                        &colors,
+                        notice_filters,
+                        scale,
+                    );
                     None
                 },
                 _ => None,
@@ -333,6 +342,11 @@ pub(in crate::app) fn draw_governance_panel(
         },
     );
     if let Some(message) = spy_message {
+        feedback.toasts.push(toasts::Toast::info(message));
+        play_click(&feedback.sound, &audio, &assets);
+    }
+    if let Some(command) = scandal_command {
+        let message = campaign_scandals::apply_command(&mut campaign, player, command);
         feedback.toasts.push(toasts::Toast::info(message));
         play_click(&feedback.sound, &audio, &assets);
     }

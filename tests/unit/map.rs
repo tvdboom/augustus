@@ -274,7 +274,9 @@ fn terrain_tile_seams_preserve_every_provinces_area() {
     };
     let area = |part: &MapMesh| -> f64 {
         part.t
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|face| {
                 terrain_triangle_area(
                     part.v[face[0] as usize],
@@ -351,7 +353,7 @@ fn terrain_preserves_a_province_hole_and_excludes_the_backdrop() {
     for tile in &province.terrain {
         let mesh = province_terrain_mesh(tile, &projection, egui::Rect::EVERYTHING, texture);
         assert_eq!(mesh.texture_id, texture);
-        for face in mesh.indices.chunks_exact(3) {
+        for face in mesh.indices.as_chunks::<3>().0 {
             let [a, b, c] = [face[0], face[1], face[2]]
                 .map(|index| projection.inverse(mesh.vertices[index as usize].pos));
             let center = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0];

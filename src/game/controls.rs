@@ -177,9 +177,12 @@ pub(super) fn apply_practice_boost(
         }
         for (id, province) in campaign.economy.provinces.iter_mut().enumerate() {
             if province.owner == Some(player) {
+                let previous_population = province.total_population();
                 for population in &mut province.population {
                     *population *= 10.0;
                 }
+                let added_population = province.total_population() - previous_population;
+                province.practice_capacity_bonus += added_population * 100.0;
                 for kind in crate::game::military::UnitType::ALL {
                     for _ in 0..3 {
                         campaign

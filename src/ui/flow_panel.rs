@@ -1,8 +1,9 @@
 //! Shared income and outflow card for sestertii and influence.
 
+use super::resource_hud::format_statistic;
 use super::{
-    format_hud_number, hud_delta_color, hud_resource_positions, HUD_RESOURCE_GROUP_PADDING,
-    HUD_RESOURCE_WIDTH, MAP_RESOURCE_STRIP_HEIGHT,
+    hud_delta_color, hud_resource_positions, HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_WIDTH,
+    MAP_RESOURCE_STRIP_HEIGHT,
 };
 use bevy_egui::egui;
 
@@ -263,17 +264,7 @@ fn flow_number(value: f64, income: bool) -> String {
 }
 
 fn flow_value(value: f64) -> String {
-    let amount = value.abs();
-    if amount >= 1_000.0 {
-        return format_hud_number(amount);
-    }
-    let precision = if amount < 1.0 {
-        2
-    } else {
-        1
-    };
-    let number = format!("{amount:.precision$}");
-    number.trim_end_matches('0').trim_end_matches('.').to_owned()
+    format_statistic(value.abs())
 }
 
 #[cfg(test)]

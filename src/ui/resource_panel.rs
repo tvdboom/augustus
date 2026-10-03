@@ -1,8 +1,9 @@
 //! Province-level production card for food, metal, and stone.
 
+use super::resource_hud::format_statistic;
 use super::{
-    campaign, format_hud_number, hud_delta_color, hud_resource_positions, hud_resource_width,
-    ProvinceOwnership, HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_NAMES, MAP_RESOURCE_STRIP_HEIGHT,
+    campaign, hud_delta_color, hud_resource_positions, hud_resource_width, ProvinceOwnership,
+    HUD_RESOURCE_GROUP_PADDING, HUD_RESOURCE_NAMES, MAP_RESOURCE_STRIP_HEIGHT,
 };
 use bevy_egui::egui;
 
@@ -337,7 +338,7 @@ fn paint(
                         row_painter.text(
                             egui::pos2(rect.left() + produced_x * scale, row.center().y),
                             egui::Align2::RIGHT_CENTER,
-                            format_hud_number(*produced),
+                            format_statistic(*produced),
                             egui::FontId::proportional(13.0 * scale),
                             hud_delta_color(*produced),
                         );
@@ -345,7 +346,7 @@ fn paint(
                             row_painter.text(
                                 egui::pos2(rect.right() - 19.0 * scale, row.center().y),
                                 egui::Align2::RIGHT_CENTER,
-                                format_hud_number(civilian + military),
+                                format_statistic(civilian + military),
                                 egui::FontId::proportional(13.0 * scale),
                                 hud_delta_color(-(civilian + military)),
                             );
@@ -380,7 +381,7 @@ fn paint(
             painter.text(
                 p(produced_x, footer_top + 15.0),
                 egui::Align2::RIGHT_CENTER,
-                format_hud_number(total_produced),
+                format_statistic(total_produced),
                 egui::FontId::proportional(12.0 * scale),
                 hud_delta_color(total_produced),
             );
@@ -388,7 +389,7 @@ fn paint(
                 painter.text(
                     p(width - 19.0, footer_top + 15.0),
                     egui::Align2::RIGHT_CENTER,
-                    format_hud_number(total_consumed),
+                    format_statistic(total_consumed),
                     egui::FontId::proportional(12.0 * scale),
                     hud_delta_color(-total_consumed),
                 );
@@ -453,14 +454,14 @@ fn paint_food_detail(
         painter.text(
             p(FOOD_PANEL_WIDTH - 94.0, y + DETAIL_ROW_HEIGHT / 2.0),
             egui::Align2::RIGHT_CENTER,
-            format_hud_number(output),
+            format_statistic(output),
             egui::FontId::proportional(13.0 * scale),
             hud_delta_color(output),
         );
         painter.text(
             p(FOOD_PANEL_WIDTH - 19.0, y + DETAIL_ROW_HEIGHT / 2.0),
             egui::Align2::RIGHT_CENTER,
-            format_hud_number(demand),
+            format_statistic(demand),
             egui::FontId::proportional(13.0 * scale),
             hud_delta_color(-demand),
         );

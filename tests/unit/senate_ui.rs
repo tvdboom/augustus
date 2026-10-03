@@ -1053,11 +1053,11 @@ fn badge_hover_has_positive_and_negative_rules_and_hides_exact_confidence() {
                     assert!(text.contains(&"• Larger happy noble population"));
                 }
                 if bloc == Bloc::Merchants {
-                    let income =
-                        format!("• Net monthly coin income above {MERCHANT_INCOME_THRESHOLD:.0}");
-                    assert!(text.iter().any(|label| *label == income));
+                    assert!(text.contains(&"• Positive net monthly coin income"));
+                    assert!(!text.iter().any(|label| label.contains("income above")));
                 }
                 if bloc == Bloc::Populares {
+                    assert!(text.contains(&"• Ample food reserves"));
                     assert!(text.contains(&"• Supplied generous food rations"));
                     assert!(!text.contains(&"• Reliable food supply"));
                 }

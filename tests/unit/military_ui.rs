@@ -90,6 +90,7 @@ fn spectator_inspects_the_selected_foreign_marching_army() {
         progress: 0.5,
         required_progress: 2.0,
         plan: BattlePlan::default(),
+        attack_target: None,
         withdrawing: false,
     });
     let ctx = egui::Context::default();
@@ -837,6 +838,39 @@ fn overview_combines_armies_with_directory_styling_and_foreign_row_opens_the_pro
         for label in ["MILITARY RANK", "Province", "Units", "Tactic", "Morale", "Training", "?"] {
             text_position(&output, label);
         }
+        let text_center_x = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(text.pos.x + text.galley.size().x * 0.5)
+                    },
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let tactic = world.provinces[0].plans[&ForceOwner::Player(0)].tactic;
+        let texture = ctx.data(|data| {
+            data.get_temp::<egui::TextureHandle>(egui::Id::new((
+                "augustus-tactic-icon",
+                tactic as usize,
+            )))
+            .unwrap()
+            .id()
+        });
+        let icon_center_x = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                    Some(mesh.calc_bounds().center().x)
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert!((icon_center_x - text_center_x("Tactic")).abs() < 0.1);
+        assert!((text_center_x("?") - text_center_x("Tactic")).abs() < 0.1);
         for forbidden in [
             "ARMIES",
             "FRIENDLY ARMIES",

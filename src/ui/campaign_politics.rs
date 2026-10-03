@@ -3,7 +3,7 @@ use super::campaign_widgets::{paint_purchase_background, Icon};
 use super::province_panel::{PAPER, RULE};
 use crate::game::politics::espionage::{EspionageConfig, EspionageState};
 use crate::game::politics::senate::{
-    Bloc, PoliticalProfile, SenateConfig, SenateState, SenatorAction, MERCHANT_INCOME_THRESHOLD,
+    Bloc, PoliticalProfile, SenateConfig, SenateState, SenatorAction,
 };
 use crate::game::politics::{Currency, PoliticalPlayer, PoliticalRank};
 use bevy_egui::egui;
@@ -294,14 +294,25 @@ fn senator_actions(
                     }
                     if outcome.caught {
                         format!(
-                            "{} exposed! Your faction confidence drops immediately; {}.",
+                            "{} exposed! Faction confidence fell · {}.",
                             action.label(),
                             outcome.misconduct.unwrap().1.label()
                         )
                     } else if action == SenatorAction::Assassinate {
-                        format!("Senator {} was replaced. This seat is neutral; every player's confidence was removed.", id + 1)
+                        format!("Senator {} replaced by a neutral successor.", id + 1)
                     } else {
-                        format!("{}: Senator {}. {}", action.label(), id + 1, action.description())
+                        let result = match action {
+                            SenatorAction::Petition => "petition sent",
+                            SenatorAction::Gift => "gift sent",
+                            SenatorAction::Patronage => "patronage started",
+                            SenatorAction::Bribe => "bribery started",
+                            SenatorAction::Threaten => "coercion started",
+                            SenatorAction::Assassinate => "replacement installed",
+                            SenatorAction::Banquet => "banquet held",
+                            SenatorAction::Discredit => "discrediting started",
+                            SenatorAction::Lobby => "lobbying started",
+                        };
+                        format!("Senator {}: {result}.", id + 1)
                     }
                 },
                 Err(error) => error.to_string(),
@@ -804,9 +815,6 @@ fn faction_tooltip(
 
 /// Explain what raises or lowers faction support in two effect lists.
 fn show_effects(ui: &mut egui::Ui, bloc: Bloc, scale: f32) {
-    let income_rule = format!("Net monthly coin income above {MERCHANT_INCOME_THRESHOLD:.0}");
-    let merchant_positive =
-        ["Fulfilled monthly trade routes", income_rule.as_str(), "Built markets"];
     let (positive, negative): (&[&str], &[&str]) = match bloc {
         Bloc::Aristocrats => (
             &[
@@ -824,7 +832,11 @@ fn show_effects(ui: &mut egui::Ui, bloc: Bloc, scale: f32) {
             ],
         ),
         Bloc::Merchants => (
-            &merchant_positive,
+            &[
+                "Fulfilled monthly trade routes",
+                "Positive net monthly coin income",
+                "Built markets",
+            ],
             &[
                 "Active wars",
                 "Unfulfilled trade commitments",
@@ -849,7 +861,11 @@ fn show_effects(ui: &mut egui::Ui, bloc: Bloc, scale: f32) {
             ],
         ),
         Bloc::Populares => (
-            &["Happy citizens and plebeians", "Supplied generous food rations"],
+            &[
+                "Happy citizens and plebeians",
+                "Ample food reserves",
+                "Supplied generous food rations",
+            ],
             &[
                 "Unhappy citizens and plebeians",
                 "Low rations, food shortages or famine",

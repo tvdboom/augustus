@@ -194,6 +194,8 @@ pub struct EconomicProvince {
     pub name: String,
     /// Normalized geometric area; use `normalized_capacity_area` for the current atlas.
     pub capacity_area: f64,
+    /// Extra carrying capacity granted by the local practice shortcut.
+    pub practice_capacity_bonus: f64,
     /// Geographic capacity modifier category.
     pub terrain: Terrain,
     /// Whether the authoritative map defines a city here.
@@ -270,6 +272,7 @@ impl EconomicProvince {
         Self {
             name: name.into(),
             capacity_area: capacity_area.max(0.0),
+            practice_capacity_bonus: 0.0,
             terrain,
             has_city,
             owner: None,

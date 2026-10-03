@@ -81,7 +81,8 @@ fn overview_filters_history_by_type_and_recipient() {
         vec!["Trade", "Treasury", "Food"],
         vec!["Building"],
         vec!["Battle"],
-        vec!["Senate", "Unrest", "Scandal", "Withdrawn spy", "Spy"],
+        vec!["Senate", "Unrest", "Withdrawn spy", "Spy"],
+        vec!["Scandal"],
     ]
     .into_iter()
     .enumerate()
@@ -94,4 +95,84 @@ fn overview_filters_history_by_type_and_recipient() {
     assert!(titles(&filters).is_empty());
     filters.enabled.fill(true);
     assert_eq!(titles(&filters), all);
+}
+
+#[test]
+fn scandal_notification_rows_match_the_filter_icon_and_keep_player_colors_after_expiry() {
+    for width in [546.0, 380.0, 320.0] {
+        let ctx = egui::Context::default();
+        let mut campaign = Campaign::default();
+        campaign.notifications.remember_scandal_target(3, ScandalTarget::Player(1));
+        for (kind, title, body, month) in [
+            (
+                NoticeKind::ScandalExpired,
+                "Scandal expired · Corrupt Governor",
+                "Severity III · grave · Valid for 120 months.",
+                120,
+            ),
+            (
+                NoticeKind::ScandalDiscovered,
+                "Scandal discovered · Corrupt Governor",
+                "Against Player 2 · Severity III · grave · 120 months remaining at discovery.",
+                0,
+            ),
+        ] {
+            campaign.notifications.push(CampaignNotice {
+                id: 0,
+                recipient: 0,
+                severity: NoticeSeverity::Info,
+                title: title.into(),
+                body: body.into(),
+                kind,
+                province: None,
+                building: None,
+                wonder: None,
+                scandal: Some(3),
+                month,
+                action: super::super::campaign_notifications::NoticeAction::OpenScandal {
+                    scandal: 3,
+                    province: None,
+                },
+            });
+        }
+        let mut bounds = egui::Rect::NOTHING;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width + 16.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                *ui.style_mut() = super::super::campaign_widgets::map_style(1.0);
+                ui.set_width(width);
+                overview(
+                    ui,
+                    &campaign,
+                    0,
+                    &super::super::PLAYER_COLORS,
+                    &mut NoticeFilters::default(),
+                    1.0,
+                );
+                bounds = ui.min_rect();
+            },
+        );
+        crate::egui_capture::Capture::default().frame(
+            &ctx,
+            &output,
+            &format!("scandal-notifications-{}", width as u32),
+        );
+        assert!(
+            bounds.width() <= width + 1.0,
+            "Notification rows overflow at {width}px: {bounds:?}"
+        );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == super::super::PLAYER_COLORS[1] && rect.rect.width() == 6.0 && rect.rect.height() == 34.0)));
+        assert_eq!(
+            notice_symbol(campaign.notifications.history_for(0).next().unwrap()),
+            FILTER_CATEGORIES[4].1
+        );
+        output.textures_delta.clear();
+    }
 }

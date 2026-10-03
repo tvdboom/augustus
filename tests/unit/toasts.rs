@@ -22,16 +22,22 @@ fn slave_revolt_toasts_are_critical_illustrated_and_navigate_to_the_province() {
             ..Default::default()
         },
         |ui| {
-            super::super::campaign_notices::card(ui, &notice, 1.0);
+            super::super::campaign_notices::card(
+                ui,
+                &notice,
+                &campaign,
+                &super::super::PLAYER_COLORS,
+                0,
+                1.0,
+            );
         },
     );
     revolt_capture::Capture::default().frame(&context, &output, "slave-revolt-alert");
     output.textures_delta.clear();
-    assert!(output
-        .shapes
-        .iter()
-        .any(|shape| matches!(&shape.shape, egui::Shape::LineSegment { stroke, .. }
-            if stroke.color == egui::Color32::from_rgb(176, 45, 35))));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.fill == super::super::province_panel::NEUTRAL && rect.rect.width() == 6.0)));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+        if text.galley.job.text == notice.title && text.galley.job.sections[0].format.color == egui::Color32::from_rgb(176, 45, 35))));
     assert_eq!(
         super::super::campaign_notices::notice_symbol(&notice),
         super::super::campaign_widgets::Icon::Slaves

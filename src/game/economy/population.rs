@@ -49,7 +49,8 @@ impl EconomicProvince {
             } else {
                 0.0
             }
-            + self.building_effects(config).capacity)
+            + self.building_effects(config).capacity
+            + self.practice_capacity_bonus)
             .max(0.001)
     }
 

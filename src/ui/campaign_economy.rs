@@ -279,19 +279,21 @@ fn signed_contribution(value: f64, decimals: usize) -> (String, egui::Color32) {
 }
 
 fn rounded_breakdown_total(entries: &[(&str, f64)]) -> f64 {
-    entries.iter().map(|(_, amount)| (amount * 1000.0).round() / 1000.0).sum()
+    entries.iter().map(|(_, amount)| (amount * 10.0).round() / 10.0).sum()
 }
 
 #[cfg(test)]
 #[test]
 fn population_growth_total_matches_the_displayed_contributions() {
     let all_zero = [("Births", 0.0002), ("Natural deaths", -0.0004)];
-    assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 3).0 == "0"));
+    assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 1).0 == "0"));
     assert_eq!(rounded_breakdown_total(&all_zero), 0.0);
 
     let mixed = [("Births", 0.105), ("Natural deaths", -0.06), ("Migration", -0.006)];
-    assert!((rounded_breakdown_total(&mixed) - 0.039).abs() < 1e-9);
-    assert_eq!(signed_contribution(-0.006, 3).0, "-0.006");
+    assert_eq!(rounded_breakdown_total(&mixed), 0.0);
+    assert_eq!(signed_contribution(10.806, 1).0, "+10.8");
+    assert_eq!(signed_contribution(-5.403, 1).0, "-5.4");
+    assert_eq!(signed_contribution(-0.006, 1), ("0".into(), egui::Color32::BLACK));
 }
 
 fn food_demand_amount(amount: f64) -> (String, egui::Color32) {
@@ -439,7 +441,7 @@ pub(in crate::app) fn overview_for_player(
                 terrain_color,
                 0.0,
             );
-            for (label, amount) in [
+            for (label, amount, decimals) in [
                 (
                     "City",
                     if p.has_city {
@@ -447,11 +449,16 @@ pub(in crate::app) fn overview_for_player(
                     } else {
                         0.0
                     },
+                    0,
                 ),
-                ("Buildings", p.building_effects(&world.config).capacity),
+                ("Buildings", p.building_effects(&world.config).capacity, 1),
             ] {
-                let (value, color) = signed_contribution(amount, 1);
+                let (value, color) = signed_contribution(amount, decimals);
                 tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+            }
+            if p.practice_capacity_bonus > 0.0 {
+                let (value, color) = signed_contribution(p.practice_capacity_bonus, 0);
+                tooltip_numeric_bullet(ui, "Practice boost", &value, color, 0.0);
             }
         });
     if show_food {
@@ -552,7 +559,7 @@ pub(in crate::app) fn overview_for_player(
                     cells[2],
                     &super::resource_hud::format_population_delta(change),
                     &entries,
-                    3,
+                    1,
                     change_color,
                     scale,
                 );

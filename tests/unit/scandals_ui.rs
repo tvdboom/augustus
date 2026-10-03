@@ -4,6 +4,20 @@ use crate::game::politics::espionage::ScandalKind;
 use crate::game::politics::PoliticalPlayer;
 
 use crate::egui_capture as capture;
+use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+
+fn layout_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.add_font(FontInsert::new(
+        "firasans",
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/FiraSans-Bold.ttf")),
+        vec![InsertFontFamily {
+            family: egui::FontFamily::Proportional,
+            priority: FontPriority::Highest,
+        }],
+    ));
+    ctx
+}
 
 fn fixture() -> Campaign {
     let mut campaign = Campaign {
@@ -55,7 +69,7 @@ fn scandals_sort_by_severity_then_recency_and_only_show_available_owned_evidence
         .iter()
         .map(|scandal| scandal.id)
         .collect();
-    assert_eq!(ids, [4, 2, 3, 1]);
+    assert_eq!(ids, [7, 4, 2, 3, 1]);
     let ids: Vec<_> = filtered_evidence(&campaign, 1, &ScandalFilters::default())
         .iter()
         .map(|scandal| scandal.id)
@@ -76,7 +90,7 @@ fn scandal_player_and_severity_filters_intersect_and_npc_evidence_stays_separate
             .map(|scandal| scandal.id)
             .collect::<Vec<_>>()
     };
-    assert_eq!(ids(&filters), [2, 1]);
+    assert_eq!(ids(&filters), [7, 2, 1]);
     filters.severity[2] = false;
     assert_eq!(ids(&filters), [1]);
     filters.target = TargetFilter::Provinces;
@@ -109,7 +123,8 @@ fn render(
         |ui| {
             *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
             ui.set_width(width);
-            selected = overview(ui, campaign, 0, filters, scale);
+            selected = overview(ui, campaign, 0, &super::super::PLAYER_COLORS[..3], filters, scale)
+                .selected;
             bounds = ui.min_rect();
         },
     );
@@ -129,9 +144,9 @@ fn click(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
 }
 
 #[test]
-fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
+fn scandal_rows_show_targets_expiry_and_fit_compact_widths() {
     for (width, scale) in [(546.0, 1.0), (380.0, 1.0), (320.0, 0.85)] {
-        let ctx = egui::Context::default();
+        let ctx = layout_context();
         let campaign = fixture();
         let (mut output, _, bounds) =
             render(&ctx, &campaign, &mut ScandalFilters::default(), width, scale, 0.0, vec![]);
@@ -147,15 +162,58 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        for player in [1, 2] {
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.fill == super::super::PLAYER_COLORS[player]
+                    && (rect.rect.width() - 6.0 * scale).abs() < 0.01
+                    && (rect.rect.height() - 34.0 * scale).abs() < 0.01)),
+                "Player markers must match the province and spy directories"
+            );
+        }
         for label in [
             "Against Player 2",
             "Against Player 3",
             "Against Achaia",
             "14 months remaining",
             "Found in Achaia",
-            "Severity III · grave",
+            "III · grave",
+            "Reserved until vote",
+            "SCANDAL",
+            "SEVERITY",
+            "VALIDITY",
         ] {
             assert!(text.contains(label), "Missing {label}");
+        }
+        assert!(!text.contains("Severity ") && !text.contains("DISCOVERED SCANDALS"));
+        let rows: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(row)
+                    if (row.rect.height() - 50.0 * scale).abs() < 0.1
+                        && row.rect.width() > width * 0.9 =>
+                {
+                    Some(row.rect)
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(!rows.is_empty(), "Scandals must use the active-network row height");
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.job.text.starts_with("Against ")
+                    || text.galley.job.text.contains(" · grave")
+                    || text.galley.job.text.ends_with("remaining")
+                    || text.galley.job.text == "Reserved until vote"
+                {
+                    let bounds = text.galley.rect.translate(text.pos.to_vec2());
+                    assert!(
+                        rows.iter().any(|row| row.contains_rect(bounds)),
+                        "Row label escapes its row: {bounds:?}"
+                    );
+                }
+            }
         }
         let label_rect = |label: &str| {
             output
@@ -286,8 +344,20 @@ fn scandal_cards_show_targets_expiry_and_fit_compact_widths() {
 }
 
 #[test]
+fn permanent_scandals_show_their_validity_without_an_artificial_countdown() {
+    let ctx = layout_context();
+    let mut campaign = fixture();
+    campaign.espionage.scandals[3].expires = u32::MAX;
+    let (mut output, _, _) =
+        render(&ctx, &campaign, &mut ScandalFilters::default(), 546.0, 1.0, 0.0, vec![]);
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Permanent")));
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("429496"))));
+    output.textures_delta.clear();
+}
+
+#[test]
 fn scandal_card_click_returns_its_evidence_and_severity_checkbox_filters_the_list() {
-    let ctx = egui::Context::default();
+    let ctx = layout_context();
     let campaign = fixture();
     let mut filters = ScandalFilters::default();
     let (mut output, _, _) = render(&ctx, &campaign, &mut filters, 546.0, 1.0, 0.0, vec![]);
@@ -313,7 +383,7 @@ fn scandal_card_click_returns_its_evidence_and_severity_checkbox_filters_the_lis
         selected = clicked.or(selected);
         output.textures_delta.clear();
     }
-    assert_eq!(selected, Some(4));
+    assert_eq!(selected, Some(7));
     for (time, pressed) in [(0.3, true), (0.4, false)] {
         let (mut output, _, _) =
             render(&ctx, &campaign, &mut filters, 546.0, 1.0, time, click(checkbox, pressed));
@@ -327,4 +397,330 @@ fn scandal_card_click_returns_its_evidence_and_severity_checkbox_filters_the_lis
             .collect::<Vec<_>>(),
         [3, 1]
     );
+}
+
+fn action_fixture(target: ScandalTarget) -> Campaign {
+    use crate::game::economy::EconomyWorld;
+    use crate::game::military::{MilitaryProvince, MilitaryTerrain};
+    use crate::game::politics::diplomacy::ProvincePolitics;
+    let mut campaign = fixture();
+    campaign.espionage.scandals.truncate(1);
+    let scandal = &mut campaign.espionage.scandals[0];
+    scandal.target = target;
+    scandal.kind = ScandalKind::SecretPayments;
+    scandal.expires = u32::MAX;
+    campaign.politics = vec![if matches!(target, ScandalTarget::Player(_)) {
+        campaign.economy.provinces[0].owner = Some(1);
+        ProvincePolitics::owned(3, 1)
+    } else {
+        ProvincePolitics::independent(3)
+    }];
+    campaign.economy = EconomyWorld::new(3, campaign.economy.provinces.clone(), vec![vec![]]);
+    campaign.graph = vec![MilitaryProvince {
+        terrain: MilitaryTerrain::Plains,
+        area: 60.0,
+        road_level: 0,
+        neighbors: vec![],
+    }];
+    campaign
+}
+
+fn render_actions(
+    ctx: &egui::Context,
+    campaign: &Campaign,
+    width: f32,
+    time: f64,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, ScandalResponse) {
+    let mut result = ScandalResponse::default();
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width + 16.0, 500.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            *ui.style_mut() = super::super::campaign_widgets::map_style(1.0);
+            ui.set_width(width);
+            result = overview(
+                ui,
+                campaign,
+                0,
+                &super::super::PLAYER_COLORS[..3],
+                &mut ScandalFilters::default(),
+                1.0,
+            );
+        },
+    );
+    (output, result)
+}
+
+#[test]
+fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_targets() {
+    for target in [ScandalTarget::Province(0), ScandalTarget::Player(1)] {
+        for usage in [ScandalUse::Control, ScandalUse::Relation] {
+            let ctx = layout_context();
+            let mut campaign = action_fixture(target);
+            let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
+            let mut capture = capture::Capture::default();
+            capture.frame(
+                &ctx,
+                &output,
+                if matches!(target, ScandalTarget::Player(_)) {
+                    "scandal-player-actions"
+                } else {
+                    "scandal-npc-actions"
+                },
+            );
+            let buttons: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "+5" => Some(text.pos),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(buttons.len(), 2);
+            let pos = buttons[usize::from(usage == ScandalUse::Relation)] - egui::vec2(0.0, 10.0);
+            output.textures_delta.clear();
+            let mut command = None;
+            for (time, pressed) in [(0.1, true), (0.2, false)] {
+                let (mut output, result) =
+                    render_actions(&ctx, &campaign, 546.0, time, click(pos, pressed));
+                assert_eq!(result.selected, None, "Using evidence must not also open its row");
+                command = result.command.or(command);
+                output.textures_delta.clear();
+            }
+            let command = command.expect("The action button must dispatch a scandal use");
+            assert_eq!(
+                command,
+                ScandalCommand::Province {
+                    id: 1,
+                    province: 0,
+                    usage
+                }
+            );
+            let message = apply_command(&mut campaign, 0, command);
+            assert!(message.contains("+5"));
+            assert!(campaign.espionage.scandals.is_empty());
+            assert_eq!(
+                if usage == ScandalUse::Control {
+                    campaign.politics[0].control(0)
+                } else {
+                    campaign.politics[0].relation(0) - 50.0
+                },
+                5.0
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_scandal_use_menu_lists_exact_benefits_and_only_players_get_senate_use() {
+    for target in [ScandalTarget::Province(0), ScandalTarget::Player(1)] {
+        let ctx = layout_context();
+        let campaign = action_fixture(target);
+        let (mut output, _) = render_actions(&ctx, &campaign, 380.0, 0.0, vec![]);
+        let mut capture = capture::Capture::default();
+        capture.frame(&ctx, &output, "scandal-compact-actions");
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Use" => {
+                    Some(text.pos - egui::vec2(0.0, 10.0))
+                },
+                _ => None,
+            })
+            .unwrap();
+        output.textures_delta.clear();
+        for (time, pressed) in [(0.1, true), (0.2, false)] {
+            let (mut output, result) =
+                render_actions(&ctx, &campaign, 380.0, time, click(pos, pressed));
+            assert!(result.selected.is_none() && result.command.is_none());
+            capture.frame(&ctx, &output, "scandal-compact-actions");
+            output.textures_delta.clear();
+        }
+        let (mut output, _) = render_actions(&ctx, &campaign, 380.0, 0.6, vec![]);
+        capture.frame(&ctx, &output, "scandal-compact-menu");
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.iter().any(|label| label.contains("gain 5 Control")));
+        assert!(labels.iter().any(|label| label.contains("gain 5 Relation")));
+        assert_eq!(
+            labels.contains(&"Expose in Senate"),
+            matches!(target, ScandalTarget::Player(_))
+        );
+        assert_eq!(
+            labels.iter().any(|label| label.contains("better trade terms")),
+            matches!(target, ScandalTarget::Province(_))
+        );
+        output.textures_delta.clear();
+    }
+}
+
+#[test]
+fn scandal_rows_and_filters_never_show_hover_tooltips() {
+    let ctx = layout_context();
+    let campaign = action_fixture(ScandalTarget::Province(0));
+    let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
+    let baseline: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut positions: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => {
+                Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+            },
+            _ => None,
+        })
+        .collect();
+    let row = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(row)
+                if (row.rect.height() - 50.0).abs() < 0.01 && row.rect.width() > 500.0 =>
+            {
+                Some(row.rect)
+            },
+            _ => None,
+        })
+        .unwrap();
+    positions.push(egui::pos2(row.left() + 10.0, row.center().y));
+    output.textures_delta.clear();
+    for (index, pos) in positions.into_iter().enumerate() {
+        for time in [1.0 + index as f64 * 3.0, 3.0 + index as f64 * 3.0] {
+            let (mut output, _) =
+                render_actions(&ctx, &campaign, 546.0, time, vec![egui::Event::PointerMoved(pos)]);
+            let labels: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(labels, baseline, "Hovering scandal widgets must not add tooltip text");
+            output.textures_delta.clear();
+        }
+    }
+}
+
+#[test]
+fn player_scandals_without_an_origin_require_a_province_choice_before_spending() {
+    use crate::game::politics::diplomacy::ProvincePolitics;
+    let ctx = layout_context();
+    let mut campaign = action_fixture(ScandalTarget::Player(1));
+    campaign.espionage.scandals[0].province = None;
+    let mut province = campaign.economy.provinces[0].clone();
+    province.name = "Narbonensis".into();
+    campaign.economy.provinces.push(province);
+    campaign.politics.push(ProvincePolitics::owned(3, 1));
+    campaign.graph.push(campaign.graph[0].clone());
+    let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
+    let pos = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "+5" => {
+                Some(text.pos - egui::vec2(0.0, 10.0))
+            },
+            _ => None,
+        })
+        .unwrap();
+    output.textures_delta.clear();
+    for (time, pressed) in [(0.1, true), (0.2, false)] {
+        let (mut output, result) =
+            render_actions(&ctx, &campaign, 546.0, time, click(pos, pressed));
+        assert!(result.command.is_none() && result.selected.is_none());
+        output.textures_delta.clear();
+    }
+    let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.6, vec![]);
+    let choice = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if text.galley.job.text == "Narbonensis · Use scandal: gain 5 Control" =>
+            {
+                Some(text.pos + egui::vec2(5.0, 5.0))
+            },
+            _ => None,
+        })
+        .expect("Global player evidence must list the rival's eligible provinces");
+    output.textures_delta.clear();
+    let mut command = None;
+    for (time, pressed) in [(0.7, true), (0.8, false)] {
+        let (mut output, result) =
+            render_actions(&ctx, &campaign, 546.0, time, click(choice, pressed));
+        assert!(result.selected.is_none());
+        command = result.command.or(command);
+        output.textures_delta.clear();
+    }
+    let command = command.expect("Selecting a province must dispatch its benefit");
+    assert_eq!(
+        command,
+        ScandalCommand::Province {
+            id: 1,
+            province: 1,
+            usage: ScandalUse::Control
+        }
+    );
+    apply_command(&mut campaign, 0, command);
+    assert_eq!(campaign.politics[0].control(0), 0.0);
+    assert_eq!(campaign.politics[1].control(0), 5.0);
+    assert!(campaign.espionage.scandals.is_empty());
+}
+
+#[test]
+fn senate_row_button_exposes_the_player_scandal_directly() {
+    let ctx = layout_context();
+    let mut campaign = action_fixture(ScandalTarget::Player(1));
+    let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
+    let pos = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Senate" => {
+                Some(text.pos - egui::vec2(0.0, 10.0))
+            },
+            _ => None,
+        })
+        .unwrap();
+    output.textures_delta.clear();
+    let mut command = None;
+    for (time, pressed) in [(0.1, true), (0.2, false)] {
+        let (mut output, result) =
+            render_actions(&ctx, &campaign, 546.0, time, click(pos, pressed));
+        assert!(result.selected.is_none());
+        command = result.command.or(command);
+        output.textures_delta.clear();
+    }
+    let command = command.expect("The Senate button must spend the selected scandal");
+    assert_eq!(
+        command,
+        ScandalCommand::Senate {
+            id: 1
+        }
+    );
+    assert!(apply_command(&mut campaign, 0, command).contains("Player 2"));
+    assert!(campaign.espionage.scandals.is_empty());
 }

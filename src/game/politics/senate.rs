@@ -1,9 +1,6 @@
 //! Accumulating, contested faction confidence and actions on individual Senate seats.
 use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer, PoliticalRank, PoliticalRng};
 
-/// Ordinary subsistence profit is neutral; Merchants reward surplus above this monthly net income.
-pub const MERCHANT_INCOME_THRESHOLD: f64 = 30.0;
-
 /// Public factions with distinct preferences and contiguous chamber sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bloc {
@@ -40,9 +37,9 @@ impl Bloc {
     pub fn preferences(self) -> &'static str {
         match self {
             Self::Aristocrats => "Happy nobles, larger happy noble populations, higher political rank, Forums and wonders build confidence each month.",
-            Self::Merchants => "Net monthly income above the subsistence threshold, fulfilled delivered trade and Markets build confidence. Shortages and wars weaken it.",
+            Self::Merchants => "Positive net monthly coin income, fulfilled delivered trade and Markets build confidence. Larger incomes build confidence faster; shortages and wars weaken it.",
             Self::Provincials => "More vassals, good relations with other provinces and delivered trade with provinces without cities. High tribute and wars drive them away.",
-            Self::Populares => "Happy citizens and plebeians and supplied generous rations build confidence. Normal rations are neutral; shortages, taxes and harsh labor drive them away.",
+            Self::Populares => "Happy citizens and plebeians, ample food reserves and supplied generous rations build confidence. Normal rations alone are neutral; shortages, taxes and harsh labor drive them away.",
             Self::Military => "Strong trained armies, higher military career rank, victories and control beyond the first province build confidence. Defeats weaken support.",
         }
     }
@@ -234,6 +231,8 @@ pub struct PoliticalProfile {
     pub food_policy: f64,
     /// Fraction of monthly food requested actually supplied, 0..1.
     pub food_security: f64,
+    /// Stored food divided by monthly civilian and army demand; zero without owned residents.
+    pub food_reserve_months: f64,
     /// Fraction of owned population currently suffering famine, 0..1.
     pub famine: f64,
     /// Tax pressure above normal, 0..1.
@@ -275,6 +274,7 @@ impl Default for PoliticalProfile {
             high_tribute: 0.0,
             food_policy: 0.0,
             food_security: 1.0,
+            food_reserve_months: 0.0,
             famine: 0.0,
             tax_pressure: 0.0,
             harsh_policies: 0.0,
@@ -1082,7 +1082,10 @@ impl SenateState {
             .scandals
             .iter()
             .find(|s| {
-                s.id == id && s.holder == holder && s.expires > self.month && !s.reserved_for_motion
+                s.id == id
+                    && s.holder == holder
+                    && s.is_current(self.month)
+                    && !s.reserved_for_motion
             })
             .ok_or(PoliticalError::ScandalRequired)?;
         let ScandalTarget::Player(target) = evidence.target else {
@@ -1278,8 +1281,10 @@ fn structural_reasons(
         ],
         Bloc::Merchants => vec![
             (
-                "Net income above subsistence",
-                0.8 * diminishing(p.coin_income - MERCHANT_INCOME_THRESHOLD, 30.0),
+                "Net monthly coin income",
+                // Every profit contributes. Logarithmic growth slows the return
+                // without capping large incomes below ordinary monthly penalties.
+                0.8 * (p.coin_income.max(0.0) / 30.0).ln_1p(),
             ),
             ("Active fulfilled trade routes", 0.5 * p.active_trade_routes.clamp(0.0, 10.0)),
             ("Unfulfilled trade commitments", -(1.0 - p.trade_reliability).clamp(0.0, 1.0)),
@@ -1305,6 +1310,14 @@ fn structural_reasons(
         Bloc::Populares => vec![
             ("Citizen happiness", (p.citizen_happiness - 50.0) * 0.03),
             ("Plebeian happiness", (p.plebeian_happiness - 50.0) * 0.025),
+            (
+                "Ample food reserves",
+                if governed {
+                    0.8 * diminishing(p.food_reserve_months, 3.0) * p.food_security.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
+            ),
             (
                 "Generous or restricted food policy",
                 if governed {

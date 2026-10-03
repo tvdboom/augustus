@@ -420,7 +420,7 @@ fn construction_only_emits_a_private_actionable_notice_when_completed() {
     assert_eq!(finished[0].building, Some(BuildingType::Granary));
     assert_eq!(
         finished[0].body,
-        format!("Level 1 construction finished in {}.", campaign.economy.provinces[province].name)
+        format!("Level 1 finished in {}.", campaign.economy.provinces[province].name)
     );
     assert_eq!(campaign.economy.provinces[province].level(BuildingType::Granary), 1);
     assert!(campaign.notifications.drain_for(1).is_empty());
@@ -576,7 +576,7 @@ fn food_shortage_is_announced_once_until_recovery_for_each_player() {
         assert_eq!(
             notices.iter().find(|n| n.kind == NoticeKind::FoodShortage).unwrap().body,
             format!(
-                "Civilian and military food requests were supplied at {}%.",
+                "Only {}% of food demand was met.",
                 if player == 0 {
                     88
                 } else {
@@ -871,6 +871,81 @@ fn senate_merchant_inputs_follow_delivered_trade_and_failure() {
     assert_eq!(c.profiles[0].trade_volume, 0.);
     assert_eq!(c.profiles[0].trade_reliability, 0.);
     assert_eq!(c.profiles[0].active_trade_routes, 0.0);
+}
+
+#[test]
+fn senate_food_reserves_follow_owned_stock_and_civilian_and_army_demand() {
+    use crate::game::politics::senate::Bloc;
+
+    let mut campaign = atlas_campaign();
+    let home = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    for province in campaign.economy.provinces.iter_mut().filter(|p| p.owner == Some(0)) {
+        province.happiness = [50.0; 4];
+        province.policies.food = FoodPolicy::Normal;
+    }
+    let civilian_demand: f64 = campaign
+        .economy
+        .provinces
+        .iter()
+        .filter(|p| p.owner == Some(0))
+        .map(|p| p.food_request(&campaign.economy.config))
+        .sum();
+    campaign.economy.players[0].resources[0] = 0.0;
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].food_reserve_months, 0.0);
+
+    campaign.economy.players[0].resources[0] = civilian_demand * 6.0;
+    campaign.refresh_profiles();
+    assert!((campaign.profiles[0].food_reserve_months - 6.0).abs() < 1e-9);
+    let other_reserves = campaign.profiles[1].food_reserve_months;
+
+    campaign.military.seed_unit(home, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
+    let army_demand = campaign.inputs().army_food[0];
+    assert!(army_demand > 0.0);
+    campaign.refresh_profiles();
+    assert!(campaign.profiles[0].food_reserve_months < 6.0);
+    assert!(
+        (campaign.profiles[0].food_reserve_months
+            - civilian_demand * 6.0 / (civilian_demand + army_demand))
+            .abs()
+            < 1e-9
+    );
+    assert_eq!(campaign.profiles[1].food_reserve_months, other_reserves);
+
+    campaign.economy.players[0].resources[0] = (civilian_demand + army_demand) * 6.0;
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].food_policy, 0.0);
+    for _ in 0..20 {
+        campaign.senate.advance_month(
+            &mut campaign.actors,
+            &campaign.profiles,
+            &campaign.senate_config,
+        );
+    }
+    assert!(campaign.senate.bloc_support(0, Bloc::Populares) > 0);
+
+    for province in campaign.economy.provinces.iter_mut().filter(|p| p.owner == Some(0)) {
+        province.owner = None;
+    }
+    campaign.refresh_profiles();
+    assert_eq!(campaign.profiles[0].food_reserve_months, 0.0);
+}
+
+#[test]
+fn high_settled_monthly_income_gains_merchant_support_in_the_live_campaign() {
+    use crate::game::politics::senate::Bloc;
+
+    let mut campaign = atlas_campaign();
+    campaign.economy.config.tax_rates = campaign.economy.config.tax_rates.map(|rate| rate * 100.0);
+    for _ in 0..6 {
+        campaign.advance_month();
+        assert!(campaign.profiles[0].coin_income > 1000.0);
+        assert_eq!(
+            campaign.profiles[0].coin_income,
+            campaign.economy.last_report.player_delta[0][3]
+        );
+    }
+    assert!(campaign.senate.bloc_support(0, Bloc::Merchants) > 0);
 }
 
 #[test]

@@ -13,7 +13,7 @@ impl Campaign {
         if notice {
             let due = self.economy.schedule_trade_cancellation(id, player)?;
             Ok(format!(
-                "Notice given. Route #{id} ends after {} more months, with no relation penalty.",
+                "Route #{id} ends in {} months without penalties.",
                 due.saturating_sub(self.economy.month)
             ))
         } else {
@@ -30,10 +30,7 @@ impl Campaign {
             if let Some(effect) = effect {
                 self.politics[effect.province]
                     .change_relation(effect.player, -effect.relation_loss);
-                consequence = format!(
-                    "Relation with {} −{:.0}. ",
-                    self.economy.provinces[effect.province].name, effect.relation_loss
-                );
+                consequence = format!("Relation −{:.0}, ", effect.relation_loss);
             } else if active {
                 let other = if trade.party_a == TradeParty::Player(player) {
                     trade.party_b
@@ -52,8 +49,7 @@ impl Campaign {
                         }
                     }
                     consequence = format!(
-                        "Relation with Player {} −{:.0}. ",
-                        partner + 1,
+                        "Relation −{:.0}, ",
                         self.economy.config.trade.cancellation_relation_penalty
                     );
                 }
@@ -65,11 +61,11 @@ impl Campaign {
                 self.actors[player].influence -= influence_loss;
                 self.senate.record_trade_breach(player);
                 consequence.push_str(&format!(
-                    "Influence −{influence_loss:.0}; Merchant confidence drops immediately."
+                    "Influence −{influence_loss:.0}, Merchant confidence reduced."
                 ));
                 self.push_wallets();
                 self.reconcile_provinces();
-                Ok(format!("Route #{id} stopped immediately. {consequence}"))
+                Ok(format!("Route #{id} stopped. {consequence}"))
             } else {
                 Ok(format!("Agreement #{id} cancelled."))
             }

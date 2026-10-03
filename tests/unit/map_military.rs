@@ -11,6 +11,7 @@ fn preview_order() -> MovementOrder {
         progress: 0.,
         required_progress: 1.3,
         plan: BattlePlan::default(),
+        attack_target: None,
         withdrawing: false,
     }
 }
@@ -115,13 +116,15 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
         });
         let fraction = movement_visual_progress(ctx, order);
         let army = start.lerp(bend, fraction);
+        let mut arrows = vec![];
         paint_march_arrows(
-            &ctx.layer_painter(egui::LayerId::background()),
+            &mut arrows,
             &[army, bend, end],
-            fraction * start.distance(bend) * 2.,
+            fraction * start.distance(bend) * (MARCH_ARROW_FLOW - 1.),
             48.,
             egui::Color32::from_rgb(213, 179, 119),
         );
+        ctx.layer_painter(egui::LayerId::background()).extend(arrows);
         let mut output = ctx.end_pass();
         capture.frame(ctx, &output, name);
         output.textures_delta.clear();
@@ -173,6 +176,12 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
     let slow_travel = slow_moving[0].x - slow_start[0].x;
     let fast_travel = fast_moving[0].x - fast_start[0].x;
     assert!(slow_travel > 0. && fast_travel > slow_travel);
+    assert!(
+        (slow_travel - 0.05 / slow.required_progress.ceil() as f32 * start.distance(bend) * 0.25)
+            .abs()
+            < 0.001,
+        "Chevrons must visibly drift at one quarter of the army's speed"
+    );
     assert_eq!(draw(&slow_ctx, &slow, 0.05, 10., "march-arrows-paused"), slow_moving);
 }
 
@@ -227,6 +236,7 @@ fn marching_sprites_face_each_route_leg_and_keep_their_owner_banner_upright() {
         });
         paint(
             &ctx.layer_painter(egui::LayerId::background()),
+            None,
             world,
             &ownership,
             &projection,
@@ -275,6 +285,173 @@ fn marching_sprites_face_each_route_leg_and_keep_their_owner_banner_upright() {
 }
 
 #[test]
+fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
+    use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
+    let atlas = atlas();
+    let origin = atlas.provinces.iter().position(|p| p.name == "Aegyptus").unwrap();
+    let destination = atlas.provinces.iter().position(|p| p.name == "Cyrenaica").unwrap();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 640.));
+    let a = atlas.provinces[origin].visual_center;
+    let b = atlas.provinces[destination].visual_center;
+    let projection = Projection {
+        origin: viewport.center(),
+        scale: 55.,
+        center: [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+    };
+    let mut graph = vec![
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![],
+        };
+        atlas.provinces.len()
+    ];
+    graph[origin].neighbors.push(destination);
+    let mut capture = crate::egui_capture::Capture::default();
+    for fighting in [false, true] {
+        let ctx = egui::Context::default();
+        let mut world = MilitaryWorld::new(atlas.provinces.len());
+        let own = ForceOwner::Player(0);
+        let enemy = ForceOwner::Local(destination);
+        let unit = world.seed_unit(origin, own, UnitType::WarElephants).unwrap();
+        world.seed_unit(destination, enemy, UnitType::HeavyInfantry).unwrap();
+        if fighting {
+            let rival = ForceOwner::Player(1);
+            world.seed_unit(destination, rival, UnitType::LightCavalry).unwrap();
+            world
+                .start_battle(
+                    destination,
+                    &[rival],
+                    &[enemy],
+                    None,
+                    None,
+                    MilitaryTerrain::Plains,
+                    0,
+                    1,
+                )
+                .unwrap();
+        }
+        world
+            .order_movement(origin, destination, own, &[unit], None, &graph, |_, _| {
+                MilitaryAccess::Invasion
+            })
+            .unwrap();
+        world.movements[0].attack_target = Some(enemy);
+        let ownership = ProvinceOwnership {
+            player_colors: vec![egui::Color32::from_rgb(210, 44, 60)],
+            ..Default::default()
+        };
+        let mut anchors = Anchors::default();
+        let mut previous: Option<(egui::Pos2, Vec<f32>)> = None;
+        for (frame, fraction) in [0., 0.05].into_iter().enumerate() {
+            preview_fraction(&ctx, fraction);
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            });
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            let underlay = painter.add(egui::Shape::Noop);
+            painter.text(
+                viewport.center(),
+                egui::Align2::CENTER_CENTER,
+                "Province name",
+                egui::FontId::proportional(18.),
+                egui::Color32::WHITE,
+            );
+            let badge = painter.rect_filled(
+                egui::Rect::from_min_size(
+                    viewport.center() + egui::vec2(-50., 20.),
+                    egui::vec2(100., 28.),
+                ),
+                4.,
+                egui::Color32::from_rgb(244, 232, 206),
+            );
+            paint(
+                &painter,
+                Some(underlay),
+                &world,
+                &ownership,
+                &projection,
+                6.,
+                0.,
+                viewport,
+                &[],
+                &[],
+                &[],
+                &mut anchors,
+            );
+            let hits = ctx
+                .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+                .unwrap();
+            let enemy_center = hits
+                .iter()
+                .find(|hit| hit.province == destination && hit.owner == enemy)
+                .unwrap()
+                .rect
+                .center();
+            let generic_endpoint = projection.point(anchors.positions[&(destination, own, 0)]);
+            assert!(
+                generic_endpoint.distance(enemy_center) > 1.,
+                "This regression must distinguish the defender from the generic province endpoint"
+            );
+            let mut output = ctx.end_pass();
+            capture.frame(
+                &ctx,
+                &output,
+                match (fighting, frame) {
+                    (false, 0) => "march-attack-layered-stationary",
+                    (false, _) => "march-attack-layered-stationary-moving",
+                    (true, 0) => "march-attack-layered-battle",
+                    (true, _) => "march-attack-layered-battle-moving",
+                },
+            );
+            output.textures_delta.clear();
+            let egui::Shape::Vec(arrows) = &output.shapes[underlay.0].shape else {
+                panic!("Routes must fill their reserved underlay");
+            };
+            assert!(!arrows.is_empty());
+            let title_index = output
+            .shapes
+            .iter()
+            .position(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Province name")
+            })
+            .unwrap();
+            assert!(
+                underlay.0 < title_index && underlay.0 < badge.0,
+                "Names and resources must be painted above the chevrons"
+            );
+            let mut distances = vec![];
+            for shape in arrows {
+                let egui::Shape::Path(chevron) = shape else {
+                    panic!("Expected open chevron");
+                };
+                let tip = chevron.points[1];
+                let back = chevron.points[0].lerp(chevron.points[2], 0.5);
+                assert!(
+                (tip - back).normalized().dot((enemy_center - tip).normalized()) > 0.9999,
+                "Attack arrows must point directly to the enemy fighter's actual screen position"
+            );
+                assert!(chevron.stroke.width >= 3.2);
+                assert!(chevron.points[0].distance(chevron.points[2]) >= 15.99);
+                distances.push(tip.distance(enemy_center));
+            }
+            let army = hits.iter().find(|hit| hit.movement.is_some()).unwrap().rect.center();
+            if let Some((previous_army, previous_distances)) = previous {
+                let expected = previous_distances[previous_distances.len() / 2]
+                    - previous_army.distance(army) * 0.25;
+                assert!(
+                    distances.iter().any(|distance| (distance - expected).abs() < 0.01),
+                    "Attack chevrons must advance toward the fighter at one quarter of army speed"
+                );
+            }
+            previous = Some((army, distances));
+        }
+    }
+}
+
+#[test]
 fn moving_units_leave_and_arrive_at_the_stationary_army_anchor() {
     use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
     let ctx = egui::Context::default();
@@ -312,6 +489,7 @@ fn moving_units_leave_and_arrive_at_the_stationary_army_anchor() {
         let painter = ctx.layer_painter(egui::LayerId::background());
         let rects = paint(
             &painter,
+            None,
             world,
             &ProvinceOwnership::default(),
             &projection,
@@ -376,6 +554,7 @@ fn revolt_infantry_remains_visible_at_wide_zoom_and_under_landmarks() {
         let painter = context.layer_painter(egui::LayerId::background());
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -445,6 +624,7 @@ fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
         let painter = context.layer_painter(egui::LayerId::background());
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -645,6 +825,7 @@ fn romes_garrison_is_hidden_while_latium_shows_its_normal_defenders() {
         let painter = context.layer_painter(egui::LayerId::background());
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -708,6 +889,7 @@ fn the_same_unit_is_the_same_size_in_latium_and_samnium() {
             let painter = context.layer_painter(egui::LayerId::background());
             let markers = paint(
                 &painter,
+                None,
                 &world,
                 &ProvinceOwnership::default(),
                 &projection,
@@ -750,6 +932,7 @@ fn painted_troops_retain_owner_and_province_for_army_navigation() {
     let painter = context.layer_painter(egui::LayerId::background());
     let markers = paint(
         &painter,
+        None,
         &world,
         &ProvinceOwnership::default(),
         &projection,
@@ -810,6 +993,7 @@ fn battle_troops_remain_clickable_with_foreign_deployment_hidden() {
     let painter = context.layer_painter(egui::LayerId::background());
     paint(
         &painter,
+        None,
         &world,
         &ProvinceOwnership::default(),
         &projection,
@@ -967,6 +1151,7 @@ fn zoomed_out_troops_emit_no_badges_or_sprites() {
         let painter = context.layer_painter(egui::LayerId::background());
         assert!(paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -1204,6 +1389,7 @@ fn shown_units_keep_the_same_map_size_as_the_camera_zooms() {
         let painter = context.layer_painter(egui::LayerId::background());
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -1258,6 +1444,7 @@ fn visible_armies_keep_their_geographic_position_through_camera_and_landmark_cha
         };
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,
@@ -1328,6 +1515,7 @@ fn new_armies_prefer_clear_labels_but_allow_overlap_when_no_clear_ground_remains
         let painter = context.layer_painter(egui::LayerId::background());
         let markers = paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,

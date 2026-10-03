@@ -61,7 +61,7 @@ fn status(ctx: &egui::Context) {
         egui::Id::new("augustus_spectator_status"),
     ));
     let position = screen.right_bottom() - egui::vec2(16.0, 12.0) * scale;
-    let font = egui::FontId::proportional(16.0 * scale);
+    let font = egui::FontId::proportional(32.0 * scale);
     painter.text(
         position + egui::vec2(1.0, 1.0) * scale,
         egui::Align2::RIGHT_BOTTOM,

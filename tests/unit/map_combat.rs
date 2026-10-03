@@ -80,6 +80,7 @@ fn battle_animation_faces_both_ways_and_has_projectiles_without_a_label() {
         // Paint the real military pass, including its camera-audio publication.
         super::super::paint(
             &painter,
+            None,
             &world,
             &ProvinceOwnership::default(),
             &projection,

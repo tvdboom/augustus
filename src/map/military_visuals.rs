@@ -13,6 +13,18 @@ struct MarchPreview {
     start_fraction: f64,
 }
 
+/// World motion remains tied to army speed, at one quarter of its travel velocity.
+const MARCH_ARROW_FLOW: f32 = 0.25;
+
+struct MarchRoute {
+    points: Vec<egui::Pos2>,
+    start: egui::Pos2,
+    travelled: f32,
+    size: f32,
+    color: egui::Color32,
+    target: Option<(usize, ForceOwner)>,
+}
+
 /// Preview monthly travel continuously, sharing exactly the same fraction with the army bar.
 pub(super) fn movement_visual_progress(ctx: &egui::Context, order: &MovementOrder) -> f32 {
     ctx.data_mut(|data| {
@@ -52,14 +64,14 @@ pub(super) fn movement_visual_progress(ctx: &egui::Context, order: &MovementOrde
 /// Flowing open chevrons follow the remaining route from the army.
 /// Using travel progress keeps their motion tied to army speed and the paused clock.
 fn paint_march_arrows(
-    painter: &egui::Painter,
+    shapes: &mut Vec<egui::Shape>,
     route: &[egui::Pos2],
     phase: f32,
     size: f32,
     color: egui::Color32,
 ) {
     let scale = (size / 48.).clamp(0.75, 1.5);
-    let spacing = 36. * scale;
+    let spacing = 44. * scale;
     let clearance = size * 0.55;
     let length: f32 = route.windows(2).map(|edge| edge[0].distance(edge[1])).sum();
     let mut distance = clearance + phase.rem_euclid(spacing);
@@ -81,14 +93,17 @@ fn paint_march_arrows(
             let fade = ((distance - clearance) / (16. * scale))
                 .min((length - distance) / (20. * scale))
                 .clamp(0., 1.);
-            let ink = color.gamma_multiply(0.85 * fade);
-            painter.add(egui::Shape::line(
+            if fade <= 0. {
+                break;
+            }
+            let ink = color.gamma_multiply(0.95 * fade);
+            shapes.push(egui::Shape::line(
                 vec![
-                    tip - forward * (6. * scale) + across * (4. * scale),
+                    tip - forward * (12. * scale) + across * (8. * scale),
                     tip,
-                    tip - forward * (6. * scale) - across * (4. * scale),
+                    tip - forward * (12. * scale) - across * (8. * scale),
                 ],
-                egui::Stroke::new(1.6 * scale, ink),
+                egui::Stroke::new(3.2 * scale, ink),
             ));
             break;
         }
@@ -314,6 +329,7 @@ pub(super) fn unit_icon(context: &egui::Context, kind: UnitType) -> egui::Textur
 /// Draw above province names; label layout never depends on these rectangles.
 pub(super) fn paint(
     painter: &egui::Painter,
+    route_layer: Option<egui::layers::ShapeIdx>,
     world: &MilitaryWorld,
     ownership: &ProvinceOwnership,
     projection: &Projection,
@@ -352,6 +368,7 @@ pub(super) fn paint(
         painter.ctx().data_mut(|data| data.get_temp::<Textures>(cache_id)).unwrap_or_default();
     let mut occupied = vec![];
     let mut army_hits = vec![];
+    let mut march_routes = vec![];
     for (province, state) in world.provinces.iter().enumerate() {
         let Some(map_province) = atlas.provinces.get(province) else {
             continue;
@@ -544,7 +561,17 @@ pub(super) fn paint(
         );
         let color =
             owner_color(movement.owner, world, ownership).gamma_multiply(f32::from(alpha) / 255.);
-        paint_march_arrows(painter, &route, fraction * start.distance(end) * 2., size, color);
+        march_routes.push(MarchRoute {
+            points: route,
+            start,
+            travelled: fraction * start.distance(end),
+            size,
+            color,
+            target: movement
+                .attack_target
+                .zip(movement.route.last().copied())
+                .map(|(owner, province)| (province, owner)),
+        });
         if !viewport.expand(size).contains(anchor) {
             continue;
         }
@@ -606,6 +633,26 @@ pub(super) fn paint(
         ) {
             audible.push(sound);
         }
+    }
+    let mut route_shapes = vec![];
+    for mut route in march_routes {
+        if let Some((province, owner)) = route.target {
+            if let Some(fighter) = army_hits.iter().find(|hit| {
+                hit.province == province && hit.owner == owner && hit.movement.is_none()
+            }) {
+                *route.points.last_mut().unwrap() = fighter.rect.center();
+            }
+        }
+        // Cancel the moving route origin using its distance to the actual next
+        // endpoint, including a defender placed away from the arrival anchor.
+        let phase = route.travelled * MARCH_ARROW_FLOW + route.points[0].distance(route.points[1])
+            - route.start.distance(route.points[1]);
+        paint_march_arrows(&mut route_shapes, &route.points, phase, route.size, route.color);
+    }
+    if let Some(layer) = route_layer {
+        painter.set(layer, egui::Shape::Vec(route_shapes));
+    } else {
+        painter.extend(route_shapes);
     }
     painter.ctx().data_mut(|data| data.insert_temp(egui::Id::new("map-audible-battles"), audible));
     painter.ctx().data_mut(|data| data.insert_temp(cache_id, textures));

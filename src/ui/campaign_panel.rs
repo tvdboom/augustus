@@ -120,6 +120,11 @@ impl CampaignUi {
             CampaignTab::Province
         });
     }
+    /// Reopen a province without replacing the remembered inspector tab.
+    pub(crate) fn open_province(&mut self, province: usize) {
+        self.open_province_section(province, self.section);
+    }
+
     /// Keep an explicit destination when map selection changes in the next frame.
     pub(crate) fn open_province_section(&mut self, province: usize, section: usize) {
         self.close_province_selector();
@@ -943,7 +948,14 @@ pub(in crate::app) fn draw(
     let width = PANEL_WIDTH * scale;
     let width = width.min((screen.width() - 80.0 * scale).max(120.0));
     let height = (PANEL_HEIGHT * scale).min((screen.height() - 90.0 * scale).max(140.0));
-    let rect = map_corner_panel_rect(screen, scale, egui::vec2(width, height));
+    let size = egui::vec2(width, height);
+    let rect = if terminal.spectating {
+        // The hidden left menu frees this corner; match the existing bottom inset.
+        let inset = screen.height() * MAP_CORNER_PANEL_BOTTOM_FRACTION;
+        egui::Rect::from_min_size(screen.left_bottom() + egui::vec2(inset, -inset - height), size)
+    } else {
+        map_corner_panel_rect(screen, scale, size)
+    };
     if view.province.is_none() {
         view.province =
             campaign.economy.provinces.iter().position(|p| p.owner == Some(player)).or(Some(0));
@@ -1131,6 +1143,7 @@ pub(in crate::app) fn draw(
                                 campaign,
                                 province,
                                 player,
+                                &player_colors,
                                 &mut view.province_notice_filters,
                                 scale,
                             );
@@ -1194,31 +1207,39 @@ pub(in crate::app) fn draw(
                                         view.notice = message;
                                     }
                                 } else if tab == CampaignTab::Senate {
-                                    if let Some(id) = view.highlight_scandal {
-                                        ui.group(|ui| {
-                                    if let Some(scandal) = campaign
-                                        .espionage
-                                        .scandals
-                                        .iter()
-                                        .find(|s| s.id == id && s.holder == player)
-                                    {
-                                        ui.strong(format!(
-                                            "Selected evidence · {}",
-                                            scandal.kind.label()
-                                        ));
-                                        ui.label(format!(
-                                            "{:?} · {:?} · {} months remaining",
-                                            scandal.target,
-                                            scandal.severity,
-                                            scandal.expires.saturating_sub(campaign.senate.month)
-                                        ));
+                                    if let Some(scandal) = view.highlight_scandal.and_then(|id| {
+                                        campaign.espionage.scandals.iter().find(|s| {
+                                            s.id == id
+                                                && s.holder == player
+                                                && s.is_current(
+                                                    campaign
+                                                        .economy
+                                                        .month
+                                                        .max(campaign.senate.month),
+                                                )
+                                        })
+                                    }) {
+                                        policy_widgets::section(ui, scale, "SELECTED SCANDAL");
+                                        campaign_scandals::headers(ui, scale);
+                                        let response = campaign_scandals::row(
+                                            ui,
+                                            campaign,
+                                            scandal,
+                                            &player_colors,
+                                            0,
+                                            scale,
+                                        );
+                                        if let Some(command) = response.command {
+                                            view.notice = campaign_scandals::apply_command(
+                                                campaign, player, command,
+                                            );
+                                            view.highlight_scandal = None;
+                                        }
+                                        if ui.small_button("Dismiss selection").clicked() {
+                                            view.highlight_scandal = None;
+                                        }
                                     } else {
-                                        ui.label("This evidence has been consumed or has expired.");
-                                    }
-                                    if ui.small_button("Dismiss selection").clicked() {
                                         view.highlight_scandal = None;
-                                    }
-                                });
                                     }
                                     let colors: Vec<_> = practice
                                         .players
@@ -1319,6 +1340,7 @@ pub(in crate::app) fn draw(
                                                 campaign,
                                                 province,
                                                 player,
+                                                &player_colors,
                                                 &mut view.province_notice_filters,
                                                 scale,
                                             );
@@ -1779,9 +1801,7 @@ pub(super) fn apply_military_action(
             super::campaign_notifications::NoticeSeverity::Info,
             super::campaign_notifications::NoticeKind::ArmyDisbanded,
             "Army disbanded",
-            format!(
-                "Your army in {name} was disbanded. Surviving soldiers returned to the population."
-            ),
+            format!("Your army in {name} disbanded. Survivors rejoined the population."),
         );
     }
     result.map_or_else(|message| message, |_| String::new())
@@ -1852,17 +1872,33 @@ fn diplomacy(
         .filter(|evidence| {
             evidence.holder == player
                 && evidence.province == Some(province)
-                && (evidence.expires > campaign.economy.month || evidence.reserved_for_motion)
+                && evidence.is_current(campaign.economy.month.max(campaign.senate.month))
         })
         .collect();
     if !evidence.is_empty() {
-        policy_widgets::section(ui, scale, "DISCOVERED EVIDENCE");
-        for scandal in evidence {
-            ui.label(scandal.kind.label()).inspection_hover_text(format!(
-                "{:?} · {} months remaining",
-                scandal.severity,
-                scandal.expires.saturating_sub(campaign.economy.month)
-            ));
+        campaign_scandals::headers(ui, scale);
+        let mut command = None;
+        let mut selected = None;
+        for (index, scandal) in evidence.into_iter().enumerate() {
+            let response = campaign_scandals::row(ui, campaign, scandal, colors, index, scale);
+            command = response.command.or(command);
+            selected = response.selected.or(selected);
+            ui.add_space(3.0 * scale);
+        }
+        if let Some(command) = command {
+            message = Some(campaign_scandals::apply_command(campaign, player, command));
+        }
+        if let Some(id) = selected {
+            if campaign.espionage.scandals.iter().any(|scandal| {
+                scandal.id == id
+                    && matches!(
+                        scandal.target,
+                        crate::game::politics::espionage::ScandalTarget::Player(_)
+                    )
+            }) {
+                view.open_evidence(None);
+                view.highlight_scandal = Some(id);
+            }
         }
     }
     message
@@ -2000,8 +2036,10 @@ fn directory_row(
     scale: f32,
     contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let (rect, response) = ui
-        .allocate_exact_size(egui::vec2(ui.available_width(), 50.0 * scale), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), campaign_widgets::DIRECTORY_ROW_HEIGHT * scale),
+        egui::Sense::click(),
+    );
     campaign_widgets::paint_directory_row(ui, rect, &response, row, scale);
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -2070,7 +2108,12 @@ pub(super) fn politics_provinces(
                 .and_then(|owner| colors.get(owner).copied())
                 .unwrap_or(province_panel::NEUTRAL);
             let response = directory_row(ui, row, scale, |ui| {
-                directory_owner_marker(ui, owner_color, 50.0 * scale, scale);
+                directory_owner_marker(
+                    ui,
+                    owner_color,
+                    campaign_widgets::DIRECTORY_ROW_HEIGHT * scale,
+                    scale,
+                );
                 let meter_width = (ui.available_width() * 0.27).max(70.0 * scale);
                 let name_width =
                     (ui.available_width() - meter_width * 2.0 - 22.0 * scale).max(80.0 * scale);
@@ -2157,8 +2200,14 @@ pub(super) fn politics_spies(
                 .unwrap_or(province_panel::NEUTRAL);
             let mut selected_action = None;
             let mut over_action = false;
+            let mut over_disabled_action = false;
             let response = directory_row(ui, row, scale, |ui| {
-                directory_owner_marker(ui, owner_color, 50.0 * scale, scale);
+                directory_owner_marker(
+                    ui,
+                    owner_color,
+                    campaign_widgets::DIRECTORY_ROW_HEIGHT * scale,
+                    scale,
+                );
                 let controls_width = mission.map_or(205.0, |mission| {
                     if mission.recall_month.is_some() {
                         233.0
@@ -2185,10 +2234,12 @@ pub(super) fn politics_spies(
                     let label_width =
                         (ui.available_width() - recall_width - 28.0 * scale - 11.0 * scale)
                             .max(1.0);
-                    ui.add_sized(
-                        [label_width, 34.0 * scale],
-                        egui::Label::new(assignment).truncate().halign(egui::Align::LEFT),
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_width, 34.0 * scale),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| ui.add(egui::Label::new(assignment).truncate()),
                     )
+                    .inner
                     .inspection_hover_text(assignment);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 3.0 * scale;
@@ -2213,6 +2264,7 @@ pub(super) fn politics_spies(
                                     .hover_pos()
                                     .is_some_and(|pos| response.rect.contains(pos))
                             });
+                            over_disabled_action |= !response.enabled() && response.contains_pointer();
                             if response.clicked() {
                                 selected_action = Some(action);
                             }
@@ -2252,6 +2304,8 @@ pub(super) fn politics_spies(
                                     .hover_pos()
                                     .is_some_and(|pos| response.rect.contains(pos))
                             });
+                            over_disabled_action |=
+                                !response.enabled() && response.contains_pointer();
                             if response.clicked() {
                                 selected_action = Some(SpyDirectoryAction::Deploy(assignment));
                             }
@@ -2259,6 +2313,10 @@ pub(super) fn politics_spies(
                     });
                 }
             });
+            if over_disabled_action {
+                // Disabled actions take precedence over the clickable province row.
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+            }
             if let Some(action) = selected_action {
                 message = Some(match action {
                     SpyDirectoryAction::Recall => campaign
@@ -2352,7 +2410,11 @@ fn spy_directory_icon_button(
         campaign_widgets::paint_icon(ui, icon, rect);
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tooltip));
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).inspection_hover_text(tooltip)
+    if response.enabled() {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
+    } else {
+        response.on_disabled_hover_text(tooltip)
+    }
 }
 /// A shared compact card for spy missions and one-time political actions.
 pub(super) fn diplomacy_action_card(
@@ -2754,7 +2816,7 @@ fn spy_network(
                 Icon::Spy,
                 "Detection",
                 format!("{}%/mo", policy_widgets::compact_decimal(risk)),
-                "Chance of detection once per month, based on Noble happiness. Risk accumulates over multiple months.".to_owned(),
+                "One check per spy each month. Time deployed does not increase this rate; Noble happiness can change it. Fleeing, including when the treasury is exhausted, uses a higher chance.".to_owned(),
             ),
         ];
         ui.add_space(7.0 * scale);
@@ -3063,7 +3125,7 @@ fn military_diplomacy(
                                     campaign.economy.month,
                                     super::campaign_notifications::NoticeSeverity::Warning,
                                     super::campaign_notifications::NoticeKind::MilitaryMovementStopped,
-                                    "Military access could not be changed",
+                                    "Access change failed",
                                     &text,
                                 );
                                 message = Some(text);
@@ -3139,6 +3201,7 @@ fn province_notifications(
     campaign: &Campaign,
     province: usize,
     player: usize,
+    colors: &[egui::Color32],
     filters: &mut campaign_notices::NoticeFilters,
     scale: f32,
 ) -> Option<CampaignNotice> {
@@ -3150,15 +3213,16 @@ fn province_notifications(
         |ui, filters| {
             let mut navigation = None;
             let mut empty = true;
-            for notice in campaign
+            for (row, notice) in campaign
                 .notifications
                 .history_for(player)
                 .filter(|notice| notice.province == Some(province))
                 .filter(|notice| campaign_notices::allows(filters, notice))
+                .enumerate()
             {
                 empty = false;
                 ui.push_id(notice.id, |ui| {
-                    if campaign_notices::card(ui, notice, scale).clicked() {
+                    if campaign_notices::card(ui, notice, campaign, colors, row, scale).clicked() {
                         navigation = Some(notice.clone());
                     }
                 });
@@ -3241,7 +3305,24 @@ pub(super) fn open_scandal(
     detail: &mut ProvincePanelOpen,
     map: &mut MapView,
 ) {
-    let evidence = campaign.espionage.scandals.iter().find(|evidence| evidence.id == scandal);
+    let evidence = campaign.espionage.scandals.iter().find(|evidence| {
+        evidence.id == scandal
+            && evidence.is_current(campaign.economy.month.max(campaign.senate.month))
+    });
+    // Historical notices remain useful without reopening an empty selection.
+    if evidence.is_none() {
+        view.highlight_scandal = None;
+        if let Some(province) = source_province {
+            view.open_province_section(province, 5);
+            detail.0 = Some(MapDetail::Province(province));
+            map.focus_province(province);
+        } else {
+            view.open_evidence(None);
+            detail.0 = None;
+            view.last_detail = None;
+        }
+        return;
+    }
     let npc_province = evidence.and_then(|evidence| match evidence.target {
         crate::game::politics::espionage::ScandalTarget::Province(province) => Some(province),
         _ => None,

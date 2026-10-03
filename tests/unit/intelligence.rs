@@ -157,6 +157,7 @@ fn all_provinces_show_live_composition_without_foreign_plans_or_condition() {
         progress: 0.0,
         required_progress: 2.0,
         plan: BattlePlan::default(),
+        attack_target: None,
         withdrawing: false,
     });
     for include_reports in [false, true] {

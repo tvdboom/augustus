@@ -62,6 +62,17 @@ pub(super) fn section(ui: &mut egui::Ui, scale: f32, title: &str) {
 }
 
 pub(super) fn section_with_height(ui: &mut egui::Ui, scale: f32, title: &str, height: f32) {
+    let rect = section_background(ui, scale, height);
+    ui.painter_at(rect).text(
+        rect.left_center() + egui::vec2(10.0, 0.0) * scale,
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(13.5 * scale),
+        egui::Color32::from_rgb(249, 238, 215),
+    );
+}
+
+pub(super) fn section_background(ui: &mut egui::Ui, scale: f32, height: f32) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height * scale),
         egui::Sense::hover(),
@@ -72,13 +83,7 @@ pub(super) fn section_with_height(ui: &mut egui::Ui, scale: f32, title: &str, he
         scale,
         egui::Color32::from_rgb(73, 69, 61),
     );
-    painter.text(
-        rect.left_center() + egui::vec2(10.0, 0.0) * scale,
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(13.5 * scale),
-        egui::Color32::from_rgb(249, 238, 215),
-    );
+    rect
 }
 
 pub(super) fn card(ui: &mut egui::Ui, scale: f32, title: &str) -> egui::Rect {

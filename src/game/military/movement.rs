@@ -47,6 +47,8 @@ pub struct MovementOrder {
     pub required_progress: f64,
     /// Snapshot, editable only before combat starts.
     pub plan: BattlePlan,
+    /// Defender whose visible fighter position is the objective of an attack order.
+    pub attack_target: Option<ForceOwner>,
     /// Fixed withdrawal to an owned province after access revocation, with peaceful transit.
     pub withdrawing: bool,
 }

@@ -376,7 +376,7 @@ const HUD_RESOURCE_NAMES: [&str; 7] =
     ["Food", "Metal", "Stone", "Sestertius", "Influence", "Civilians", "Happiness"];
 const POP_CLASS_NAMES: [&str; 4] = ["Nobles", "Citizens", "Plebeians", "Slaves"];
 const HUD_RESOURCE_WIDTH: f32 = 104.0;
-const HUD_STOCK_RESOURCE_WIDTH: f32 = 200.0;
+const HUD_STOCK_RESOURCE_WIDTH: f32 = 180.0;
 const HUD_RESOURCE_GROUP_PADDING: f32 = 12.0;
 const HUD_FIRST_GROUP_WIDTH: f32 = HUD_RESOURCE_WIDTH * 2.0 + HUD_RESOURCE_GROUP_PADDING * 2.0;
 const HUD_SECOND_GROUP_WIDTH: f32 =

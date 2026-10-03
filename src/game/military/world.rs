@@ -761,6 +761,7 @@ impl MilitaryWorld {
             progress: 0.,
             required_progress: required,
             plan,
+            attack_target: None,
             withdrawing: false,
         });
         Ok(id)
@@ -835,6 +836,7 @@ impl MilitaryWorld {
                             &self.config,
                         );
                         movement.route = route;
+                        movement.attack_target = None;
                         movement.progress = 0.;
                     }
                     continuing.push(movement);

@@ -125,6 +125,8 @@ pub(in crate::app) enum Icon {
     SpyBuildControl,
     SpyImproveRelations,
     SpyUncoverScandals,
+    ScandalControl,
+    ScandalRelation,
     SpyUndermineOpponents,
     SpySupportRevolt,
     SpyDiscreditRivals,
@@ -191,7 +193,12 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         };
     }
     let bytes = match kind {
-        Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee => {
+        Icon::PoliticalDistance
+        | Icon::Vassalize
+        | Icon::Integrate
+        | Icon::SpyFlee
+        | Icon::ScandalControl
+        | Icon::ScandalRelation => {
             unreachable!("vector diplomacy symbols are painted directly")
         },
         Icon::Food => prepared!("food"),
@@ -701,7 +708,15 @@ pub(in crate::app) fn work_queue(
 
 /// Paint within an already allocated badge or ledger cell without advancing layout.
 pub(in crate::app) fn paint_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
-    if matches!(kind, Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee) {
+    if matches!(
+        kind,
+        Icon::PoliticalDistance
+            | Icon::Vassalize
+            | Icon::Integrate
+            | Icon::SpyFlee
+            | Icon::ScandalControl
+            | Icon::ScandalRelation
+    ) {
         paint_diplomacy_symbol(ui, kind, rect);
         return;
     }
@@ -734,6 +749,43 @@ fn paint_diplomacy_symbol(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
     let ink = province_panel::INK;
     let stroke = egui::Stroke::new((rect.width() / 12.0).max(1.0), gold);
     match kind {
+        Icon::ScandalControl | Icon::ScandalRelation => {
+            // A sealed evidence sheet with a distinct civic-power or settlement mark.
+            let sheet = egui::Rect::from_min_max(at(0.08, 0.08), at(0.65, 0.86));
+            painter.rect_filled(sheet, rect.width() * 0.05, egui::Color32::from_rgb(249, 238, 215));
+            painter.rect_stroke(
+                sheet,
+                rect.width() * 0.05,
+                egui::Stroke::new((rect.width() * 0.06).max(1.0), ink),
+                egui::StrokeKind::Inside,
+            );
+            for y in [0.28, 0.42] {
+                painter.line_segment(
+                    [at(0.2, y), at(0.5, y)],
+                    egui::Stroke::new(stroke.width * 0.6, ink),
+                );
+            }
+            painter.circle_filled(
+                at(0.34, 0.65),
+                rect.width() * 0.11,
+                egui::Color32::from_rgb(166, 83, 66),
+            );
+            if kind == Icon::ScandalControl {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![at(0.55, 0.55), at(0.77, 0.35), at(0.98, 0.55)],
+                    gold,
+                    egui::Stroke::NONE,
+                ));
+                for x in [0.61, 0.77, 0.92] {
+                    painter.line_segment([at(x, 0.62), at(x, 0.86)], stroke);
+                }
+                painter.line_segment([at(0.53, 0.93), at(0.99, 0.93)], stroke);
+            } else {
+                for x in [0.65, 0.85] {
+                    painter.circle_stroke(at(x, 0.73), rect.width() * 0.16, stroke);
+                }
+            }
+        },
         Icon::PoliticalDistance => {
             painter.line_segment([at(0.2, 0.72), at(0.8, 0.28)], stroke);
             for (x, y) in [(0.2, 0.72), (0.5, 0.5), (0.8, 0.28)] {
@@ -1100,16 +1152,20 @@ pub(in crate::app) fn landscape_badges(
 }
 
 /// Inset player color shared by the province, spy, and army directories.
+pub(super) const DIRECTORY_ROW_HEIGHT: f32 = 50.0;
+
+pub(super) fn directory_owner_marker_size(row_height: f32, scale: f32) -> egui::Vec2 {
+    egui::vec2(6.0 * scale, row_height * (34.0 / DIRECTORY_ROW_HEIGHT))
+}
+
 pub(super) fn directory_owner_marker(
     ui: &mut egui::Ui,
     color: egui::Color32,
     row_height: f32,
     scale: f32,
 ) -> egui::Rect {
-    let (swatch, _) = ui.allocate_exact_size(
-        egui::vec2(6.0 * scale, row_height * (34.0 / 50.0)),
-        egui::Sense::hover(),
-    );
+    let (swatch, _) = ui
+        .allocate_exact_size(directory_owner_marker_size(row_height, scale), egui::Sense::hover());
     ui.painter().rect_filled(swatch, 2.0 * scale, color);
     swatch
 }

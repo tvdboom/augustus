@@ -1,16 +1,22 @@
 //! Shared cards and destinations for live campaign notices and province history.
 
 use super::campaign::Campaign;
-use super::campaign_notifications::{CampaignNotice, NoticeKind, NoticeSeverity};
-use super::campaign_widgets::{paint_icon, portrait, texture, Icon, ProvinceLandscape};
-use super::province_panel::{INK, RULE, TABLE_STRIPE};
+#[cfg(test)]
+use super::campaign_notifications::NoticeSeverity;
+use super::campaign_notifications::{CampaignNotice, NoticeKind};
+use super::campaign_widgets::{
+    paint_directory_row, paint_icon, portrait, texture, Icon, ProvinceLandscape,
+};
+use super::province_panel::{INK, NEUTRAL};
+use crate::game::politics::espionage::ScandalTarget;
 use bevy_egui::egui;
 
-const FILTER_CATEGORIES: [(&str, Icon); 4] = [
+const FILTER_CATEGORIES: [(&str, Icon); 5] = [
     ("Resources", Icon::Food),
     ("Buildings", Icon::Construction),
     ("Military", Icon::Attack),
     ("Diplomacy", Icon::Diplomacy),
+    ("Scandals", Icon::SpyUncoverScandals),
 ];
 
 /// Notification filters are local presentation state; each view starts with all types visible.
@@ -49,7 +55,6 @@ fn category(kind: NoticeKind) -> usize {
         | SlaveRevolt => 2,
         SpyDetected
         | SpyWithdrawn
-        | ScandalDiscovered
         | SenatorBriberyExposed
         | ForeignUnrest
         | SenateOfficeAppointed
@@ -65,6 +70,7 @@ fn category(kind: NoticeKind) -> usize {
         | HostileRelation
         | VeryHostileRelation
         | VassalRelationDecay => 3,
+        ScandalDiscovered | ScandalExpired => 4,
     }
 }
 
@@ -154,7 +160,7 @@ pub(super) fn filtered_list<R>(
         .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0 * scale;
+            ui.spacing_mut().item_spacing.y = 3.0 * scale;
             render(ui, filters)
         })
         .inner
@@ -169,16 +175,17 @@ pub(in crate::app) fn overview(
     ui: &mut egui::Ui,
     campaign: &Campaign,
     player: usize,
+    colors: &[egui::Color32],
     filters: &mut NoticeFilters,
     scale: f32,
 ) -> Option<CampaignNotice> {
     filtered_list(ui, filters, scale, ("campaign_notices", player), |ui, filters| {
         let mut navigation = None;
         let mut any = false;
-        for notice in filtered_history(campaign, player, filters) {
+        for (row, notice) in filtered_history(campaign, player, filters).enumerate() {
             any = true;
             ui.push_id(notice.id, |ui| {
-                if card(ui, notice, scale).clicked() {
+                if card(ui, notice, campaign, colors, row, scale).clicked() {
                     navigation = Some(notice.clone());
                 }
             });
@@ -223,7 +230,8 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | ConsulTermExpired
         | AugustusVictory
         | PlayerDefeated => Icon::Eagle,
-        SpyDetected | SpyWithdrawn | ScandalDiscovered => Icon::Spy,
+        SpyDetected | SpyWithdrawn => Icon::Spy,
+        ScandalDiscovered | ScandalExpired => Icon::SpyUncoverScandals,
         SenatorBriberyExposed => Icon::SenatorBribe,
         ForeignUnrest => Icon::Happiness,
         ControlFifty
@@ -278,8 +286,29 @@ fn date(month: u32) -> String {
 pub(in crate::app) fn card(
     ui: &mut egui::Ui,
     notice: &CampaignNotice,
+    campaign: &Campaign,
+    colors: &[egui::Color32],
+    row: usize,
     scale: f32,
 ) -> egui::Response {
+    let subject = notice
+        .scandal
+        .and_then(|id| {
+            campaign.espionage.scandals.iter().find(|s| s.id == id && s.holder == notice.recipient)
+        })
+        .map(|s| s.target)
+        .or_else(|| notice.scandal.and_then(|id| campaign.notifications.scandal_target(id)))
+        .or_else(|| notice.province.map(ScandalTarget::Province))
+        .unwrap_or(ScandalTarget::Player(notice.recipient));
+    let owner = match subject {
+        ScandalTarget::Player(player) => Some(player),
+        ScandalTarget::Province(province) => {
+            campaign.economy.provinces.get(province).and_then(|p| p.owner)
+        },
+    };
+    let owner_label = owner
+        .map_or_else(|| "Independent province".into(), |player| format!("Player {}", player + 1));
+    let owner_color = owner.and_then(|player| colors.get(player).copied()).unwrap_or(NEUTRAL);
     message_card(
         ui,
         Message {
@@ -287,7 +316,8 @@ pub(in crate::app) fn card(
             title: &notice.title,
             body: &notice.body,
             month: notice.month,
-            warning: notice.severity == NoticeSeverity::Warning,
+            owner: Some((owner_color, &owner_label)),
+            row,
             critical: notice.kind == NoticeKind::SlaveRevolt,
             actionable: true,
         },
@@ -301,7 +331,8 @@ pub(in crate::app) struct Message<'a> {
     pub title: &'a str,
     pub body: &'a str,
     pub month: u32,
-    pub warning: bool,
+    pub owner: Option<(egui::Color32, &'a str)>,
+    pub row: usize,
     pub critical: bool,
     pub actionable: bool,
 }
@@ -312,13 +343,24 @@ pub(in crate::app) fn message_card(
     scale: f32,
 ) -> egui::Response {
     let width = ui.available_width();
-    let padding = 10.0 * scale;
+    let padding = 7.0 * scale;
+    let content_left = if message.owner.is_some() {
+        21.0
+    } else {
+        7.0
+    } * scale;
     let date_width = 82.0 * scale;
-    let title_width = (width - 52.0 * scale - date_width - 2.0 * padding).max(1.0);
+    let text_left = content_left + 36.0 * scale;
+    let title_width = (width - text_left - date_width - padding).max(1.0);
+    let title_color = if message.critical {
+        egui::Color32::from_rgb(176, 45, 35)
+    } else {
+        INK
+    };
     let title = ui.painter().layout(
         message.title.to_owned(),
         egui::FontId::proportional(14.0 * scale),
-        INK,
+        title_color,
         title_width,
     );
     let body = (!message.body.is_empty()).then(|| {
@@ -326,7 +368,7 @@ pub(in crate::app) fn message_card(
             message.body.to_owned(),
             egui::FontId::proportional(12.0 * scale),
             INK,
-            (width - 2.0 * padding).max(1.0),
+            (width - text_left - padding).max(1.0),
         )
     });
     let header_height = title.size().y.max(30.0 * scale);
@@ -339,44 +381,24 @@ pub(in crate::app) fn message_card(
         egui::Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
-    let accent = if message.critical {
-        egui::Color32::from_rgb(176, 45, 35)
-    } else if message.warning {
-        egui::Color32::from_rgb(176, 117, 49)
-    } else {
-        RULE
-    };
-    ui.painter().rect_filled(
-        rect,
-        4.0 * scale,
-        if response.hovered() {
-            TABLE_STRIPE
-        } else {
-            egui::Color32::from_rgb(247, 243, 232)
-        },
-    );
-    ui.painter().rect_stroke(
-        rect,
-        4.0 * scale,
-        egui::Stroke::new(
-            scale,
-            if response.hovered() {
-                accent
-            } else {
-                RULE
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
+    paint_directory_row(ui, rect, &response, message.row, scale);
+    if let Some((color, label)) = message.owner {
+        let marker = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 10.0 * scale, rect.center().y),
+            egui::vec2(6.0 * scale, 34.0 * scale),
+        );
+        ui.painter().rect_filled(marker, 2.0 * scale, color);
+        ui.interact(marker, response.id.with("owner"), egui::Sense::hover()).on_hover_text(label);
+    }
     let icon_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(padding, padding),
+        rect.min + egui::vec2(content_left, padding),
         egui::vec2(30.0, 30.0) * scale,
     );
     paint_icon(ui, message.icon, icon_rect);
     ui.painter().galley(
-        rect.min + egui::vec2(48.0 * scale, padding + (header_height - title.size().y) * 0.5),
+        rect.min + egui::vec2(text_left, padding + (header_height - title.size().y) * 0.5),
         title,
-        INK,
+        title_color,
     );
     ui.painter().text(
         rect.right_top() + egui::vec2(-padding, padding + 4.0 * scale),
@@ -387,19 +409,11 @@ pub(in crate::app) fn message_card(
     );
     if let Some(body) = body {
         ui.painter().galley(
-            rect.min + egui::vec2(padding, padding + header_height + 6.0 * scale),
+            rect.min + egui::vec2(text_left, padding + header_height + 6.0 * scale),
             body,
             INK,
         );
     }
-    // A thin inner accent marks severity without competing with the type icon.
-    ui.painter().line_segment(
-        [
-            rect.left_top() + egui::vec2(1.5 * scale, 6.0 * scale),
-            rect.left_bottom() + egui::vec2(1.5 * scale, -6.0 * scale),
-        ],
-        egui::Stroke::new(2.0 * scale, accent),
-    );
     if message.actionable {
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {

@@ -649,6 +649,23 @@ impl Campaign {
                 permission,
             )
             .map_err(|e| e.to_string())?;
+        if kind == ArmyOrderKind::Attack {
+            let target = attacked_owner
+                .filter(|&owner| owner != player)
+                .map(ForceOwner::Player)
+                .or_else(|| {
+                    self.military.provinces[destination]
+                        .occupation
+                        .filter(|&owner| owner != ForceOwner::Player(player))
+                })
+                .unwrap_or(ForceOwner::Local(destination));
+            ordered
+                .movements
+                .iter_mut()
+                .find(|movement| movement.id == order)
+                .unwrap()
+                .attack_target = Some(target);
+        }
         self.military = ordered;
         match kind {
             ArmyOrderKind::Attack => self.declare_hostility(player, destination),
@@ -752,10 +769,11 @@ impl Campaign {
         }
         let owner = ForceOwner::Player(guest);
         let units = self.military.provinces[province].forces.get(&owner);
+        let name = &self.economy.provinces[province].name;
         let mut body = if granted {
-            "Peaceful military entry to this province is now permitted.".to_owned()
+            format!("Peaceful entry to {name} is permitted.")
         } else {
-            "Peaceful military entry to this province has been revoked.".to_owned()
+            format!("Peaceful entry to {name} is blocked.")
         };
         if !granted && units.is_some_and(|units| !units.is_empty()) {
             let ids: Vec<_> = units.unwrap().iter().map(|unit| unit.id).collect();
@@ -842,13 +860,12 @@ impl Campaign {
                 NoticeKind::MilitaryAccessRevoked
             },
             format!(
-                "Military access {} to {}",
+                "Military access {}",
                 if granted {
                     "granted"
                 } else {
                     "revoked"
-                },
-                self.economy.provinces[province].name
+                }
             ),
             body,
         );
@@ -1028,7 +1045,7 @@ impl Campaign {
                     super::campaign_notifications::NoticeSeverity::Info,
                     super::campaign_notifications::NoticeKind::OccupationEstablished,
                     "Occupation established",
-                    format!("Player {} occupies {}. Stationed troops now build Control; ownership has not changed.", player + 1, p.name),
+                    format!("Your troops now occupy {} and build Control.", p.name),
                 );
             } else if p.owner.is_none() && self.npc_wars[player][province] {
                 self.military.provinces[province].occupation = Some(attacker);
@@ -1182,7 +1199,7 @@ impl Campaign {
                     super::campaign_notifications::NoticeSeverity::Warning,
                     super::campaign_notifications::NoticeKind::PlayerDefeated,
                     "Campaign lost",
-                    "You have lost control of every directly owned province.",
+                    "You lost your last owned province.",
                 );
             }
         }
@@ -1353,17 +1370,17 @@ impl Campaign {
                     || battle.defenders.plans.contains_key(&rebel))
         });
         let situation = if fighting {
-            "The rebel light infantry is fighting your army.".to_owned()
+            "Rebels are fighting your army.".to_owned()
         } else {
             format!(
-                "A hostile rebel army now stands in the province. Without your troops here, you lose {:.2} Control per month, based on surviving rebel strength. At zero Control, the province becomes independent. Send troops to defeat it.",
+                "Unopposed rebels cost you {:.2} Control per month.",
                 self.unopposed_rebellion_control_loss(province),
             )
         };
         self.notifications.province_notice(
             owner, province, self.economy.month, NoticeSeverity::Warning,
             NoticeKind::SlaveRevolt, format!("Slave revolt in {name}"),
-            format!("All {lost:.0} slaves have risen; {mobilized:.0} have formed {cohorts} light infantry cohorts. {situation}"),
+            format!("All {lost:.0} slaves revolted, forming {cohorts} light infantry cohorts. {situation}"),
         );
     }
 
@@ -1419,10 +1436,13 @@ impl Campaign {
             let _ = self.politics[province].apply_rebellion_control_loss(loss);
             if matches!(self.politics[province].state, PoliticalState::Independent { .. }) {
                 self.notifications.province_notice(
-                    owner, province, self.economy.month, NoticeSeverity::Warning,
+                    owner,
+                    province,
+                    self.economy.month,
+                    NoticeSeverity::Warning,
                     NoticeKind::OwnedControlThreatened,
                     format!("{} became independent", self.economy.provinces[province].name),
-                    "The unopposed rebellion reduced your Control to zero. You have lost ownership of this province.",
+                    "Rebels reduced your Control to zero.",
                 );
             }
         }
@@ -1594,7 +1614,7 @@ impl Campaign {
                     severity: NoticeSeverity::Warning,
                     title: "Senator bribery exposed".into(),
                     body: format!(
-                        "Your payment to Senator {} was exposed. The bribe ended and faction confidence fell.",
+                        "Your bribe to Senator {} ended after exposure. Faction confidence fell.",
                         payment.senator + 1,
                     ),
                     kind: NoticeKind::SenatorBriberyExposed,
@@ -1862,7 +1882,7 @@ impl Campaign {
                 self.notifications.push(CampaignNotice {
                     id: 0, recipient: player, severity: NoticeSeverity::Warning,
                     title: "Treasury exhausted".into(),
-                    body: "Recurring spending exceeds income. Spies are fleeing, nobles are losing Happiness, and army Morale is falling.".into(),
+                    body: "Spending exceeds income. Spies flee, noble Happiness drops, and army Morale falls.".into(),
                     kind: NoticeKind::TreasuryExhausted, province: None,
                     building: None, wonder: None, scandal: None,
                     month: self.economy.month,
@@ -1952,11 +1972,8 @@ impl Campaign {
                 self.economy.month,
                 super::campaign_notifications::NoticeSeverity::Info,
                 super::campaign_notifications::NoticeKind::AugustusVictory,
-                "Rome conquered · victory",
-                format!(
-                    "Player {} has captured Rome and won the campaign immediately.",
-                    player + 1
-                ),
+                "Rome conquered",
+                format!("Player {} captured Rome and won the campaign.", player + 1),
             );
         }
     }
@@ -1966,7 +1983,7 @@ impl Campaign {
         use super::campaign_notifications::{
             CampaignNotice, NoticeAction, NoticeKind, NoticeSeverity,
         };
-        let mut failed_trades = vec![Vec::<String>::new(); self.actors.len()];
+        let mut failed_trades = vec![Vec::<u64>::new(); self.actors.len()];
         for event in &report.events {
             match event {
                 EconomyEvent::BuildingCompleted {
@@ -1987,7 +2004,7 @@ impl Campaign {
                             kind: NoticeKind::BuildingCompleted,
                             title: format!("{} completed", building.name()),
                             body: format!(
-                                "Level {level} construction finished in {}.",
+                                "Level {level} finished in {}.",
                                 self.economy.provinces[*province].name
                             ),
                             action: NoticeAction::OpenProvince(*province),
@@ -2031,10 +2048,7 @@ impl Campaign {
                     if let Some(trade) = self.economy.trades.iter().find(|t| t.id == *agreement) {
                         for party in [trade.party_a, trade.party_b] {
                             if let TradeParty::Player(player) = party {
-                                failed_trades[player].push(format!(
-                                    "Agreement #{agreement}: {}",
-                                    trade.last_failure.as_deref().unwrap_or("cancelled")
-                                ));
+                                failed_trades[player].push(*agreement);
                             }
                         }
                     }
@@ -2046,9 +2060,15 @@ impl Campaign {
                         if let (TradeParty::Player(player), TradeParty::Npc(province)) =
                             (trade.party_a, trade.party_b)
                         {
-                            self.notifications.province_notice(player, province, report.month, NoticeSeverity::Info,
-                                NoticeKind::TradeInterrupted, "Trade route ended",
-                                format!("Route #{agreement} completed its cancellation notice. No relation penalty was applied."));
+                            self.notifications.province_notice(
+                                player,
+                                province,
+                                report.month,
+                                NoticeSeverity::Info,
+                                NoticeKind::TradeInterrupted,
+                                "Trade route ended",
+                                format!("Route #{agreement} ended without a relation penalty."),
+                            );
                         }
                     }
                 },
@@ -2067,10 +2087,7 @@ impl Campaign {
                         NoticeSeverity::Warning,
                         NoticeKind::FoodShortage,
                         "Food shortage",
-                        format!(
-                            "Civilian and military food requests were supplied at {:.0}%.",
-                            supplied * 100.0
-                        ),
+                        format!("Only {:.0}% of food demand was met.", supplied * 100.0),
                     );
                 }
             }
@@ -2089,7 +2106,11 @@ impl Campaign {
                         NoticeSeverity::Warning,
                         NoticeKind::TradeInterrupted,
                         "Trade interrupted",
-                        failures.join(" · "),
+                        if failures.len() == 1 {
+                            format!("Agreement #{} was interrupted.", failures[0])
+                        } else {
+                            format!("{} trade agreements were interrupted.", failures.len())
+                        },
                     );
                 }
             }
@@ -2206,6 +2227,11 @@ impl Campaign {
                         / other_provinces.len() as f64
                 },
                 food_security: food,
+                food_reserve_months: if !owned.is_empty() && needs[0] > 0.0 {
+                    wallet.resources[0].max(0.0) / needs[0]
+                } else {
+                    0.0
+                },
                 famine: 1.0 - food,
                 coin_income: self
                     .economy

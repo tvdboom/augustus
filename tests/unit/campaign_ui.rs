@@ -119,6 +119,10 @@ fn scandal_overview_cards_open_the_target_context_and_keep_province_selection_in
     assert_eq!(detail.0, Some(MapDetail::Province(2)));
     assert_eq!(view.last_detail, detail.0);
     assert!(view.highlight_scandal.is_none());
+    campaign.espionage.scandals.clear();
+    open_scandal(&mut view, 1, Some(2), &campaign, &mut detail, &mut map);
+    assert!(view.highlight_scandal.is_none());
+    assert_eq!(view.section, 5, "Stale discovery notices open province history");
 }
 
 #[test]

@@ -112,27 +112,66 @@ fn new_match_has_one_hundred_neutral_stable_seats_and_zero_confidence() {
 }
 
 #[test]
-fn subsistence_income_and_a_home_province_never_grant_passive_support() {
+fn zero_income_and_a_home_province_never_grant_passive_support() {
     let config = SenateConfig::default();
-    for income in [0.0, 10.0, MERCHANT_INCOME_THRESHOLD] {
-        let mut senate = SenateState::new(1);
-        let mut players = actors(1);
-        let profile = PoliticalProfile {
-            nobles: 1000.0,
-            coin_income: income,
-            controlled_provinces: 1.0,
-            ..Default::default()
-        };
-        // Reproduce the 60 AD -> 73 AD idle opening, then keep waiting to
-        // ensure neutral conditions cannot quietly fill the chamber later.
-        for _ in 0..600 {
-            senate.advance_month(&mut players, std::slice::from_ref(&profile), &config);
-        }
-        for bloc in Bloc::ALL {
-            assert_eq!(points(&senate, 0, bloc), 0.0, "{bloc:?}, income {income}");
-            assert_eq!(senate.bloc_support(0, bloc), 0);
-        }
+    let mut senate = SenateState::new(1);
+    let mut players = actors(1);
+    let profile = PoliticalProfile {
+        nobles: 1000.0,
+        controlled_provinces: 1.0,
+        ..Default::default()
+    };
+    for _ in 0..600 {
+        senate.advance_month(&mut players, std::slice::from_ref(&profile), &config);
     }
+    for bloc in Bloc::ALL {
+        assert_eq!(points(&senate, 0, bloc), 0.0, "{bloc:?}");
+        assert_eq!(senate.bloc_support(0, bloc), 0);
+    }
+}
+
+#[test]
+fn merchant_income_contributes_from_the_first_coin_and_keeps_growing() {
+    let actor = PoliticalPlayer::default();
+    let rate = |coin_income| {
+        structural_reasons(
+            Bloc::Merchants,
+            &PoliticalProfile {
+                coin_income,
+                ..Default::default()
+            },
+            &actor,
+        )
+        .iter()
+        .map(|reason| reason.points)
+        .sum::<f64>()
+    };
+    assert!(rate(-10.0) < 0.0);
+    assert_eq!(rate(0.0), 0.0);
+    let mut previous = 0.0;
+    for income in [0.01, 1.0, 10.0, 29.99, 30.0, 30.01, 60.0, 600.0, 6000.0, 60_000.0] {
+        let current = rate(income);
+        assert!(current > previous, "Income {income} must increase support");
+        previous = current;
+    }
+    assert!(rate(6000.0) > 4.0, "Large profits must not saturate below ordinary penalties");
+}
+
+#[test]
+fn high_income_earns_merchant_seats_despite_shortages_and_war() {
+    let config = SenateConfig::default();
+    let mut senate = SenateState::new(1);
+    let mut players = actors(1);
+    let profile = PoliticalProfile {
+        coin_income: 6000.0,
+        resource_security: 0.0,
+        active_wars: 1.0,
+        ..Default::default()
+    };
+    for _ in 0..4 {
+        senate.advance_month(&mut players, std::slice::from_ref(&profile), &config);
+    }
+    assert!(senate.bloc_support(0, Bloc::Merchants) > 0);
 }
 
 #[test]
@@ -168,6 +207,7 @@ fn each_faction_earns_support_from_its_actual_positive_effects() {
     effect!(Populares, citizen_happiness, 60.0);
     effect!(Populares, plebeian_happiness, 60.0);
     effect!(Populares, food_policy, 1.0);
+    effect!(Populares, food_reserve_months, 6.0);
     effect!(Military, military_strength, 100.0);
     effect!(Military, military_rank, 1.0);
     effect!(Military, recent_victories, 1.0);
@@ -234,6 +274,33 @@ fn generous_food_rewards_actual_supply_and_requires_a_governed_population() {
     assert_eq!(policy(1.0, 0.0), 0.0);
     assert_eq!(policy(1.0, 0.5), policy(1.0, 1.0) * 0.5);
     assert!(policy(1.0, 1.0) > 0.0);
+}
+
+#[test]
+fn food_reserves_build_populares_support_at_normal_rations() {
+    let actor = PoliticalPlayer::default();
+    let reserve = |controlled_provinces, food_security, food_reserve_months| {
+        structural_reasons(
+            Bloc::Populares,
+            &PoliticalProfile {
+                controlled_provinces,
+                food_security,
+                food_reserve_months,
+                ..Default::default()
+            },
+            &actor,
+        )
+        .into_iter()
+        .find(|reason| reason.label == "Ample food reserves")
+        .unwrap()
+        .points
+    };
+    assert_eq!(reserve(0.0, 1.0, 6.0), 0.0);
+    assert_eq!(reserve(1.0, 1.0, 0.0), 0.0);
+    assert_eq!(reserve(1.0, 0.0, 6.0), 0.0);
+    assert!(reserve(1.0, 1.0, 3.0) > 0.0);
+    assert!(reserve(1.0, 1.0, 6.0) > reserve(1.0, 1.0, 3.0));
+    assert_eq!(reserve(1.0, 0.5, 6.0), 0.5 * reserve(1.0, 1.0, 6.0));
 }
 
 #[test]

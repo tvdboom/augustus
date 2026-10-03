@@ -6,8 +6,10 @@ use crate::game::military::{
     BattleResult, ForceOwner, MilitaryAccess, MilitaryEvent, MilitaryRank,
 };
 use crate::game::politics::diplomacy::PoliticalState;
+use crate::game::politics::espionage::ScandalTarget;
 use crate::game::politics::senate::SenateEvent;
 use crate::game::politics::PoliticalRank;
+use std::collections::BTreeMap;
 
 /// How prominently a campaign event should be displayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,8 @@ pub(crate) enum NoticeKind {
     SpyWithdrawn,
     /// The local player acquired a particular scandal.
     ScandalDiscovered,
+    /// A timed scandal left the local player's inventory at its stated expiry.
+    ScandalExpired,
     /// A recurring senator bribe payment was publicly exposed.
     SenatorBriberyExposed,
     /// One monthly summary of lost Vassal Control.
@@ -134,7 +138,7 @@ pub(crate) struct CampaignNotice {
     pub severity: NoticeSeverity,
     /// Short title.
     pub title: String,
-    /// Short explanation of the cause and consequence.
+    /// Prefer one short sentence; use at most two short sentences.
     pub body: String,
     /// Domain event category.
     pub kind: NoticeKind,
@@ -157,6 +161,8 @@ pub(crate) struct CampaignNotice {
 pub(crate) struct CampaignNotifications {
     pending: Vec<CampaignNotice>,
     history: Vec<CampaignNotice>,
+    /// Preserve scandal subjects for history colors after evidence is used or expires.
+    scandal_targets: BTreeMap<u64, ScandalTarget>,
     next_id: u64,
     foreign_happiness: Vec<(usize, usize, usize, f64)>,
     last_final: Option<NotificationSnapshot>,
@@ -177,6 +183,7 @@ impl Default for CampaignNotifications {
         Self {
             pending: Vec::new(),
             history: Vec::new(),
+            scandal_targets: BTreeMap::new(),
             next_id: 0,
             foreign_happiness: Vec::new(),
             last_final: None,
@@ -191,6 +198,16 @@ impl Default for CampaignNotifications {
 }
 
 impl CampaignNotifications {
+    /// Retain the original subject without publishing private evidence to other players.
+    pub fn remember_scandal_target(&mut self, id: u64, target: ScandalTarget) {
+        self.scandal_targets.insert(id, target);
+    }
+
+    /// Subject of a retained scandal notification, even after it leaves inventory.
+    pub fn scandal_target(&self, id: u64) -> Option<ScandalTarget> {
+        self.scandal_targets.get(&id).copied()
+    }
+
     /// Announce a shortage episode once per player, rearming only when supply recovers.
     pub fn food_shortage_started(&mut self, player: usize, supplied: f64) -> bool {
         self.food_shortage_active.resize(self.food_shortage_active.len().max(player + 1), false);
@@ -399,10 +416,32 @@ impl Campaign {
     /// Senate events target the chamber explicitly rather than an unrelated province.
     pub fn record_senate_event(&mut self, event: &SenateEvent) {
         let (kind, title, body) = match event {
-            SenateEvent::Victory(player) => (NoticeKind::AugustusVictory, "Augustus proclaimed".to_owned(), format!("Player {} has won the campaign.", player + 1)),
-            SenateEvent::RankAdvanced(player, rank) => (NoticeKind::SenateOfficeAppointed, format!("Player {} became {}.", player + 1, rank.label()), String::new()),
-            SenateEvent::ConsulExpired(player) => (NoticeKind::ConsulTermExpired, "Consular term expired".to_owned(), format!("Player {} is now a Proconsul. They may seek a Consul seat again after 12 months.", player + 1)),
-            SenateEvent::ConsulRemoved(player) => (NoticeKind::ConsulRemoved, "Consul forced to resign".to_owned(), format!("Player {} lost Senate confidence and became Proconsul. They must wait 12 months to seek office again.", player + 1)),
+            SenateEvent::Victory(player) => (
+                NoticeKind::AugustusVictory,
+                "Augustus proclaimed".to_owned(),
+                format!("Player {} has won the campaign.", player + 1),
+            ),
+            SenateEvent::RankAdvanced(player, rank) => (
+                NoticeKind::SenateOfficeAppointed,
+                format!("Player {} became {}.", player + 1, rank.label()),
+                String::new(),
+            ),
+            SenateEvent::ConsulExpired(player) => (
+                NoticeKind::ConsulTermExpired,
+                "Consul term ended".to_owned(),
+                format!(
+                    "Player {} is now Proconsul. They may seek office again in 12 months.",
+                    player + 1
+                ),
+            ),
+            SenateEvent::ConsulRemoved(player) => (
+                NoticeKind::ConsulRemoved,
+                "Consul removed".to_owned(),
+                format!(
+                    "Player {} lost Senate confidence. They may seek office again in 12 months.",
+                    player + 1
+                ),
+            ),
         };
         for recipient in 0..self.actors.len() {
             self.notifications.push(CampaignNotice {
@@ -447,8 +486,18 @@ impl Campaign {
                 owner: ForceOwner::Player(player),
                 count,
             } => {
-                self.notifications.province_notice(player,province,month,NoticeSeverity::Warning,NoticeKind::UnitsDestroyed,
-                    format!("{count} cohorts lost in {}",self.economy.provinces[province].name),"These cohorts were destroyed in combat or had no legal retreat. Their manpower losses are permanent.");
+                self.notifications.province_notice(
+                    player,
+                    province,
+                    month,
+                    NoticeSeverity::Warning,
+                    NoticeKind::UnitsDestroyed,
+                    "Cohorts lost",
+                    format!(
+                        "{count} cohorts were destroyed in {}.",
+                        self.economy.provinces[province].name
+                    ),
+                );
             },
             MilitaryEvent::Arrived {
                 province,
@@ -460,8 +509,15 @@ impl Campaign {
                 let guardian = province_state.owner.or(province_state.overlord);
                 let name = province_state.name.clone();
                 if invasion {
-                    self.notifications.province_notice(player,province,month,NoticeSeverity::Warning,NoticeKind::InvasionBegins,
-                        format!("Invasion of {name}"),"Your troops entered hostile territory. Defenders must be defeated before occupation can produce Control.");
+                    self.notifications.province_notice(
+                        player,
+                        province,
+                        month,
+                        NoticeSeverity::Warning,
+                        NoticeKind::InvasionBegins,
+                        format!("Invasion of {name}"),
+                        "Defeat the defenders to occupy this province.",
+                    );
                 }
                 if let Some(guardian) = guardian.filter(|&id| id != player) {
                     let hostile = invasion
@@ -484,7 +540,7 @@ impl Campaign {
                             NoticeKind::ForeignArrival
                         },
                         format!(
-                            "{} units entered {name}",
+                            "{} arrival",
                             if hostile {
                                 "Enemy"
                             } else {
@@ -492,12 +548,12 @@ impl Campaign {
                             }
                         ),
                         format!(
-                            "Player {} has arrived. {}",
+                            "Player {} entered {name}{}.",
                             player + 1,
                             if hostile {
-                                "A hostile encounter may now begin."
+                                " with hostile forces"
                             } else {
-                                "Peaceful access does not generate occupation Control."
+                                " with peaceful access"
                             }
                         ),
                     );
@@ -507,8 +563,18 @@ impl Campaign {
                 province,
                 owner: ForceOwner::Player(player),
             } => {
-                self.notifications.province_notice(player,province,month,NoticeSeverity::Warning,NoticeKind::MilitaryMovementStopped,
-                    "Movement stopped",format!("Your troops remain in {} because the next crossing is no longer legal. Choose a new destination or secure access.",self.economy.provinces[province].name));
+                self.notifications.province_notice(
+                    player,
+                    province,
+                    month,
+                    NoticeSeverity::Warning,
+                    NoticeKind::MilitaryMovementStopped,
+                    "Movement stopped",
+                    format!(
+                        "Troops are blocked in {}. Choose a new route or secure access.",
+                        self.economy.provinces[province].name
+                    ),
+                );
             },
             MilitaryEvent::OccupationEstablished {
                 province,
@@ -569,12 +635,40 @@ impl Campaign {
                     });
                     let name = &self.economy.provinces[province].name;
                     for (player, won) in participants {
-                        self.notifications.province_notice(player,province,month,if won{NoticeSeverity::Info}else{NoticeSeverity::Warning},NoticeKind::BattleResolved,
-                            format!("{} in {name}",if won{"Victory"}else{"Defeat"}),
-                            if won{"Your surviving cohorts remain on the battlefield. Casualties remain permanent."}else{"Surviving cohorts withdrew to a legal adjacent province. Cohorts with no legal retreat were destroyed."});
+                        self.notifications.province_notice(
+                            player,
+                            province,
+                            month,
+                            if won {
+                                NoticeSeverity::Info
+                            } else {
+                                NoticeSeverity::Warning
+                            },
+                            NoticeKind::BattleResolved,
+                            format!(
+                                "{} in {name}",
+                                if won {
+                                    "Victory"
+                                } else {
+                                    "Defeat"
+                                }
+                            ),
+                            if won {
+                                "Your surviving cohorts hold the battlefield."
+                            } else {
+                                "Surviving cohorts retreated; trapped cohorts were destroyed."
+                            },
+                        );
                         if won && npc_defeated {
-                            self.notifications.province_notice(player,province,month,NoticeSeverity::Info,NoticeKind::NpcDefeated,
-                                format!("Local defenders defeated in {name}"),"Destroyed local cohorts do not automatically regenerate. Inspect occupation and Control before attempting political integration.");
+                            self.notifications.province_notice(
+                                player,
+                                province,
+                                month,
+                                NoticeSeverity::Info,
+                                NoticeKind::NpcDefeated,
+                                "Local defenders defeated",
+                                format!("The local army in {name} has been defeated."),
+                            );
                         }
                     }
                 }
@@ -599,9 +693,9 @@ impl Campaign {
         let local_response =
             p.owner.is_none() && battle.attackers.plans.contains_key(&ForceOwner::Local(province));
         let body = if local_response {
-            "Local defenders attacked your visiting army because relations fell below 50. Battle plans are locked; retreat becomes available after the first full combat month."
+            "Relations fell below 50, triggering a local attack. Retreat unlocks after one combat month."
         } else {
-            "Hostile forces have engaged. Battle plans are locked; retreat becomes available after the first full combat month."
+            "Hostile forces have engaged. Retreat unlocks after one combat month."
         };
         if let Some(owner) = p.owner.or(p.overlord) {
             recipients.insert(owner);
@@ -613,7 +707,7 @@ impl Campaign {
                 self.economy.month,
                 NoticeSeverity::Warning,
                 NoticeKind::InvasionBegins,
-                format!("Battle begins in {}", p.name),
+                format!("Battle in {}", p.name),
                 body,
             );
         }
@@ -621,15 +715,22 @@ impl Campaign {
 
     /// Occupation may follow a battle or an undefended hostile arrival.
     fn notify_occupation(&mut self, province: usize, player: usize) {
-        self.notifications.province_notice(player,province,self.economy.month,NoticeSeverity::Info,NoticeKind::OccupationEstablished,
-            format!("Occupation established in {}",self.economy.provinces[province].name),"Surviving stationed strength can generate Control from the next monthly political tick, while occupation damages Relation. Ownership has not transferred.");
+        self.notifications.province_notice(
+            player,
+            province,
+            self.economy.month,
+            NoticeSeverity::Info,
+            NoticeKind::OccupationEstablished,
+            "Occupation established",
+            format!("Your troops can build Control in {}.", self.economy.provinces[province].name),
+        );
         if let Some(owner) = self.economy.provinces[province].owner.filter(|owner| *owner != player)
         {
             self.notifications.province_notice(
                 owner, province, self.economy.month, NoticeSeverity::Warning,
                 NoticeKind::OccupationEstablished,
-                format!("{} is occupied", self.economy.provinces[province].name),
-                "The province remains yours, but enemy occupation blocks recruitment, construction, policies and provincial trade. Your Control will fall. Send an army to defeat the occupier and restore access.",
+                format!("{} occupied", self.economy.provinces[province].name),
+                "Enemy occupation blocks province actions and reduces Control. Defeat the occupier to restore access.",
             );
         }
     }
@@ -682,14 +783,38 @@ impl Campaign {
                     let granted = rank(row[province]) > rank(previous);
                     let revoked = rank(row[province]) < rank(previous);
                     if granted || revoked {
-                        self.notifications.province_notice(player,province,self.economy.month,if granted{NoticeSeverity::Info}else{NoticeSeverity::Warning},
-                            if granted{NoticeKind::MilitaryAccessGranted}else{NoticeKind::MilitaryAccessRevoked},
-                            format!("Military access {}: {name}",if granted{"granted"}else{"revoked"}),
+                        self.notifications.province_notice(
+                            player,
+                            province,
+                            self.economy.month,
+                            if granted {
+                                NoticeSeverity::Info
+                            } else {
+                                NoticeSeverity::Warning
+                            },
+                            if granted {
+                                NoticeKind::MilitaryAccessGranted
+                            } else {
+                                NoticeKind::MilitaryAccessRevoked
+                            },
+                            format!(
+                                "Military access {}",
+                                if granted {
+                                    "granted"
+                                } else {
+                                    "revoked"
+                                }
+                            ),
                             match row[province] {
-                                MilitaryAccess::Peaceful => "Peaceful troop passage and stationing are now permitted. Peaceful stationing never produces occupation Control.",
-                                MilitaryAccess::Transit => "Troops may pass through this province, but may not station here. Existing movement orders recheck permission at their next crossing.",
-                                _ => "New peaceful entry is no longer permitted. Existing movement orders recheck permission at their next crossing.",
-                            });
+                                MilitaryAccess::Peaceful => {
+                                    format!("You may pass through and station troops in {name}.")
+                                },
+                                MilitaryAccess::Transit => format!(
+                                    "You may pass through {name}, but cannot station troops there."
+                                ),
+                                _ => format!("Peaceful entry to {name} is blocked."),
+                            },
+                        );
                     }
                 }
             }
@@ -725,7 +850,7 @@ impl Campaign {
                     .max(old * self.notifications.garrison_warning_fraction);
                 if old - current >= minimum {
                     self.notifications.province_notice(overlord,province,self.economy.month,NoticeSeverity::Warning,NoticeKind::GarrisonWeakened,
-                        format!("Military support weakened in {name}"),format!("Garrison Control contribution fell from +{old:.2} to +{current:.2}/month as stationed strength changed. Check departures, battles and casualties."));
+                        "Garrison weakened",format!("Military Control in {name} fell from +{old:.2} to +{current:.2}/month."));
                 }
             }
         }
@@ -805,9 +930,15 @@ impl Campaign {
                         .unwrap_or(100.0);
                     let new_control = politics.control(*owner);
                     if old_control >= 90.0 && new_control < 90.0 {
-                        self.notifications.province_notice(*owner, province, month, NoticeSeverity::Warning, NoticeKind::OwnedControlThreatened,
-                            format!("Control in {name} is slipping"),
-                            "Your Control has fallen below 90. Rival political pressure and unopposed rebellions can reduce your share. Open the province overview to inspect your remaining Control.");
+                        self.notifications.province_notice(
+                            *owner,
+                            province,
+                            month,
+                            NoticeSeverity::Warning,
+                            NoticeKind::OwnedControlThreatened,
+                            "Control slipping",
+                            format!("Your Control in {name} fell below 90."),
+                        );
                     }
                 }
             }
@@ -829,9 +960,23 @@ impl Campaign {
                         [(50.0, NoticeKind::ControlFifty), (100.0, NoticeKind::ControlFull)]
                     {
                         if old < threshold - 1e-7 && new >= threshold - 1e-7 {
-                            self.notifications.province_notice(player, province, month, NoticeSeverity::Info, kind,
-                                if threshold == 100.0 { format!("Full Control of {name}") } else { format!("Control in {name} has reached 50") },
-                                if threshold == 100.0 { "Take Ownership is now available." } else { "Vassalize becomes available above 50 Control when you are the unique leader." });
+                            self.notifications.province_notice(
+                                player,
+                                province,
+                                month,
+                                NoticeSeverity::Info,
+                                kind,
+                                if threshold == 100.0 {
+                                    format!("Full Control of {name}")
+                                } else {
+                                    format!("50 Control in {name}")
+                                },
+                                if threshold == 100.0 {
+                                    "Take Ownership is now available."
+                                } else {
+                                    "Vassalize above 50 Control if you are the sole leader."
+                                },
+                            );
                         }
                     }
                 }
@@ -851,7 +996,7 @@ impl Campaign {
                             month,
                             NoticeSeverity::Warning,
                             kind,
-                            format!("Relations with {name} are now {label}"),
+                            format!("{name}: {label} relations"),
                             format!("Relation fell from {old:.1} to {new:.1}."),
                         );
                     }
@@ -860,8 +1005,15 @@ impl Campaign {
                     && old >= 50.0
                     && new < 50.0
                 {
-                    self.notifications.province_notice(player, province, month, NoticeSeverity::Warning, NoticeKind::VassalRelationDecay,
-                        format!("{name}'s support is weakening"), "Relation fell below 50. Vassal Control now decays unless garrisons or political support offset it.");
+                    self.notifications.province_notice(
+                        player,
+                        province,
+                        month,
+                        NoticeSeverity::Warning,
+                        NoticeKind::VassalRelationDecay,
+                        "Vassal support falling",
+                        format!("Relation with {name} fell below 50, weakening your Control."),
+                    );
                 }
             }
             if let PoliticalState::Vassal {
@@ -882,9 +1034,15 @@ impl Campaign {
                     _ => *old,
                 };
                 if new < *old - 1e-7 {
-                    let detail = &politics.last_control_change;
-                    self.notifications.province_notice(*overlord, province, month, NoticeSeverity::Warning, NoticeKind::VassalWeakened,
-                        format!("Control over {name} is weakening"), format!("{old:.1} → {new:.1}. Relation {:+.1}, garrison {:+.1}, support {:+.1}.", detail.relation, detail.military, detail.support));
+                    self.notifications.province_notice(
+                        *overlord,
+                        province,
+                        month,
+                        NoticeSeverity::Warning,
+                        NoticeKind::VassalWeakened,
+                        "Vassal Control falling",
+                        format!("Control in {name} fell from {old:.1} to {new:.1}."),
+                    );
                 }
             }
         }
@@ -925,13 +1083,20 @@ impl Campaign {
             if loss < self.notifications.happiness_warning_threshold {
                 continue;
             }
-            let actors = actors
-                .into_iter()
-                .map(|actor| format!("Player {}", actor + 1))
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.notifications.province_notice(owner, province, month, NoticeSeverity::Warning, NoticeKind::ForeignUnrest,
-                format!("Enemy agitation in {}", self.economy.provinces[province].name), format!("{actors} caused {loss:.1} total class-happiness points of hostile interference this month."));
+            let source = if actors.len() == 1 {
+                format!("Player {}", actors.first().unwrap() + 1)
+            } else {
+                format!("{} rivals", actors.len())
+            };
+            self.notifications.province_notice(
+                owner,
+                province,
+                month,
+                NoticeSeverity::Warning,
+                NoticeKind::ForeignUnrest,
+                format!("Enemy agitation in {}", self.economy.provinces[province].name),
+                format!("{source} reduced Happiness by {loss:.1} points this month."),
+            );
         }
         self.notifications.last_final = Some(self.notification_snapshot());
     }
@@ -961,15 +1126,15 @@ impl Campaign {
                 recipient,
                 severity: NoticeSeverity::Warning,
                 title: if started {
-                    "Rival wonder construction".into()
+                    "Rival wonder started".into()
                 } else {
                     "Rival wonder completed".into()
                 },
                 body: format!(
-                    "Player {} has {} {name}.",
+                    "Player {} {} {name}.",
                     owner + 1,
                     if started {
-                        "begun constructing"
+                        "started"
                     } else {
                         "completed"
                     }

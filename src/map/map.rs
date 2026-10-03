@@ -202,7 +202,7 @@ impl ProvincePopulation {
             .parts
             .iter()
             .flat_map(|part| {
-                part.t.chunks_exact(3).map(|triangle| {
+                part.t.as_chunks::<3>().0.iter().map(|triangle| {
                     terrain_triangle_area(
                         part.v[triangle[0] as usize],
                         part.v[triangle[1] as usize],
@@ -330,7 +330,7 @@ impl ProvinceOwnership {
                     .parts
                     .iter()
                     .flat_map(|part| {
-                        part.t.chunks_exact(3).map(|t| {
+                        part.t.as_chunks::<3>().0.iter().map(|t| {
                             terrain_triangle_area(
                                 part.v[t[0] as usize],
                                 part.v[t[1] as usize],
@@ -1373,7 +1373,7 @@ fn province_center(province: &Province) -> [f32; 2] {
     for part in &province.parts {
         let mut area = 0.0_f64;
         let mut weighted = [0.0_f64; 2];
-        for triangle in part.t.chunks_exact(3) {
+        for triangle in part.t.as_chunks::<3>().0 {
             let a = part.v[triangle[0] as usize];
             let b = part.v[triangle[1] as usize];
             let c = part.v[triangle[2] as usize];
@@ -1937,6 +1937,9 @@ fn paint_map(
             .collect();
         view.anchor_level = Some(label_level);
     }
+    // Reserve the route underlay now; troop anchors and attack targets become
+    // known later, while names and resource badges must stay above the arrows.
+    let march_routes = painter.add(egui::Shape::Noop);
     let mut visible_labels = vec![None; atlas.provinces.len()];
     for index in
         (0..atlas.provinces.len()).filter(|&index| view.hovered != Some(index)).chain(view.hovered)
@@ -2118,6 +2121,7 @@ fn paint_map(
         };
         military_visuals::paint(
             painter,
+            Some(march_routes),
             &world,
             ownership,
             &projection,
@@ -3450,7 +3454,7 @@ fn build_terrain_tiles(parts: &[MapMesh]) -> Vec<TerrainMesh> {
                 {
                     continue;
                 }
-                for triangle in part.t.chunks_exact(3) {
+                for triangle in part.t.as_chunks::<3>().0 {
                     let polygon = clip_terrain_polygon(
                         triangle.iter().map(|index| part.v[*index as usize]).collect(),
                         bounds,

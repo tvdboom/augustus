@@ -4,7 +4,7 @@ use super::*;
 
 const PANEL_ID: &str = "campaign-battle-inspection";
 const PANEL_WIDTH: f32 = 900.;
-const PANEL_HEIGHT: f32 = 320.;
+const PANEL_HEIGHT: f32 = 328.;
 
 pub(in crate::app) fn selected_battle(ctx: &egui::Context) -> Option<(u64, usize)> {
     ctx.data(|data| data.get_temp(egui::Id::new(PANEL_ID)))
@@ -102,7 +102,7 @@ pub(in crate::app) fn draw_battle_panel(
             for (index, side) in [attackers, defenders].into_iter().enumerate() {
                 let card = egui::Rect::from_min_size(
                     panel.min + egui::vec2(10., if index == 0 { 46. } else { 248. }) * scale,
-                    egui::vec2(panel.width() - 20. * scale, 42. * scale),
+                    egui::vec2(panel.width() - 20. * scale, if index == 0 { 42. } else { 50. } * scale),
                 );
                 let mut side_ui = ui.new_child(egui::UiBuilder::new().id_salt(("battle-side", index)).max_rect(card));
                 side_card(&mut side_ui, card, side, index, round, world, economy, reveal, scale);
@@ -117,7 +117,7 @@ pub(in crate::app) fn draw_battle_panel(
                 }
             }
             if let Some(battle) = battle.filter(|battle| battle.result.is_none()) {
-                let footer = egui::Rect::from_min_max(panel.min + egui::vec2(12., 294.) * scale, panel.max - egui::vec2(12., 6.) * scale);
+                let footer = egui::Rect::from_min_max(panel.min + egui::vec2(12., 302.) * scale, panel.max - egui::vec2(12., 6.) * scale);
                 let mut footer_ui = ui.new_child(egui::UiBuilder::new().id_salt("battle-actions").max_rect(footer));
                 footer_ui.horizontal(|ui| {
                     for (attacker, side) in [(true, attackers), (false, defenders)] {
@@ -236,7 +236,7 @@ fn side_card(
     scale: f32,
 ) {
     let inset = rect.shrink2(egui::vec2(8., 2.) * scale);
-    let info_width = inset.width() - 76. * scale;
+    let info_width = inset.width() - 132. * scale;
     let names = side
         .initial_manpower
         .keys()
@@ -250,7 +250,7 @@ fn side_card(
                 if index == 0 {
                     0.
                 } else {
-                    20.
+                    28.
                 },
             ) * scale,
         egui::vec2(info_width, 20. * scale),
@@ -284,7 +284,7 @@ fn side_card(
     let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(identity));
     name_ui.add(egui::Label::new(name_job).truncate().show_tooltip_when_elided(false));
     let dice = egui::Rect::from_min_size(
-        egui::pos2(inset.right() - 28. * scale, rect.center().y - 14. * scale),
+        egui::pos2(inset.right() - 124. * scale, rect.center().y - 14. * scale),
         egui::vec2(28., 28.) * scale,
     );
     dice_face(
@@ -295,27 +295,37 @@ fn side_card(
         scale,
     );
     if reveal {
-        if let Some(plan) = side.plans.get(&side_owner(side)) {
-            let tactic = dice.translate(egui::vec2(-34. * scale, 0.));
+        let owner = side_owner(side);
+        if let Some(plan) = side.plans.get(&owner) {
+            let tactic = dice.translate(egui::vec2(34. * scale, 0.));
             paint_tactic(ui, plan.tactic, tactic);
-            let details = side
-                .plans
-                .iter()
-                .map(|(&owner, plan)| {
-                    let bonus =
-                        round.and_then(|r| r.tactics[index].get(&owner)).copied().unwrap_or(1.);
-                    format!(
-                        "{}: {}\n{:.0}% composition fit · {:+.0}% damage",
-                        army_name(owner, economy, world),
-                        plan.tactic.name(),
-                        side.tactic_fit(owner, &world.config) * 100.,
-                        (bonus - 1.) * 100.
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            ui.interact(tactic, ui.id().with("tactic"), egui::Sense::hover())
-                .on_hover_text(details);
+            let multiplier =
+                round.and_then(|r| r.tactics[index].get(&owner)).copied().unwrap_or(1.);
+            let modifier = ((multiplier - 1.) * 100.).round() as i32;
+            let color = if modifier > 0 {
+                egui::Color32::from_rgb(32, 116, 58)
+            } else if modifier < 0 {
+                egui::Color32::from_rgb(166, 44, 34)
+            } else {
+                INK
+            };
+            let damage = egui::Rect::from_min_max(
+                egui::pos2(tactic.right() + 8. * scale, tactic.top()),
+                egui::pos2(inset.right(), tactic.bottom()),
+            );
+            ui.painter().text(
+                damage.left_center(),
+                egui::Align2::LEFT_CENTER,
+                if modifier == 0 {
+                    "0%".to_owned()
+                } else {
+                    format!("{modifier:+}%")
+                },
+                egui::FontId::proportional(14. * scale),
+                color,
+            );
+            ui.interact(tactic.union(damage), ui.id().with("tactic"), egui::Sense::hover())
+                .on_hover_text(plan.tactic.name());
         }
     }
     let initial: f64 = side.initial_manpower.values().sum();
@@ -342,14 +352,14 @@ fn side_card(
         let fact = egui::Rect::from_min_size(
             inset.min
                 + egui::vec2(
-                    i as f32 * 98.,
+                    i as f32 * 80.,
                     if index == 0 {
                         20.
                     } else {
                         0.
                     },
                 ) * scale,
-            egui::vec2(98., 18.) * scale,
+            egui::vec2(80., 22.) * scale,
         );
         compact_stat(ui, fact, kind, &value, tooltip, scale);
     }
@@ -364,8 +374,8 @@ fn compact_stat(
     scale: f32,
 ) {
     let art = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 9. * scale, rect.center().y),
-        egui::vec2(18., 18.) * scale,
+        egui::pos2(rect.left() + 11. * scale, rect.center().y),
+        egui::vec2(22., 22.) * scale,
     );
     paint_icon(ui, kind, art);
     ui.painter().text(
@@ -463,7 +473,11 @@ fn defense_icons(
         egui::pos2(header.right() - 57. * scale, header.center().y),
         egui::vec2(30., 24.) * scale,
     );
-    battlefield_background(ui, terrain_rect, terrain, scale);
+    paint_icon(
+        ui,
+        Icon::Terrain,
+        egui::Rect::from_center_size(terrain_rect.center(), egui::Vec2::splat(24. * scale)),
+    );
     ui.interact(terrain_rect, ui.id().with("battle-terrain"), egui::Sense::hover()).on_hover_ui(
         |ui| {
             ui.label(
@@ -552,7 +566,7 @@ fn public_composition(
         );
         ui.interact(tile, ui.id().with(("composition", kind)), egui::Sense::hover()).on_hover_text(
             format!(
-                "{} · {}\n{survivors} surviving cohorts\nDeployment and tactics are visible to battle participants.",
+                "{} · {}\n{survivors} surviving cohorts",
                 kind.name(),
                 cohort_count_label(count)
             ),
@@ -701,18 +715,6 @@ fn battlefield_rows(
             ui.painter().rect_filled(bar, scale, army_owner_color(ui.ctx(), unit.owner));
             response.on_hover_ui(|ui| {
                 ui.label(egui::RichText::new(unit.unit_type.name()).size(14. * scale).color(INK));
-                if finished {
-                    ui.label(
-                        egui::RichText::new(if fallen {
-                            "Destroyed · starting deployment"
-                        } else if routed {
-                            "Routed · starting deployment"
-                        } else {
-                            "Survived · starting deployment"
-                        })
-                        .color(INK),
-                    );
-                }
                 ui.label(
                     egui::RichText::new(format!(
                         "• Manpower: {}\n• Morale: {:.0}%\n• Training: {:.0}%",
