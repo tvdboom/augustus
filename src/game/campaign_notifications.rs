@@ -27,10 +27,6 @@ pub(crate) enum NoticeKind {
     SenateOfficeAppointed,
     /// All political promotion requirements are currently satisfied.
     PoliticalPromotionAvailable,
-    /// An active Consul's term expired.
-    ConsulTermExpired,
-    /// Loss of Senate confidence forced an incumbent to resign.
-    ConsulRemoved,
     /// Senate support or conquest of Rome produced a campaign victor.
     AugustusVictory,
     /// A player lost their last directly owned province.
@@ -425,22 +421,6 @@ impl Campaign {
                 NoticeKind::SenateOfficeAppointed,
                 format!("Player {} became {}.", player + 1, rank.label()),
                 String::new(),
-            ),
-            SenateEvent::ConsulExpired(player) => (
-                NoticeKind::ConsulTermExpired,
-                "Consul term ended".to_owned(),
-                format!(
-                    "Player {} is now Proconsul. They may seek office again in 12 months.",
-                    player + 1
-                ),
-            ),
-            SenateEvent::ConsulRemoved(player) => (
-                NoticeKind::ConsulRemoved,
-                "Consul removed".to_owned(),
-                format!(
-                    "Player {} lost Senate confidence. They may seek office again in 12 months.",
-                    player + 1
-                ),
             ),
         };
         for recipient in 0..self.actors.len() {

@@ -161,9 +161,6 @@ pub(super) fn apply_practice_boost(
                 wallet.influence = wallet.influence.max(requirement.influence);
                 campaign.senate.grant_practice_support(player, requirement.senators);
                 actor.promoted_at = None;
-                if requirement.rank == crate::game::politics::PoliticalRank::Consul {
-                    actor.consul_again_at = campaign.senate.month;
-                }
             }
         }
         let owner = crate::game::military::ForceOwner::Player(player);

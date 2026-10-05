@@ -917,7 +917,7 @@ fn senate_food_reserves_follow_owned_stock_and_civilian_and_army_demand() {
     assert_eq!(campaign.profiles[0].food_policy, 0.0);
     for _ in 0..20 {
         campaign.senate.advance_month(
-            &mut campaign.actors,
+            &campaign.actors,
             &campaign.profiles,
             &campaign.senate_config,
         );

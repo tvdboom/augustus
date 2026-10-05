@@ -346,12 +346,11 @@ pub(super) fn paint(
         data.insert_temp(egui::Id::new("map-audible-battles"), Vec::<AudibleBattle>::new());
     });
     anchors.retain_for(world);
-    let threshold = world.config.sprite_zoom_threshold.max(0.0) as f32;
     let revolts = active_revolt_provinces(world);
     let atlas = atlas();
     // Like city and wonder artwork, units keep one map footprint as the camera zooms.
     let size = troop_size(zoom);
-    let alpha = troop_alpha(zoom, threshold);
+    let alpha = troop_alpha(zoom);
     for movement in &world.movements {
         movement_visual_progress(painter.ctx(), movement);
     }
@@ -385,7 +384,7 @@ pub(super) fn paint(
         let owners: Vec<_> = state.forces.iter().filter(|(_, units)| !units.is_empty()).collect();
         for (cluster, (&owner, units)) in owners.iter().enumerate() {
             let mut types = map_representatives(units);
-            if revolt && zoom <= threshold {
+            if revolt && zoom <= CITY_BLEND_START {
                 types.truncate(1);
             }
             // Leave the centered province name and its resources room first.
@@ -620,7 +619,7 @@ pub(super) fn paint(
             map_province,
             projection,
             zoom,
-            threshold,
+            CITY_BLEND_START,
             clock,
             size,
             alpha,
@@ -665,8 +664,9 @@ pub(super) fn paint(
     occupied
 }
 
-fn troop_alpha(zoom: f32, threshold: f32) -> u8 {
-    (smoothstep((zoom - threshold) / 0.5) * 255.).round() as u8
+fn troop_alpha(zoom: f32) -> u8 {
+    // Troops and their banners appear throughout the city's icon-to-image transition.
+    (city_blend(zoom) * 255.).round() as u8
 }
 
 fn is_rebel(owner: ForceOwner, world: &MilitaryWorld) -> bool {

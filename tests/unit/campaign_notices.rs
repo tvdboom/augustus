@@ -107,13 +107,13 @@ fn scandal_notification_rows_match_the_filter_icon_and_keep_player_colors_after_
             (
                 NoticeKind::ScandalExpired,
                 "Scandal expired · Corrupt Governor",
-                "Severity III · grave · Valid for 120 months.",
+                "Grave · Valid for 120 months.",
                 120,
             ),
             (
                 NoticeKind::ScandalDiscovered,
                 "Scandal discovered · Corrupt Governor",
-                "Against Player 2 · Severity III · grave · 120 months remaining at discovery.",
+                "Against Player 2 · Grave · 120 months remaining at discovery.",
                 0,
             ),
         ] {

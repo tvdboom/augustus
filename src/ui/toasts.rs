@@ -145,6 +145,8 @@ impl Toast {
             (Icon::Happiness, "Population unhappy")
         } else if self.text == "Local practice started." {
             (Icon::Eagle, "Local practice")
+        } else if self.text.starts_with("Spy deployed:") {
+            (Icon::Spy, "Campaign update")
         } else {
             (Icon::Notifications, "Campaign update")
         };

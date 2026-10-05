@@ -14,8 +14,7 @@
 In local practice, **Ctrl+Shift+Up** boosts the active player's resources and population, grants
 the Influence and Senate support needed for the next political rank, and adds **three cohorts of
 every unit type** to each directly owned province. Use the Senate promotion button to claim the
-office. The shortcut clears that player's monthly promotion limit and Consul return cooldown;
-Consul appointments still require an open seat.
+office. The shortcut clears that player's monthly promotion limit.
 
 ### Provinces and geography
 
@@ -128,7 +127,7 @@ Market exchanges grant no Relation or Control.
 
 Spy networks uncover player misconduct or hidden NPC opportunities, costing deployment and upkeep
 and risking detection. Evidence has a target, severity, and expiry. Use it to blackmail NPCs for
-Control or favorable trade, or expose rivals to undermine their Senate support and consular office.
+Control or favorable trade, or expose rivals to undermine their Senate support.
 Exposure and blackmail consume evidence.
 
 ### Political ranks, Senate, and victory
@@ -183,10 +182,8 @@ real evidence and removes confidence immediately, rather than applying a recurri
 Harsh slave labor is severity I; famine and senator murder are severity III. Public scrutiny lasts
 one year, but lost confidence must be earned again.
 
-Two Consuls serve at most, for **24 months**, then automatically become Proconsuls. All departing
-Consuls must wait **12 months** and meet the full cost and support requirements to return.
-Three monthly reviews below 60% of appointment support force resignation; active scandals reduce
-this to one review. Augustus requires an active Consul seat and wins immediately.
+Consul is a permanent rank, with no seat limit, term expiry, or forced resignation. Consuls advance
+directly to Augustus by meeting its Influence and Senate support requirements, winning immediately.
 
 Clicking **Rome** opens the Senate. The protected capital permits no ordinary province actions,
 trade or espionage, and begins with **50 defending cohorts**. **Conquering Rome wins immediately**,

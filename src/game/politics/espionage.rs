@@ -255,7 +255,7 @@ pub enum Severity {
     Minor,
     /// Significant misconduct, including detected espionage.
     Medium,
-    /// Serious misconduct or mass suffering.
+    /// Grave misconduct or mass suffering.
     Major,
 }
 
@@ -263,9 +263,9 @@ impl Severity {
     /// Three public severity levels shared by evidence and Senate action explanations.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Minor => "Severity I · minor",
-            Self::Medium => "Severity II · serious",
-            Self::Major => "Severity III · grave",
+            Self::Minor => "Minor",
+            Self::Medium => "Serious",
+            Self::Major => "Grave",
         }
     }
     /// Shared severity multiplier for discovery and Senate support effects.

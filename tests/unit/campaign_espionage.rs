@@ -554,7 +554,8 @@ fn detected_player_spy_evidence_opens_senate_and_retains_provincial_origin() {
     ));
     assert_eq!(campaign.espionage.scandals[0].target, ScandalTarget::Player(0));
     assert!(notice.body.contains("Permanent"));
-    assert!(notice.body.contains("Severity II"));
+    assert!(notice.body.contains("Serious"));
+    assert!(!notice.body.contains("Severity II"));
 }
 
 #[test]

@@ -1799,7 +1799,6 @@ fn career_influence_is_paid_once_per_month_to_the_wallet_and_report() {
         (PoliticalRank::Praetor, 10.),
         (PoliticalRank::Censor, 15.),
         (PoliticalRank::Consul, 20.),
-        (PoliticalRank::Proconsul, 20.),
         (PoliticalRank::Augustus, 0.),
     ] {
         for (military_rank, military_income) in [
@@ -1816,7 +1815,6 @@ fn career_influence_is_paid_once_per_month_to_the_wallet_and_report() {
                 }
             }
             ranked.actors[0].rank = political_rank;
-            ranked.actors[0].consul_until = Some(100);
             ranked.military.ranks.insert(ForceOwner::Player(0), military_rank);
             let expected = political_income + military_income;
             for month in 1..=2 {
@@ -1971,7 +1969,7 @@ fn military_opportunities_require_every_milestone_and_rearm_without_repeating() 
 }
 
 #[test]
-fn political_opportunities_follow_funds_support_monthly_limits_and_consul_rules() {
+fn political_opportunities_follow_funds_support_and_monthly_limits() {
     use crate::game::politics::PoliticalRank;
     let mut c = campaign_with_players(3);
     c.economy.players[0].influence = 1000.0;
@@ -2015,14 +2013,14 @@ fn political_opportunities_follow_funds_support_monthly_limits_and_consul_rules(
     c.actors[1].rank = PoliticalRank::Consul;
     c.actors[2].rank = PoliticalRank::Consul;
     c.notify_rank_opportunities();
-    assert!(c.notifications.drain_for(0).is_empty(), "occupied Consul seats block eligibility");
-    c.actors[2].rank = PoliticalRank::Proconsul;
-    c.actors[0].consul_again_at = c.senate.month + 1;
+    assert_eq!(c.notifications.drain_for(0).pop().unwrap().title, "You can become Consul");
+    c.senate.promote(0, &mut c.actors, &c.senate_config).unwrap();
+    c.push_wallets();
     c.notify_rank_opportunities();
-    assert!(c.notifications.drain_for(0).is_empty(), "Consul cooldown blocks eligibility");
+    assert!(c.notifications.drain_for(0).is_empty(), "one political promotion per month");
     c.senate.month += 1;
     c.notify_rank_opportunities();
-    assert_eq!(c.notifications.drain_for(0).pop().unwrap().title, "You can become Consul");
+    assert_eq!(c.notifications.drain_for(0).pop().unwrap().title, "You can become Augustus");
     c.defeated[0] = true;
     c.notify_rank_opportunities();
     c.defeated[0] = false;

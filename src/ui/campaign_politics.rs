@@ -470,11 +470,7 @@ fn rank_ladder(
             ui.painter().text(
                 egui::pos2(rect.center().x, rect.top() + 51.0 * scale),
                 egui::Align2::CENTER_CENTER,
-                if rank == PoliticalRank::Consul && current == PoliticalRank::Proconsul {
-                    "Proconsul"
-                } else {
-                    rank.label()
-                },
+                rank.label(),
                 egui::FontId::proportional(12.0 * scale),
                 if emphasized {
                     INK

@@ -14,7 +14,7 @@ pub type PlayerId = usize;
 /// Stable province index shared with the historical map.
 pub type ProvinceId = usize;
 
-/// The preserved visible political ladder, plus the status of an expired Consul.
+/// The six-rank political ladder from Quaestor to Augustus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PoliticalRank {
     /// Initial office, retained from the existing game.
@@ -26,10 +26,8 @@ pub enum PoliticalRank {
     Praetor,
     /// Support-gated office between Praetor and Consul.
     Censor,
-    /// One of the two time-limited highest republican offices.
+    /// Highest republican rank before Augustus.
     Consul,
-    /// Former Consul; must be reappointed before seeking Augustus.
-    Proconsul,
     /// Winning office, awarded by Senate support or the conquest of Rome.
     Augustus,
 }
@@ -43,19 +41,18 @@ impl PoliticalRank {
             Self::Praetor => "Praetor",
             Self::Censor => "Censor",
             Self::Consul => "Consul",
-            Self::Proconsul => "Proconsul",
             Self::Augustus => "Augustus",
         }
     }
 
-    /// Slot in the original six-rank artwork; Proconsul shares the Consul slot.
+    /// Slot in the original six-rank artwork.
     pub fn ladder_index(self) -> usize {
         match self {
             Self::Quaestor => 0,
             Self::Aedile => 1,
             Self::Praetor => 2,
             Self::Censor => 3,
-            Self::Consul | Self::Proconsul => 4,
+            Self::Consul => 4,
             Self::Augustus => 5,
         }
     }
@@ -70,10 +67,6 @@ pub struct PoliticalPlayer {
     pub coin: f64,
     /// Available Influence.
     pub influence: f64,
-    /// Exclusive expiry month of a 24-month Consul term.
-    pub consul_until: Option<u32>,
-    /// Earliest month a former Consul may regain a seat.
-    pub consul_again_at: u32,
     /// Last promotion month; only one rank may be gained each month.
     pub promoted_at: Option<u32>,
 }
@@ -131,14 +124,10 @@ pub enum PoliticalError {
         /// Number of months left; ignored for ongoing lobbying.
         months_remaining: u32,
     },
-    /// Both Consul seats are occupied at the time of appointment.
-    NoConsulSeat,
     /// This action requires unexpired evidence against the target.
     ScandalRequired,
     /// Too few senators currently support this player.
     InsufficientSupport,
-    /// A former Consul must wait at least a year.
-    ConsulCooldown,
 }
 
 impl std::fmt::Display for PoliticalError {
@@ -179,13 +168,9 @@ impl std::fmt::Display for PoliticalError {
             Self::SenatorIsNeutral => "This senator is neutral and has no patron. Select a senator who supports another player.",
             Self::RivalPatronRequired => "This senator supports you. Select a senator who supports another player.",
             Self::SenatorArrangementActive { .. } => unreachable!(),
-            Self::NoConsulSeat => "Both Consul seats are occupied.",
             Self::ScandalRequired => "An unexpired scandal against this player is required.",
             Self::InsufficientSupport => {
                 "Attract the required number of senators before seeking this office."
-            },
-            Self::ConsulCooldown => {
-                "A former Consul must wait 12 months before returning to office."
             },
         })
     }

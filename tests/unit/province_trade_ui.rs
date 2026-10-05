@@ -63,7 +63,6 @@ fn fixture() -> Campaign {
             coin: 5000.0,
             influence: 1000.0,
             rank: PoliticalRank::Aedile,
-            consul_until: None,
             ..Default::default()
         };
         2

@@ -59,8 +59,6 @@ fn category(kind: NoticeKind) -> usize {
         | ForeignUnrest
         | SenateOfficeAppointed
         | PoliticalPromotionAvailable
-        | ConsulTermExpired
-        | ConsulRemoved
         | AugustusVictory
         | PlayerDefeated
         | ControlFifty
@@ -224,12 +222,9 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         | SlaveRevolt
         | MilitaryRankIncreased
         | MilitaryPromotionAvailable => Icon::Attack,
-        SenateOfficeAppointed
-        | PoliticalPromotionAvailable
-        | ConsulRemoved
-        | ConsulTermExpired
-        | AugustusVictory
-        | PlayerDefeated => Icon::Eagle,
+        SenateOfficeAppointed | PoliticalPromotionAvailable | AugustusVictory | PlayerDefeated => {
+            Icon::Eagle
+        },
         SpyDetected | SpyWithdrawn => Icon::Spy,
         ScandalDiscovered | ScandalExpired => Icon::SpyUncoverScandals,
         SenatorBriberyExposed => Icon::SenatorBribe,

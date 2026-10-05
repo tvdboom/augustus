@@ -11,7 +11,6 @@ fn map_right_click_opens_province_orders_and_battle_troops_open_combat() {
     let mut campaign = crate::app::campaign::Campaign::default();
     campaign.start(&ownership, 2);
     campaign.military = MilitaryWorld::new(atlas().provinces.len());
-    campaign.military.config.sprite_zoom_threshold = 0.0;
     campaign.military.seed_unit(province, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
     campaign
         .military
@@ -37,6 +36,8 @@ fn map_right_click_opens_province_orders_and_battle_troops_open_combat() {
     );
     let icons = [texture.clone(), texture.clone(), texture];
     let mut view = MapView {
+        zoom: CITY_BLEND_END,
+        target_zoom: CITY_BLEND_END,
         label_candidates: vec![vec![vec![]; atlas().provinces.len()]; LABEL_ZOOM_LEVELS],
         ..Default::default()
     };

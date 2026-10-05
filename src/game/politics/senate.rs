@@ -50,16 +50,10 @@ impl Bloc {
 pub struct SenateConfig {
     /// Aedile, Praetor, Censor, Consul and Augustus appointment costs.
     pub promotion_costs: [f64; 5],
-    /// Non-stacking monthly office income; Proconsul shares the Consul slot, Augustus earns none.
+    /// Non-stacking monthly office income; Augustus earns none.
     pub rank_influence: [f64; 6],
     /// Number of senators in each contiguous faction section, totaling 100.
     pub bloc_sizes: [u8; 5],
-    /// Length of a Consul term in months.
-    pub consul_term: u32,
-    /// Mandatory return cooldown after every Consul departure.
-    pub consul_cooldown: u32,
-    /// Consecutive reviews below retention support before forced resignation.
-    pub loss_grace_months: u32,
     /// Influence price of faction outreach.
     pub court_cost: f64,
     /// Monthly confidence from non-stacking faction outreach.
@@ -87,9 +81,6 @@ impl Default for SenateConfig {
             promotion_costs: [500.0, 1000.0, 1500.0, 2000.0, 3000.0],
             rank_influence: [0.0, 5.0, 10.0, 15.0, 20.0, 0.0],
             bloc_sizes: [20; 5],
-            consul_term: 24,
-            consul_cooldown: 12,
-            loss_grace_months: 3,
             court_cost: 20.0,
             court_bonus: 1.0,
             court_months: 6,
@@ -118,15 +109,7 @@ impl SenateConfig {
         {
             return Err("Senator confidence, costs and risks must be valid.");
         }
-        if [
-            self.consul_term,
-            self.consul_cooldown,
-            self.loss_grace_months,
-            self.court_months,
-            self.scandal_months,
-        ]
-        .contains(&0)
-        {
+        if [self.court_months, self.scandal_months].contains(&0) {
             return Err("Political durations must be positive.");
         }
         if self
@@ -155,7 +138,7 @@ impl SenateConfig {
             PoliticalRank::Quaestor => PoliticalRank::Aedile,
             PoliticalRank::Aedile => PoliticalRank::Praetor,
             PoliticalRank::Praetor => PoliticalRank::Censor,
-            PoliticalRank::Censor | PoliticalRank::Proconsul => PoliticalRank::Consul,
+            PoliticalRank::Censor => PoliticalRank::Consul,
             PoliticalRank::Consul => PoliticalRank::Augustus,
             PoliticalRank::Augustus => return None,
         };
@@ -177,10 +160,6 @@ impl SenateConfig {
     /// Non-stacking monthly Influence supplied by the current office.
     pub fn rank_income(&self, rank: PoliticalRank) -> f64 {
         self.rank_influence[rank.ladder_index()]
-    }
-    /// Consuls retain office with at least 60% of appointment support, rounded up.
-    pub fn retention_support(&self, players: usize) -> usize {
-        (self.requirements(PoliticalRank::Censor, players).unwrap().senators * 3).div_ceil(5)
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -481,11 +460,7 @@ pub struct Accusation {
 pub enum SenateEvent {
     /// Player paid Influence and met the support requirement.
     RankAdvanced(PlayerId, PoliticalRank),
-    /// A Consul completed their term and became Proconsul.
-    ConsulExpired(PlayerId),
-    /// Lost support, possibly accelerated by a scandal, forced resignation.
-    ConsulRemoved(PlayerId),
-    /// A serving Consul secured Augustus support and won.
+    /// A Consul secured Augustus support and won.
     Victory(PlayerId),
 }
 
@@ -501,7 +476,6 @@ pub struct SenateState {
     /// Active publicly exposed scandals.
     pub accusations: Vec<Accusation>,
     outreach: Vec<Outreach>,
-    low_support: Vec<u32>,
     used_actions: Vec<(PlayerId, Bloc, bool)>,
     rng: PoliticalRng,
     seat_confidence: f64,
@@ -553,7 +527,6 @@ impl SenateState {
             winner: None,
             accusations: vec![],
             outreach: vec![],
-            low_support: vec![],
             used_actions: vec![],
             rng: PoliticalRng::new(seed),
             seat_confidence: config.seat_confidence,
@@ -587,7 +560,7 @@ impl SenateState {
     pub fn bloc_support(&self, player: PlayerId, bloc: Bloc) -> usize {
         self.senators.iter().filter(|s| s.bloc == bloc && s.allegiance == Some(player)).count()
     }
-    /// Validate rank, cooldown, seats, support and funds without mutating anything.
+    /// Validate rank, monthly promotion limit, support and funds without mutating anything.
     pub fn promotion_eligibility(
         &self,
         player: PlayerId,
@@ -600,19 +573,6 @@ impl SenateState {
         let actor = players.get(player).ok_or(PoliticalError::MissingTarget)?;
         let requirement =
             config.requirements(actor.rank, players.len()).ok_or(PoliticalError::Ineligible)?;
-        if requirement.rank == PoliticalRank::Consul {
-            if actor.consul_again_at > self.month {
-                return Err(PoliticalError::ConsulCooldown);
-            }
-            if players.iter().filter(|p| p.rank == PoliticalRank::Consul).count() >= 2 {
-                return Err(PoliticalError::NoConsulSeat);
-            }
-        }
-        if requirement.rank == PoliticalRank::Augustus
-            && actor.consul_until.is_none_or(|end| end <= self.month)
-        {
-            return Err(PoliticalError::Ineligible);
-        }
         if actor.promoted_at == Some(self.month) {
             return Err(PoliticalError::AlreadyUsed);
         }
@@ -636,13 +596,7 @@ impl SenateState {
         let actor = &mut players[player];
         actor.rank = requirement.rank;
         actor.promoted_at = Some(self.month);
-        if actor.rank == PoliticalRank::Consul {
-            actor.consul_until = Some(self.month + config.consul_term);
-            self.low_support.resize(players.len(), 0);
-            self.low_support[player] = 0;
-        }
         if players[player].rank == PoliticalRank::Augustus {
-            players[player].consul_until = None;
             self.winner = Some(player);
             Ok(SenateEvent::Victory(player))
         } else {
@@ -1143,13 +1097,13 @@ impl SenateState {
     /// Losses resolve first; the first recipient rotates to avoid persistent order bias.
     pub fn advance_month(
         &mut self,
-        players: &mut [PoliticalPlayer],
+        players: &[PoliticalPlayer],
         profiles: &[PoliticalProfile],
         config: &SenateConfig,
-    ) -> Vec<SenateEvent> {
+    ) {
         assert!(config.validate().is_ok(), "invalid Senate configuration");
         if self.winner.is_some() {
-            return vec![];
+            return;
         }
         self.ensure_players(players.len());
         for id in 0..self.senators.len() {
@@ -1218,40 +1172,6 @@ impl SenateState {
                 .retain(|effect| effect.player < players.len() && effect.until > self.month);
         }
         self.review_allegiances();
-        self.low_support.resize(players.len(), 0);
-        let mut events = Vec::new();
-        for id in 0..players.len() {
-            if players[id].rank != PoliticalRank::Consul {
-                self.low_support[id] = 0;
-                continue;
-            }
-            if players[id].consul_until.is_none_or(|end| end <= self.month) {
-                self.end_consul(id, players, config);
-                events.push(SenateEvent::ConsulExpired(id));
-                continue;
-            }
-            let supporters = self.support(id);
-            let minimum = config.retention_support(players.len());
-            self.low_support[id] = if supporters < minimum {
-                self.low_support[id] + 1
-            } else {
-                0
-            };
-            let scandal_removal =
-                self.accusations.iter().any(|a| a.target == id && a.until > self.month)
-                    && supporters < minimum;
-            if scandal_removal || self.low_support[id] >= config.loss_grace_months {
-                self.end_consul(id, players, config);
-                events.push(SenateEvent::ConsulRemoved(id));
-            }
-        }
-        events
-    }
-    fn end_consul(&mut self, id: PlayerId, players: &mut [PoliticalPlayer], config: &SenateConfig) {
-        players[id].rank = PoliticalRank::Proconsul;
-        players[id].consul_until = None;
-        players[id].consul_again_at = self.month + config.consul_cooldown;
-        self.low_support[id] = 0;
     }
 }
 /// Bounded returns improve monthly progress without runaway growth.

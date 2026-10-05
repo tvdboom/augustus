@@ -165,8 +165,6 @@ pub struct MilitaryConfig {
     pub reference_speed: f64,
     /// Overall movement duration scale.
     pub movement_scale: f64,
-    /// Camera scale below which representative troop sprites are hidden.
-    pub sprite_zoom_threshold: f64,
     /// Minimum manpower share for secondary representative types.
     pub representative_share_threshold: f64,
     /// Maximum representative types per owner.
@@ -376,7 +374,6 @@ impl Default for MilitaryConfig {
             minimum_road_cost: 0.0,
             reference_speed: 2.5,
             movement_scale: 1.,
-            sprite_zoom_threshold: 2.3,
             representative_share_threshold: 0.25,
             maximum_representatives: 3,
         }

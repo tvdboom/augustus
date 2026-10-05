@@ -177,7 +177,9 @@ fn scandal_rows_show_targets_expiry_and_fit_compact_widths() {
             "Against Achaia",
             "14 months remaining",
             "Found in Achaia",
-            "III · grave",
+            "Minor",
+            "Serious",
+            "Grave",
             "Reserved until vote",
             "SCANDAL",
             "SEVERITY",
@@ -186,6 +188,7 @@ fn scandal_rows_show_targets_expiry_and_fit_compact_widths() {
             assert!(text.contains(label), "Missing {label}");
         }
         assert!(!text.contains("Severity ") && !text.contains("DISCOVERED SCANDALS"));
+        assert!(!text.lines().any(|label| matches!(label, "I" | "II" | "III")));
         let rows: Vec<_> = output
             .shapes
             .iter()
@@ -203,7 +206,9 @@ fn scandal_rows_show_targets_expiry_and_fit_compact_widths() {
         for shape in &output.shapes {
             if let egui::Shape::Text(text) = &shape.shape {
                 if text.galley.job.text.starts_with("Against ")
-                    || text.galley.job.text.contains(" · grave")
+                    || (matches!(text.galley.job.text.as_str(), "Minor" | "Serious" | "Grave")
+                        && (text.galley.job.sections[0].format.font_id.size - 12.0 * scale).abs()
+                            < 0.01)
                     || text.galley.job.text.ends_with("remaining")
                     || text.galley.job.text == "Reserved until vote"
                 {
@@ -228,9 +233,9 @@ fn scandal_rows_show_targets_expiry_and_fit_compact_widths() {
                 .unwrap_or_else(|| panic!("Missing filter {label}"))
         };
         let target = label_rect("All targets");
-        let first = label_rect("I");
-        let second = label_rect("II");
-        let third = label_rect("III");
+        let first = label_rect("Minor");
+        let second = label_rect("Serious");
+        let third = label_rect("Grave");
         let banner = output
             .shapes
             .iter()
@@ -374,7 +379,7 @@ fn scandal_card_click_returns_its_evidence_and_severity_checkbox_filters_the_lis
             .unwrap_or_else(|| panic!("Missing {label}"))
     };
     let card = position(ScandalKind::Famine.label());
-    let checkbox = position("III");
+    let checkbox = position("Grave");
     output.textures_delta.clear();
     let mut selected = None;
     for (time, pressed) in [(0.1, true), (0.2, false)] {
@@ -432,6 +437,7 @@ fn render_actions(
     time: f64,
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, ScandalResponse) {
+    ctx.set_global_style(super::super::campaign_widgets::map_style(1.0));
     let mut result = ScandalResponse::default();
     let output = ctx.run_ui(
         egui::RawInput {
@@ -459,10 +465,83 @@ fn render_actions(
     (output, result)
 }
 
+fn action_position(ctx: &egui::Context, output: &egui::FullOutput, icon: Icon) -> egui::Pos2 {
+    let texture = super::super::campaign_widgets::texture(ctx, icon);
+    output
+        .shapes
+        .iter()
+        .rev()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                Some(mesh.calc_bounds().center())
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Missing action icon {icon:?}"))
+}
+
+#[test]
+fn scandal_actions_show_only_illustrated_icons_and_explain_each_use_on_hover() {
+    for (target, icon, explanation) in [
+        (
+            ScandalTarget::Province(0),
+            Icon::Control,
+            "Spend this scandal to gain 10 Control in Achaia.",
+        ),
+        (
+            ScandalTarget::Province(0),
+            Icon::Relation,
+            "Spend this scandal to gain 10 Relation with Achaia.",
+        ),
+        (
+            ScandalTarget::Province(0),
+            Icon::Trade,
+            "Spend this scandal to get 25% better trade terms with Achaia for 6 months.",
+        ),
+        (
+            ScandalTarget::Player(1),
+            Icon::SenatorDiscredit,
+            "Spend this scandal to expose Player 2 in the Senate and reduce their faction confidence.",
+        ),
+    ] {
+        let ctx = layout_context();
+        let mut campaign = action_fixture(target);
+        campaign.espionage.scandals[0].severity = Severity::Major;
+        let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "+10" | "Trade" | "Senate" | "Use")
+        )), "Action buttons must display icons only");
+        let pos = action_position(&ctx, &output, icon);
+        let mut capture = capture::Capture::default();
+        capture.frame(&ctx, &output, "scandal-icon-actions");
+        output.textures_delta.clear();
+        for time in [0.1, 1.0, 1.1, 2.0] {
+            let events = if time == 0.1 { vec![egui::Event::PointerMoved(pos)] } else { vec![] };
+            let (mut output, result) = render_actions(&ctx, &campaign, 546.0, time, events);
+            assert!(result.command.is_none() && result.selected.is_none());
+            capture.frame(&ctx, &output, &format!("scandal-hover-{icon:?}"));
+            if time == 2.0 {
+                let labels: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                    _ => None,
+                }).collect();
+                assert!(output.shapes.iter().any(|shape| matches!(
+                    &shape.shape, egui::Shape::Text(text) if text.galley.job.text == explanation
+                )), "Missing hover explanation for {icon:?}: {labels:?}");
+            }
+            output.textures_delta.clear();
+        }
+    }
+}
+
 #[test]
 fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_targets() {
     for target in [ScandalTarget::Province(0), ScandalTarget::Player(1)] {
-        for usage in [ScandalUse::Control, ScandalUse::Relation] {
+        for usage in [ScandalUse::Control, ScandalUse::Relation, ScandalUse::Trade] {
+            if usage == ScandalUse::Trade && matches!(target, ScandalTarget::Player(_)) {
+                continue;
+            }
             let ctx = layout_context();
             let mut campaign = action_fixture(target);
             let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
@@ -476,16 +555,12 @@ fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_target
                     "scandal-npc-actions"
                 },
             );
-            let buttons: Vec<_> = output
-                .shapes
-                .iter()
-                .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == "+5" => Some(text.pos),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(buttons.len(), 2);
-            let pos = buttons[usize::from(usage == ScandalUse::Relation)] - egui::vec2(0.0, 10.0);
+            let icon = match usage {
+                ScandalUse::Control => Icon::Control,
+                ScandalUse::Relation => Icon::Relation,
+                ScandalUse::Trade => Icon::Trade,
+            };
+            let pos = action_position(&ctx, &output, icon);
             output.textures_delta.clear();
             let mut command = None;
             for (time, pressed) in [(0.1, true), (0.2, false)] {
@@ -505,8 +580,13 @@ fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_target
                 }
             );
             let message = apply_command(&mut campaign, 0, command);
-            assert!(message.contains("+5"));
             assert!(campaign.espionage.scandals.is_empty());
+            if usage == ScandalUse::Trade {
+                assert!(message.contains("favorable trade with Achaia for 6 months"));
+                assert_eq!(campaign.espionage.trade_ratio(0, 0, campaign.economy.month), 0.75);
+                continue;
+            }
+            assert!(message.contains("+5"));
             assert_eq!(
                 if usage == ScandalUse::Control {
                     campaign.politics[0].control(0)
@@ -527,16 +607,7 @@ fn compact_scandal_use_menu_lists_exact_benefits_and_only_players_get_senate_use
         let (mut output, _) = render_actions(&ctx, &campaign, 380.0, 0.0, vec![]);
         let mut capture = capture::Capture::default();
         capture.frame(&ctx, &output, "scandal-compact-actions");
-        let pos = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Use" => {
-                    Some(text.pos - egui::vec2(0.0, 10.0))
-                },
-                _ => None,
-            })
-            .unwrap();
+        let pos = action_position(&ctx, &output, Icon::SpyUncoverScandals);
         output.textures_delta.clear();
         for (time, pressed) in [(0.1, true), (0.2, false)] {
             let (mut output, result) =
@@ -636,16 +707,7 @@ fn player_scandals_without_an_origin_require_a_province_choice_before_spending()
     campaign.politics.push(ProvincePolitics::owned(3, 1));
     campaign.graph.push(campaign.graph[0].clone());
     let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
-    let pos = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "+5" => {
-                Some(text.pos - egui::vec2(0.0, 10.0))
-            },
-            _ => None,
-        })
-        .unwrap();
+    let pos = action_position(&ctx, &output, Icon::Control);
     output.textures_delta.clear();
     for (time, pressed) in [(0.1, true), (0.2, false)] {
         let (mut output, result) =
@@ -695,16 +757,7 @@ fn senate_row_button_exposes_the_player_scandal_directly() {
     let ctx = layout_context();
     let mut campaign = action_fixture(ScandalTarget::Player(1));
     let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
-    let pos = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Senate" => {
-                Some(text.pos - egui::vec2(0.0, 10.0))
-            },
-            _ => None,
-        })
-        .unwrap();
+    let pos = action_position(&ctx, &output, Icon::SenatorDiscredit);
     output.textures_delta.clear();
     let mut command = None;
     for (time, pressed) in [(0.1, true), (0.2, false)] {

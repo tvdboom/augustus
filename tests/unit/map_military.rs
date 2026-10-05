@@ -608,10 +608,15 @@ fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
         )
         .unwrap();
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
-    let threshold = world.config.sprite_zoom_threshold as f32;
     let mut anchors = Anchors::default();
     let mut capture = revolt_capture::Capture::default();
-    for zoom in [MIN_ZOOM, threshold, threshold + 0.25, threshold + 0.5, MIN_ZOOM] {
+    for zoom in [
+        MIN_ZOOM,
+        CITY_BLEND_START,
+        (CITY_BLEND_START + CITY_BLEND_END) * 0.5,
+        CITY_BLEND_END,
+        MIN_ZOOM,
+    ] {
         let projection = Projection {
             origin: viewport.center(),
             scale: 18. * zoom,
@@ -643,14 +648,14 @@ fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
         capture.frame(
             &context,
             &output,
-            if zoom <= threshold {
+            if zoom <= CITY_BLEND_START {
                 "revolt-combat-hidden"
             } else {
                 "revolt-combat"
             },
         );
         output.textures_delta.clear();
-        if zoom <= threshold {
+        if zoom <= CITY_BLEND_START {
             assert!(
                 markers.is_empty() && hits.is_empty(),
                 "Zoomed-out battles disappear with their hit targets"
@@ -664,7 +669,7 @@ fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
         let banners: Vec<_> = hits.iter().filter(|hit| hit.rect.height() == 12.).collect();
         assert_eq!(banners.len(), 2);
         assert!(!banners[0].rect.intersects(banners[1].rect), "Opposing owner labels overlap");
-        let expected = egui::Color32::from_white_alpha(troop_alpha(zoom, threshold));
+        let expected = egui::Color32::from_white_alpha(troop_alpha(zoom));
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Mesh(mesh) if mesh.vertices.iter().all(|vertex| vertex.color == expected))),
             "Battle sprites must use the ordinary unit fade");
@@ -1133,20 +1138,122 @@ fn stationary_armies_stay_inside_their_province_when_avoiding_cities() {
 }
 
 #[test]
+fn city_images_and_troops_fade_together_in_both_zoom_directions() {
+    let context = egui::Context::default();
+    let mut world = MilitaryWorld::new(atlas().provinces.len());
+    let province = atlas().provinces.iter().position(|p| p.name == "Africa Proconsularis").unwrap();
+    world.seed_unit(province, ForceOwner::Local(province), UnitType::HeavyInfantry).unwrap();
+    let textures: Vec<_> =
+        CITY_IMAGES.iter().map(|(name, png)| load_city_texture(&context, name, png, 384)).collect();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+    let mut anchors = Anchors::default();
+    let zooms = [
+        MIN_ZOOM,
+        CITY_BLEND_START,
+        CITY_BLEND_START + 0.1,
+        (CITY_BLEND_START + CITY_BLEND_END) * 0.5,
+        CITY_BLEND_END,
+        3.,
+    ];
+    for &zoom in zooms.iter().chain(zooms.iter().rev()) {
+        let projection = Projection {
+            origin: viewport.center(),
+            scale: 18. * zoom,
+            center: atlas().provinces[province].visual_center,
+        };
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        let painter = context.layer_painter(egui::LayerId::background());
+        let cities = layout_cities(&projection, viewport, zoom);
+        assert!(cities
+            .iter()
+            .any(|city| CITIES[city.city_index].province == "Africa Proconsularis"));
+        paint_cities(&painter, &cities, zoom, &textures);
+        let landmarks: Vec<_> = cities.iter().map(|city| city.bounds).collect();
+        let troops = paint(
+            &painter,
+            None,
+            &world,
+            &ProvinceOwnership::default(),
+            &projection,
+            zoom,
+            0.,
+            viewport,
+            &landmarks,
+            &[],
+            &[],
+            &mut anchors,
+        );
+        let mut output = context.end_pass();
+        let expected = egui::Color32::from_white_alpha((city_blend(zoom) * 255.).round() as u8);
+        let images: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                let egui::Shape::Mesh(mesh) = &shape.shape else {
+                    return None;
+                };
+                Some(mesh)
+            })
+            .collect();
+        let city_images: Vec<_> =
+            images.iter().filter(|mesh| mesh.texture_id == textures[0].id()).collect();
+        if expected.a() == 0 {
+            assert!(
+                city_images.is_empty() && troops.is_empty(),
+                "artwork appeared too early at zoom {zoom}"
+            );
+        } else {
+            assert!(!city_images.is_empty());
+            assert_eq!(
+                troops.len(),
+                2,
+                "troop and banner missing while city image shows at zoom {zoom}"
+            );
+            let unit_texture = context.data(|data| {
+                data.get_temp::<Textures>(egui::Id::new("military-sprite-sheet-cache"))
+                    .unwrap()
+                    .idle[UnitType::HeavyInfantry as usize]
+                    .as_ref()
+                    .unwrap()
+                    .id()
+            });
+            let unit_images: Vec<_> =
+                images.iter().filter(|mesh| mesh.texture_id == unit_texture).collect();
+            assert_eq!(unit_images.len(), 1);
+            assert!(
+                city_images
+                    .iter()
+                    .chain(&unit_images)
+                    .all(|mesh| { mesh.vertices.iter().all(|vertex| vertex.color == expected) }),
+                "city and troop opacity differ at zoom {zoom}"
+            );
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill.a() == expected.a())),
+                "banner fade differs at zoom {zoom}"
+            );
+        }
+        output.textures_delta.clear();
+    }
+}
+
+#[test]
 fn zoomed_out_troops_emit_no_badges_or_sprites() {
     let context = egui::Context::default();
     let mut world = MilitaryWorld::new(atlas().provinces.len());
     let province = atlas().provinces.iter().position(|p| p.name == "Latium").unwrap();
     world.seed_unit(province, ForceOwner::Local(province), UnitType::HeavyInfantry).unwrap();
-    let threshold = world.config.sprite_zoom_threshold as f32;
     let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
     let projection = Projection {
         origin: viewport.center(),
         scale: 14.,
         center: [14., 41.],
     };
-    for zoom in [MIN_ZOOM, threshold - 0.01, threshold] {
-        assert_eq!(troop_alpha(zoom, threshold), 0);
+    for zoom in [MIN_ZOOM, CITY_BLEND_START - 0.01, CITY_BLEND_START] {
+        assert_eq!(troop_alpha(zoom), 0);
         context.begin_pass(egui::RawInput::default());
         let painter = context.layer_painter(egui::LayerId::background());
         assert!(paint(
@@ -1456,7 +1563,7 @@ fn visible_armies_keep_their_geographic_position_through_camera_and_landmark_cha
             &[],
             &mut anchors,
         );
-        if zoom > world.config.sprite_zoom_threshold as f32 {
+        if zoom > CITY_BLEND_START {
             assert_eq!(markers.len(), 2);
             let position = projection.inverse(markers[0].center());
             if let Some(expected) = expected {

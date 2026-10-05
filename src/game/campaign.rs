@@ -1799,11 +1799,7 @@ impl Campaign {
             }
         }
         self.refresh_profiles();
-        for event in
-            self.senate.advance_month(&mut self.actors, &self.profiles, &self.senate_config)
-        {
-            self.record_senate_event(&event);
-        }
+        self.senate.advance_month(&self.actors, &self.profiles, &self.senate_config);
         self.push_wallets();
         for victory in &mut self.recent_victories {
             *victory *= 0.95;
@@ -1963,7 +1959,6 @@ impl Campaign {
             owner: player,
         };
         self.actors[player].rank = crate::game::politics::PoliticalRank::Augustus;
-        self.actors[player].consul_until = None;
         self.senate.winner = Some(player);
         for recipient in 0..self.actors.len() {
             self.notifications.province_notice(

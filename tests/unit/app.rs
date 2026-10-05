@@ -196,7 +196,7 @@ fn practice_boost_makes_each_next_political_rank_affordable_and_supported() {
 }
 
 #[test]
-fn practice_boost_uses_configured_costs_and_clears_consul_reappointment_cooldown() {
+fn practice_boost_uses_configured_costs_and_clears_monthly_promotion_limit() {
     use crate::game::politics::PoliticalRank;
 
     let mut ownership = ProvinceOwnership::default();
@@ -205,8 +205,7 @@ fn practice_boost_uses_configured_costs_and_clears_consul_reappointment_cooldown
     campaign.start(&ownership, 2);
     let mut resources = HudResources::default();
     resources.start_players(2, &ownership);
-    campaign.actors[0].rank = PoliticalRank::Proconsul;
-    campaign.actors[0].consul_again_at = campaign.senate.month + 12;
+    campaign.actors[0].rank = PoliticalRank::Censor;
     campaign.actors[0].promoted_at = Some(campaign.senate.month);
     campaign.senate_config.promotion_costs[3] = 12_000.0;
     campaign.economy.players[0].influence = 0.0;

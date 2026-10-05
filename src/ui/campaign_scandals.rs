@@ -7,6 +7,7 @@ use super::campaign_widgets::{
 };
 use super::policy_widgets;
 use super::province_panel::{INK, NEUTRAL};
+use super::spectator::InspectionHover;
 use crate::game::politics::espionage::{Scandal, ScandalTarget, ScandalUse, Severity};
 use bevy_egui::egui;
 
@@ -156,6 +157,22 @@ fn filters_banner(
         egui::pos2(banner.left() + margin, banner.bottom() - margin - 32.0 * scale),
         banner.right_bottom() - egui::Vec2::splat(margin),
     );
+    let severities = [Severity::Minor, Severity::Medium, Severity::Major];
+    let severity_width = severities
+        .iter()
+        .map(|severity| {
+            ui.painter()
+                .layout_no_wrap(
+                    severity.label().into(),
+                    egui::TextStyle::Button.resolve(ui.style()),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .sum::<f32>()
+        + 87.0 * scale; // Three checkboxes, two gaps, and the badge's padding.
+    let target_width = (rect.width() - severity_width - 24.0 * scale).min(140.0 * scale);
     let mut overlay = ui.new_child(
         egui::UiBuilder::new()
             .id_salt("scandal-filters")
@@ -192,7 +209,8 @@ fn filters_banner(
         badge.show(ui, |ui| {
             egui::ComboBox::from_id_salt("scandal-target")
                 .selected_text(filters.target.label())
-                .width(140.0 * scale)
+                .width(target_width)
+                .truncate()
                 .popup_style(egui::style::StyleModifier::new(move |style| {
                     *style = map_style(scale)
                 }))
@@ -214,12 +232,8 @@ fn filters_banner(
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             badge.show(ui, |ui| {
-                for (severity, label) in
-                    [(Severity::Minor, "I"), (Severity::Medium, "II"), (Severity::Major, "III")]
-                        .into_iter()
-                        .rev()
-                {
-                    ui.checkbox(&mut filters.severity[severity_index(severity)], label)
+                for severity in severities.into_iter().rev() {
+                    ui.checkbox(&mut filters.severity[severity_index(severity)], severity.label())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                 }
             });
@@ -334,24 +348,12 @@ pub(super) fn row(
             detail.push_str(&format!(" · Found in {}", campaign.economy.provinces[province].name));
         }
     }
-    let (level, description) = match scandal.severity {
-        Severity::Minor => ("I", "minor"),
-        Severity::Medium => ("II", "serious"),
-        Severity::Major => ("III", "grave"),
-    };
-    let mut severity_job = egui::text::LayoutJob::default();
-    severity_job.append(
-        level,
-        0.0,
-        egui::TextFormat::simple(egui::FontId::proportional(12.0 * scale), INK),
+    let severity = ui.painter().layout(
+        scandal.severity.label().into(),
+        egui::FontId::proportional(12.0 * scale),
+        METADATA_INK,
+        (starts[2] - starts[1] - 8.0 * scale).max(1.0),
     );
-    severity_job.append(
-        &format!(" · {description}"),
-        0.0,
-        egui::TextFormat::simple(egui::FontId::proportional(12.0 * scale), METADATA_INK),
-    );
-    severity_job.wrap.max_width = (starts[2] - starts[1] - 8.0 * scale).max(1.0);
-    let severity = ui.painter().layout_job(severity_job);
     let validity = ui.painter().layout(
         scandal.validity_label(campaign.economy.month.max(campaign.senate.month)),
         egui::FontId::proportional(12.0 * scale),
@@ -417,24 +419,17 @@ pub(super) fn row(
     result
 }
 
-fn action_button(ui: &mut egui::Ui, icon: Icon, caption: &str, scale: f32) -> egui::Response {
+fn action_button(ui: &mut egui::Ui, icon: Icon, explanation: &str, scale: f32) -> egui::Response {
     let response = ui.add_sized([36.0 * scale, 34.0 * scale], egui::Button::new(""));
     paint_icon(
         ui,
         icon,
-        egui::Rect::from_center_size(
-            response.rect.center() - egui::vec2(0.0, 5.0 * scale),
-            egui::Vec2::splat(17.0 * scale),
-        ),
+        egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(28.0 * scale)),
     );
-    ui.painter().text(
-        response.rect.center() + egui::vec2(0.0, 10.0 * scale),
-        egui::Align2::CENTER_CENTER,
-        caption,
-        egui::FontId::proportional(9.0 * scale),
-        INK,
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), explanation)
+    });
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).inspection_hover_text(explanation)
 }
 
 fn action_targets(campaign: &Campaign, scandal: &Scandal, usage: ScandalUse) -> Vec<(usize, f64)> {
@@ -465,6 +460,41 @@ fn use_label(usage: ScandalUse, gain: f64) -> String {
         ScandalUse::Control => format!("Use scandal: gain {amount} Control"),
         ScandalUse::Relation => format!("Use scandal: gain {amount} Relation"),
         ScandalUse::Trade => format!("Use scandal: {amount}% better trade terms"),
+    }
+}
+
+fn use_explanation(
+    campaign: &Campaign,
+    usage: ScandalUse,
+    default: Option<&(usize, f64)>,
+    targets: &[(usize, f64)],
+) -> String {
+    let Some(&(province, gain)) = default else {
+        let amount = policy_widgets::compact_decimal(
+            targets.iter().map(|(_, gain)| *gain).fold(0.0, f64::max),
+        );
+        let benefit = match usage {
+            ScandalUse::Control => "Control",
+            ScandalUse::Relation => "Relation",
+            ScandalUse::Trade => unreachable!("Trade evidence always targets one province"),
+        };
+        return format!(
+            "Choose a province and spend this scandal to gain up to {amount} {benefit} there."
+        );
+    };
+    let amount = policy_widgets::compact_decimal(gain);
+    let province = &campaign.economy.provinces[province].name;
+    match usage {
+        ScandalUse::Control => {
+            format!("Spend this scandal to gain {amount} Control in {province}.")
+        },
+        ScandalUse::Relation => {
+            format!("Spend this scandal to gain {amount} Relation with {province}.")
+        },
+        ScandalUse::Trade => format!(
+            "Spend this scandal to get {amount}% better trade terms with {province} for {} months.",
+            campaign.espionage_config.favorable_trade_months
+        ),
     }
 }
 
@@ -502,8 +532,8 @@ fn row_actions(
         return result;
     }
     let uses: Vec<_> = [
-        (ScandalUse::Control, Icon::ScandalControl),
-        (ScandalUse::Relation, Icon::ScandalRelation),
+        (ScandalUse::Control, Icon::Control),
+        (ScandalUse::Relation, Icon::Relation),
         (ScandalUse::Trade, Icon::Trade),
     ]
     .into_iter()
@@ -535,27 +565,8 @@ fn row_actions(
                             matches!(scandal.target, ScandalTarget::Province(_))
                                 .then(|| &targets[0])
                         });
-                    let caption = if *usage == ScandalUse::Trade {
-                        "Trade".into()
-                    } else {
-                        format!(
-                            "+{}",
-                            policy_widgets::compact_decimal(
-                                default.map_or(scandal.severity.control_gain(), |(_, gain)| *gain)
-                            )
-                        )
-                    };
-                    let response = action_button(ui, *icon, &caption, scale);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            true,
-                            use_label(
-                                *usage,
-                                default.map_or(scandal.severity.control_gain(), |(_, gain)| *gain),
-                            ),
-                        )
-                    });
+                    let explanation = use_explanation(campaign, *usage, default, targets);
+                    let response = action_button(ui, *icon, &explanation, scale);
                     if let Some(&(province, _)) = default {
                         if response.clicked() {
                             result.command = Some(ScandalCommand::Province {
@@ -570,13 +581,25 @@ fn row_actions(
                         });
                     }
                 }
-                if senate && action_button(ui, Icon::SenatorDiscredit, "Senate", scale).clicked() {
-                    result.command = Some(ScandalCommand::Senate {
-                        id: scandal.id,
-                    });
+                if senate {
+                    let ScandalTarget::Player(target) = scandal.target else { unreachable!() };
+                    let explanation = format!(
+                        "Spend this scandal to expose Player {} in the Senate and reduce their faction confidence.",
+                        target + 1
+                    );
+                    if action_button(ui, Icon::SenatorDiscredit, &explanation, scale).clicked() {
+                        result.command = Some(ScandalCommand::Senate {
+                            id: scandal.id,
+                        });
+                    }
                 }
             } else {
-                let response = action_button(ui, Icon::SpyUncoverScandals, "Use", scale);
+                let response = action_button(
+                    ui,
+                    Icon::SpyUncoverScandals,
+                    "Choose how to use and spend this scandal.",
+                    scale,
+                );
                 egui::Popup::menu(&response).show(|ui| {
                     *ui.style_mut() = map_style(scale);
                     for (usage, _, targets) in &uses {

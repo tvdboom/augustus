@@ -188,7 +188,6 @@ fn fixture() -> Campaign {
             coin: 5000.0,
             influence: 1000.0,
             rank: PoliticalRank::Aedile,
-            consul_until: None,
             ..Default::default()
         };
         2
@@ -234,7 +233,6 @@ fn fixture() -> Campaign {
     campaign.profiles = vec![PoliticalProfile::default(); 2];
     campaign.recent_victories = vec![0.0; 2];
     campaign.actors[1].rank = PoliticalRank::Consul;
-    campaign.actors[1].consul_until = Some(48);
     campaign.espionage.scandals = vec![
         Scandal {
             id: 1,
@@ -3711,7 +3709,6 @@ fn senate_neutral_loyalty_and_consul_states_fit_desktop_and_compact_panels() {
             }
             if phase == 2 {
                 campaign.actors[0].rank = PoliticalRank::Consul;
-                campaign.actors[0].consul_until = Some(24);
             }
             assert_body_fits(&format!("Senate phase {phase}"), width, scale, |ui| {
                 campaign_politics::show(
