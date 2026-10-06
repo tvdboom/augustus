@@ -11,6 +11,8 @@ pub(super) mod menu_background;
 pub(super) mod menu_controls;
 #[path = "forms.rs"]
 pub(super) mod menu_forms;
+#[path = "reference.rs"]
+pub(super) mod menu_reference;
 #[path = "render.rs"]
 pub(super) mod menu_render;
 #[path = "screens.rs"]

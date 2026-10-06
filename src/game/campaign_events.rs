@@ -4,7 +4,9 @@ use super::campaign::Campaign;
 
 pub(crate) const EVENT_COOLDOWN_MONTHS: u32 = 24;
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) enum CivicEvent {
     Theater,
     Feast,
@@ -126,21 +128,21 @@ impl CivicEvent {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EventCost {
     pub coin: f64,
     pub food: f64,
     pub influence: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EventQuote {
     pub cost: EventCost,
     pub coin_reward: f64,
     pub beneficiaries: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EventError {
     Unavailable,
     Cooldown {

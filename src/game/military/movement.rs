@@ -3,7 +3,7 @@
 use super::*;
 
 /// Immutable geographic snapshot used for routing during a monthly phase.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MilitaryProvince {
     /// Terrain selects crossing cost and battlefield frontage.
     pub terrain: MilitaryTerrain,
@@ -16,7 +16,7 @@ pub struct MilitaryProvince {
 }
 
 /// Movement permission separates peaceful access from hostile invasion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MilitaryAccess {
     /// Directly owned, own vassal, very friendly NPC, or explicitly invited.
     Peaceful,
@@ -29,7 +29,7 @@ pub enum MilitaryAccess {
 }
 
 /// Transient selected units on one route, consumed when they reach their destination.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MovementOrder {
     /// Stable order identity.
     pub id: u64,

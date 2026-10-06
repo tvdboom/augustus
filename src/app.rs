@@ -24,6 +24,8 @@ mod campaign_notifications;
 mod campaign_trade;
 #[path = "game/controls.rs"]
 mod game_controls;
+#[path = "multiplayer/online.rs"]
+mod online;
 #[path = "game/resources.rs"]
 mod resource_simulation;
 #[path = "game/terminal.rs"]
@@ -42,6 +44,7 @@ use map_menu::*;
 use menu_background::*;
 use menu_controls::*;
 use menu_forms::*;
+use menu_reference::*;
 use menu_render::*;
 use menu_screens::*;
 use rank_hud::*;
@@ -62,7 +65,7 @@ use rand::random_range;
 
 use crate::basis_texture::BasisTexturePlugin;
 use crate::map::{draw_map, Governance, MapView, ProvinceOwnership};
-use crate::multiplayer::lobby::{generate_game_code, LobbyPreview};
+use crate::multiplayer::lobby::LobbyPreview;
 use crate::TITLE;
 
 /// Native and initial browser width for the menu canvas.
@@ -85,7 +88,8 @@ const RESUME_MENU_WIDTH: f32 = 560.0;
 const FORM_CARD_GAP: f32 = 12.0;
 const FORM_TITLE_GAP: f32 = 28.0;
 const FORM_ACTION_GAP: f32 = 24.0;
-const MAIN_MENU_ACTION_COUNT: usize = 5 + cfg!(not(target_arch = "wasm32")) as usize;
+const MAIN_MENU_ACTION_COUNT: usize =
+    4 + cfg!(debug_assertions) as usize + cfg!(not(target_arch = "wasm32")) as usize;
 const LOADING_WALLPAPER_FADE_IN_SECONDS: f32 = 0.12;
 const LOADING_MAP_REVEAL_SECONDS: f32 = 0.8;
 
@@ -94,7 +98,7 @@ const GOLD: egui::Color32 = egui::Color32::from_rgb(195, 145, 87);
 const MUTED_TEXT: egui::Color32 = egui::Color32::from_rgb(209, 181, 150);
 
 #[derive(States, Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
-/// Screens in the Augustus menu-first prototype.
+/// Augustus menu, campaign and result screens.
 pub enum AppState {
     /// Main navigation.
     #[default]
@@ -105,9 +109,11 @@ pub enum AppState {
     PracticeSetup,
     /// Join-game form.
     JoinGame,
-    /// Placeholder for saved Augustus campaigns.
+    /// Cloud saves and private-code recovery.
     ResumeGame,
-    /// Multiplayer lobby presentation backed by a local preview until Supabase is connected.
+    /// Recover a saved player using the game's access codes.
+    RecoverPlayer,
+    /// Authenticated game lobby for one to four players.
     Lobby,
     /// Audio preferences retained from the reference menu.
     Settings,
@@ -130,14 +136,22 @@ enum ActiveGame {
     #[default]
     LocalPractice,
     LobbyPreview,
+    Online,
 }
 
 impl ActiveGame {
     fn screen(self) -> AppState {
         match self {
             Self::LocalPractice => AppState::Map,
+            Self::Online => AppState::Map,
             Self::LobbyPreview => AppState::EmptyScreen,
         }
+    }
+}
+
+impl ActiveGame {
+    fn is_campaign(self) -> bool {
+        matches!(self, Self::LocalPractice | Self::Online)
     }
 }
 
@@ -168,6 +182,7 @@ impl Default for LocalPractice {
 
 #[derive(Clone)]
 struct PracticePlayer {
+    name: String,
     color_index: usize,
     rank: usize,
     main_province: Option<usize>,
@@ -180,6 +195,7 @@ impl LocalPractice {
         self.active_player = 0;
         self.players = (0..self.player_count)
             .map(|index| PracticePlayer {
+                name: format!("Player {}", index + 1),
                 color_index: (self.color_index + index) % PLAYER_COLORS.len(),
                 rank: 0,
                 main_province: None,
@@ -274,6 +290,7 @@ impl LoadingSequence {
 struct MenuDraft {
     display_name: String,
     join_code: String,
+    recovery_code: String,
 }
 
 #[derive(Resource, Default)]
@@ -309,7 +326,7 @@ const MAX_SPEED_STEP: i8 = 2;
 const MONTH_NAMES: [&str; 12] =
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-#[derive(Resource)]
+#[derive(Resource, Clone, serde::Serialize, serde::Deserialize)]
 struct GameClock {
     // Astronomical year numbering makes the transition from 1 BC to 1 AD seamless.
     year: i32,
@@ -448,12 +465,14 @@ impl Plugin for AugustusPlugin {
             .init_resource::<ProvincePanelOpen>()
             .init_resource::<MapPanelCloseClick>()
             .init_resource::<LobbyPreview>()
+            .init_resource::<online::OnlineClient>()
             .init_resource::<LoadingSequence>()
             .init_resource::<ActiveGame>()
             .init_resource::<LocalPractice>()
             .init_resource::<MapView>()
             .init_resource::<ProvinceOwnership>()
             .init_resource::<toasts::ToastQueue>()
+            .init_resource::<error_toasts::ErrorNotifications>()
             .init_resource::<celebration::EventCelebration>()
             .init_resource::<toasts::WarningWatch>()
             .add_systems(Startup, (setup_camera, setup_background, start_music).chain())
@@ -464,6 +483,10 @@ impl Plugin for AugustusPlugin {
                     .chain(),
             )
             .add_systems(Update, handle_escape)
+            .add_systems(
+                Update,
+                online::update.before(advance_game_time).before(handle_game_shortcuts),
+            )
             .add_systems(Update, handle_game_shortcuts.before(advance_game_time))
             .add_systems(
                 Update,
@@ -472,6 +495,7 @@ impl Plugin for AugustusPlugin {
                     campaign::sync_campaign,
                     detect_terminal,
                     toasts::watch_warnings,
+                    error_toasts::update,
                     toasts::play_pending_sounds,
                     toasts::advance,
                 )
@@ -512,7 +536,14 @@ impl Plugin for AugustusPlugin {
                 EguiPrimaryContextPass,
                 battle_audio::update.after(draw_map).after(draw_audio_controls),
             )
-            .add_systems(EguiPrimaryContextPass, toasts::draw.after(draw_map_resources))
+            .add_systems(
+                EguiPrimaryContextPass,
+                error_toasts::draw.after(draw_menu).after(draw_map).after(draw_audio_controls),
+            )
+            .add_systems(
+                EguiPrimaryContextPass,
+                toasts::draw.after(draw_map_resources).after(error_toasts::draw),
+            )
             .add_systems(EguiPrimaryContextPass, celebration::draw.after(toasts::draw))
             .add_systems(
                 EguiPrimaryContextPass,
@@ -541,6 +572,8 @@ impl Plugin for AugustusPlugin {
                 draw_loading_reveal.run_if(in_state(AppState::Loading)),
             )
             .add_systems(Update, update_music_volume);
+        app.add_systems(EguiPrimaryContextPass, online::draw_status.after(draw_map));
+        app.add_systems(OnEnter(AppState::ResumeGame), online::refresh_games);
         app.add_systems(OnEnter(AppState::Map), prepare_spectator);
         #[cfg(target_arch = "wasm32")]
         app.init_resource::<LoadingWallpaperDiscovery>();

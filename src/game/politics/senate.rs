@@ -2,7 +2,7 @@
 use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer, PoliticalRank, PoliticalRng};
 
 /// Public factions with distinct preferences and contiguous chamber sections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Bloc {
     /// Nobles and republican institutions.
     Aristocrats,
@@ -46,7 +46,7 @@ impl Bloc {
 }
 
 /// Costs and loyalty rules; there is no election calendar.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SenateConfig {
     /// Aedile, Praetor, Censor, Consul and Augustus appointment costs.
     pub promotion_costs: [f64; 5],
@@ -162,7 +162,7 @@ impl SenateConfig {
         self.rank_influence[rank.ladder_index()]
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// Requirements for the actor's next available office.
 pub struct PromotionRequirement {
     /// Office to be awarded.
@@ -174,7 +174,7 @@ pub struct PromotionRequirement {
 }
 
 /// Current empire aggregates used to explain structural bloc support.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PoliticalProfile {
     /// Total Noble population, soft-capped in the support model.
     pub nobles: f64,
@@ -277,7 +277,7 @@ pub struct SupportReason {
 }
 
 /// One stable seat with shared confidence capacity, initially entirely neutral.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Senator {
     /// Stable chamber identity, never changed during a match.
     pub id: usize,
@@ -293,7 +293,7 @@ pub struct Senator {
     effects: Vec<SenatorEffect>,
 }
 /// A purchased, temporary effect on one senator; these can coexist with ongoing actions.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct SenatorEffect {
     player: PlayerId,
     action: SenatorAction,
@@ -306,7 +306,7 @@ impl Senator {
         self.arrangements.iter().find(|a| a.player == player).copied()
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// A non-stacking personal relationship that adds confidence each month.
 pub struct SenatorArrangement {
     /// Player who initiated the relationship.
@@ -319,7 +319,7 @@ pub struct SenatorArrangement {
     pub paid_at: Option<u32>,
 }
 /// All options available from an individual seat's action panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SenatorAction {
     /// A temporary personal appeal paid with Influence.
     Petition,
@@ -421,7 +421,7 @@ impl SenatorAction {
         }
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// Recorded outcome of a paid personal action.
 pub struct SenatorActionOutcome {
     /// Whether the misconduct was publicly exposed immediately.
@@ -430,7 +430,7 @@ pub struct SenatorActionOutcome {
     pub misconduct: Option<(super::espionage::ScandalKind, super::espionage::Severity)>,
 }
 /// A recurring bribe payment, retained as discoverable misconduct by the campaign.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct SenatorPaymentOutcome {
     /// Player who paid the bribe.
     pub player: PlayerId,
@@ -439,13 +439,13 @@ pub struct SenatorPaymentOutcome {
     /// Whether this month's payment was exposed.
     pub caught: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Outreach {
     player: PlayerId,
     bloc: Bloc,
     until: u32,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// Public scrutiny retained after its immediate confidence loss has been applied.
 pub struct Accusation {
     /// Player whose misconduct was exposed.
@@ -455,7 +455,7 @@ pub struct Accusation {
     /// Exclusive expiry month.
     pub until: u32,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// Office transitions for player-scoped notifications and victory handling.
 pub enum SenateEvent {
     /// Player paid Influence and met the support requirement.
@@ -465,7 +465,7 @@ pub enum SenateEvent {
 }
 
 /// The authoritative chamber. No bids, vote rolls, nominee or global ballot remains.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SenateState {
     /// Number of completed monthly loyalty reviews.
     pub month: u32,

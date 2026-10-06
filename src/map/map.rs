@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -319,6 +318,9 @@ fn balanced_starting_population(
 }
 
 impl ProvinceOwnership {
+    pub(crate) fn province_count(&self) -> usize {
+        atlas().provinces.len()
+    }
     /// Exposes stable map IDs and seed data without coupling the atlas to simulation types.
     pub(crate) fn campaign_seeds(&self) -> Vec<CampaignProvinceSeed> {
         atlas()
@@ -2881,10 +2883,9 @@ fn blend_color(a: egui::Color32, b: egui::Color32, amount: f32) -> egui::Color32
 }
 
 fn random_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|time| time.as_nanos() as u64)
-        .unwrap_or(0x9e37_79b9_7f4a_7c15)
+    // SystemTime is unsupported on wasm32-unknown-unknown and panics at startup.
+    // A nonzero random seed also keeps the map's xorshift generator out of its zero state.
+    rand::random::<u64>().max(1)
 }
 
 fn next_random(random: &mut u64) -> f32 {

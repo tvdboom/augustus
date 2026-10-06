@@ -87,6 +87,7 @@ pub(in crate::app) fn draw_end_game(
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
+    mut online: Option<ResMut<online::OnlineClient>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -157,7 +158,11 @@ pub(in crate::app) fn draw_end_game(
                     &audio,
                     &assets,
                 ) {
-                    next.set(AppState::MainMenu);
+                    if let Some(client) = online.as_mut().filter(|c| c.record.is_some()) {
+                        client.leave();
+                    } else {
+                        next.set(AppState::MainMenu);
+                    }
                 }
             });
         });

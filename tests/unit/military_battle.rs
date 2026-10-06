@@ -124,9 +124,13 @@ fn live_battle_card_shows_current_state_and_stays_open_without_a_result_strip() 
             continue;
         }
         let labels = text(&output);
-        for expected in ["Battle of Aquitania", "Player 1", "Player 2", "Retreat"] {
+        for expected in ["Battle of Aquitania", "Player 1", "Player 2"] {
             assert!(labels.iter().any(|s| s == expected), "Missing {expected}: {labels:?}");
         }
+        assert!(
+            !labels.iter().any(|s| s == "Retreat"),
+            "Retreat uses an icon without a text label"
+        );
     }
     world.battles[0].advance_month(&world.config);
     let (output, _) = render(&ctx, &world, &economy, 0, egui::vec2(1600., 900.), 0.8, vec![]);
@@ -321,6 +325,7 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
         })
         .collect();
     let targets = [
+        (egui::pos2(panel.right() - 162., panel.top() + 67.), "Retreat".to_owned()),
         (
             egui::pos2(panel.right() - 128., panel.top() + 67.),
             format!("Current die: {}", round.dice[0]),
@@ -397,37 +402,44 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
 
 #[test]
 fn circular_close_dismisses_the_battle_and_retreat_preserves_eligibility() {
-    let (mut world, economy, id) = fixture(ForceOwner::Player(1));
-    let ctx = context();
-    open_battle_panel(&ctx, id, 0);
-    let size = egui::vec2(1600., 900.);
-    render(&ctx, &world, &economy, 0, size, 0.1, vec![]);
-    let (output, _) = render(&ctx, &world, &economy, 0, size, 0.4, vec![]);
-    let retreat = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(t) if t.galley.job.text == "Retreat" => {
-                Some(t.pos + t.galley.size() / 2.)
-            },
-            _ => None,
-        })
-        .unwrap();
-    render(&ctx, &world, &economy, 0, size, 0.6, pointer(retreat, true));
-    let (_, action) = render(&ctx, &world, &economy, 0, size, 0.8, pointer(retreat, false));
-    assert!(action.is_none(), "Retreat stays disabled before a completed combat month");
-    world.battles[0].months = world.config.minimum_retreat_months;
-    render(&ctx, &world, &economy, 0, size, 1., vec![]);
-    render(&ctx, &world, &economy, 0, size, 1.2, pointer(retreat, true));
-    let (_, action) = render(&ctx, &world, &economy, 0, size, 1.4, pointer(retreat, false));
-    assert!(
-        matches!(action, Some((0, MilitaryUiAction::Retreat { battle, attacker: true })) if battle == id)
-    );
-    let (panel, scale) = panel_rect(ctx.content_rect());
-    let close = egui::pos2(panel.right() - 21. * scale, panel.top() + 21. * scale);
-    render(&ctx, &world, &economy, 0, size, 1.6, pointer(close, true));
-    render(&ctx, &world, &economy, 0, size, 1.8, pointer(close, false));
-    assert!(selected_battle(&ctx).is_none());
+    for player in [0, 1] {
+        let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+        let ctx = context();
+        open_battle_panel(&ctx, id, player);
+        let size = egui::vec2(1600., 900.);
+        render(&ctx, &world, &economy, player, size, 0.1, vec![]);
+        let (output, _) = render(&ctx, &world, &economy, player, size, 0.4, vec![]);
+        let dice = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r) if r.fill == egui::Color32::from_rgb(244, 224, 185) => {
+                    Some(r.rect)
+                },
+                _ => None,
+            })
+            .nth(player)
+            .unwrap();
+        let retreat = dice.center() - egui::vec2(34., 0.);
+        assert!(!text(&output).iter().any(|s| s == "Retreat"));
+        render(&ctx, &world, &economy, player, size, 0.6, pointer(retreat, true));
+        let (_, action) =
+            render(&ctx, &world, &economy, player, size, 0.8, pointer(retreat, false));
+        assert!(action.is_none(), "Retreat stays disabled before a completed combat month");
+        world.battles[0].months = world.config.minimum_retreat_months;
+        render(&ctx, &world, &economy, player, size, 1., vec![]);
+        render(&ctx, &world, &economy, player, size, 1.2, pointer(retreat, true));
+        let (_, action) =
+            render(&ctx, &world, &economy, player, size, 1.4, pointer(retreat, false));
+        assert!(
+            matches!(action, Some((0, MilitaryUiAction::Retreat { battle, attacker })) if battle == id && attacker == (player == 0))
+        );
+        let (panel, scale) = panel_rect(ctx.content_rect());
+        let close = egui::pos2(panel.right() - 21. * scale, panel.top() + 21. * scale);
+        render(&ctx, &world, &economy, player, size, 1.6, pointer(close, true));
+        render(&ctx, &world, &economy, player, size, 1.8, pointer(close, false));
+        assert!(selected_battle(&ctx).is_none());
+    }
 }
 
 #[test]

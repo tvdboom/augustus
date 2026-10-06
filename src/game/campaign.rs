@@ -17,7 +17,7 @@ mod military_integration_tests;
 mod integration_tests;
 
 /// Campaign authority; UI/HUD and map ownership are projections of these rules.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Campaign {
     pub active: bool,
     pub governance: Vec<Governance>,
@@ -35,18 +35,22 @@ pub(crate) struct Campaign {
     pub npc_wars: Vec<Vec<bool>>,
     pub invitations: Vec<Vec<bool>>,
     /// Province-specific access overrides keyed by province, host and guest.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub province_access: std::collections::BTreeMap<(usize, usize, usize), bool>,
     /// Explicit coercive entry into independent provinces, without declaring war.
     pub military_pressure: std::collections::BTreeSet<(usize, usize)>,
     /// A player loses permanently when their last directly owned province is lost.
     pub defeated: Vec<bool>,
     pub profiles: Vec<PoliticalProfile>,
+    #[serde(skip)]
     pub messages: Vec<(String, Option<usize>)>,
     pub notifications: super::campaign_notifications::CampaignNotifications,
     pub recent_victories: Vec<f64>,
     /// Last use year for each actor and political action (bribe or insult).
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub diplomacy_used: std::collections::BTreeMap<(usize, bool), u32>,
     /// Last use month for each actor and nationwide civic event.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub event_used: std::collections::BTreeMap<(usize, super::campaign_events::CivicEvent), u32>,
     pub diplomacy_rng: PoliticalRng,
 }

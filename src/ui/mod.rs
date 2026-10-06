@@ -35,6 +35,8 @@ pub(super) mod celebration;
 pub(super) mod city_panel;
 #[path = "coin_panel.rs"]
 pub(super) mod coin_panel;
+#[path = "error_toasts.rs"]
+pub(super) mod error_toasts;
 #[path = "flow_panel.rs"]
 pub(super) mod flow_panel;
 #[path = "governance_panel.rs"]

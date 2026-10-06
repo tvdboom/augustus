@@ -4,7 +4,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Universally available tactics; each counters two, loses to two, and is neutral to one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum CombatTactic {
     /// Direct charge against a mobile line.
@@ -44,7 +44,7 @@ impl CombatTactic {
 }
 
 /// Saved preferences, snapshotted for movement and locked during a battle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BattlePlan {
     /// Preferred center type.
     pub primary_unit_type: UnitType,
@@ -86,7 +86,7 @@ impl BattlePlan {
 }
 
 /// Front and support slots contain stable unit identities, never duplicate units.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Formation {
     /// Left to right front row.
     pub front: Vec<Option<UnitId>>,

@@ -1,6 +1,6 @@
 //! Empire-wide edicts for the local monthly economy.
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EdictLevel {
     Low,
     #[default]
@@ -8,7 +8,7 @@ pub(crate) enum EdictLevel {
     High,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Governance {
     pub food_rations: EdictLevel,
     pub slave_labor: EdictLevel,

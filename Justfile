@@ -58,6 +58,7 @@ ci: fmt-check lint assets test sql-check assets-check check-wasm packaging-check
 
 # Verify the lobby schema against a disposable PostgreSQL database.
 sql-check:
+    cargo test --lib app::online::tests::sql_fixtures_and_delta_budget -j{{ jobs }}
     {{ npm_command }} install --prefix target/sql-verification --no-save --package-lock=false --ignore-scripts @electric-sql/pglite@0.5.8
     node tests/sql/verify-schema.mjs
 

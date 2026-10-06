@@ -167,6 +167,10 @@ impl Toast {
 pub(in crate::app) struct ToastQueue(VecDeque<Toast>, [bool; 3], Option<usize>);
 
 impl ToastQueue {
+    pub(in crate::app) fn request_error_sound(&mut self) {
+        self.1[ToastLevel::Error as usize] = true;
+    }
+
     /// Clear the previous viewer's toasts before delivering the new viewer's notices.
     pub(in crate::app) fn set_player(&mut self, player: usize) {
         if self.2 != Some(player) {
@@ -325,10 +329,7 @@ pub(in crate::app) fn watch_warnings(
     mut watch: ResMut<WarningWatch>,
     mut toasts: ResMut<ToastQueue>,
 ) {
-    if *state.get() != AppState::Map
-        || *game != ActiveGame::LocalPractice
-        || practice.players.is_empty()
-    {
+    if *state.get() != AppState::Map || !game.is_campaign() || practice.players.is_empty() {
         return;
     }
     let player = practice.active_player.min(practice.players.len() - 1);
@@ -344,7 +345,7 @@ pub(in crate::app) fn advance(
     game: Res<ActiveGame>,
     mut toasts: ResMut<ToastQueue>,
 ) {
-    if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice {
+    if *state.get() != AppState::Map || !game.is_campaign() {
         return;
     }
     for toast in &mut toasts.0 {
@@ -371,7 +372,7 @@ pub(in crate::app) fn draw(
 ) {
     if terminal.spectating
         || *state.get() != AppState::Map
-        || *game != ActiveGame::LocalPractice
+        || !game.is_campaign()
         || toasts.0.is_empty()
     {
         return;
@@ -383,12 +384,13 @@ pub(in crate::app) fn draw(
     let scale = viewport_ui_scale(viewport.size());
     // Align with the right edge, below the settings and volume controls.
     let right_inset = 12.0 * scale;
+    let top = super::error_toasts::campaign_toast_top(context, scale);
     let max_width = (viewport.width() - right_inset - 28.0 * scale).min(420.0 * scale);
     let mut clicked = None;
     let colors: Vec<_> =
         practice.players.iter().map(|p| super::PLAYER_COLORS[p.color_index]).collect();
     egui::Area::new(egui::Id::new("augustus_toasts"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-right_inset, 76.0 * scale))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-right_inset, top))
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(context, |ui| {

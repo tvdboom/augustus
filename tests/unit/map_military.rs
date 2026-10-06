@@ -115,12 +115,12 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
             ..Default::default()
         });
         let fraction = movement_visual_progress(ctx, order);
-        let army = start.lerp(bend, fraction);
+        let travelled = fraction * start.distance(bend);
         let mut arrows = vec![];
         paint_march_arrows(
             &mut arrows,
-            &[army, bend, end],
-            fraction * start.distance(bend) * (MARCH_ARROW_FLOW - 1.),
+            &[start, bend, end],
+            travelled,
             48.,
             egui::Color32::from_rgb(213, 179, 119),
         );
@@ -152,13 +152,18 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
                 assert_eq!(path.fill, egui::Color32::TRANSPARENT);
                 let tip = path.points[1];
                 if tip.y == start.y {
-                    assert!(tip.x >= army.x && tip.x <= bend.x);
+                    assert!(tip.x >= start.x && tip.x <= bend.x);
                     assert!(path.points[0].x < tip.x && path.points[2].x < tip.x);
                 } else {
                     assert_eq!(tip.x, end.x);
                     assert!(tip.y > bend.y && tip.y <= end.y);
                     assert!(path.points[0].y < tip.y && path.points[2].y < tip.y);
                 }
+                let egui::epaint::ColorMode::Solid(ink) = path.stroke.color else {
+                    panic!("March arrows must use a solid color");
+                };
+                let behind = tip.y == start.y && tip.x - start.x <= travelled;
+                assert_eq!(ink.r() == ink.g() && ink.g() == ink.b(), behind);
             }
         }
         assert!(tips.iter().any(|tip| tip.y > bend.y), "Arrows show the rest of the route");
@@ -173,8 +178,9 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
     assert_eq!(slow_start, fast_start);
     let slow_moving = draw(&slow_ctx, &slow, 0.05, 0.05, "march-arrows-slow-moving");
     let fast_moving = draw(&fast_ctx, &fast, 0.05, 0.05, "march-arrows-fast-moving");
-    let slow_travel = slow_moving[0].x - slow_start[0].x;
-    let fast_travel = fast_moving[0].x - fast_start[0].x;
+    // A new chevron fades in at the departure when the pattern wraps.
+    let slow_travel = (slow_moving[0].x - slow_start[0].x).rem_euclid(44.);
+    let fast_travel = (fast_moving[0].x - fast_start[0].x).rem_euclid(44.);
     assert!(slow_travel > 0. && fast_travel > slow_travel);
     assert!(
         (slow_travel - 0.05 / slow.required_progress.ceil() as f32 * start.distance(bend) * 0.25)
@@ -183,6 +189,7 @@ fn march_arrows_flow_at_army_speed_follow_bends_and_freeze_with_the_clock() {
         "Chevrons must visibly drift at one quarter of the army's speed"
     );
     assert_eq!(draw(&slow_ctx, &slow, 0.05, 10., "march-arrows-paused"), slow_moving);
+    draw(&fast_ctx, &fast, 0.8, 10., "march-arrows-gray-trail");
 }
 
 #[test]
@@ -309,7 +316,18 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
     ];
     graph[origin].neighbors.push(destination);
     let mut capture = crate::egui_capture::Capture::default();
-    for fighting in [false, true] {
+    for (fighting, offscreen) in [(false, false), (true, false), (false, true), (true, true)] {
+        let projection = if offscreen {
+            Projection {
+                origin: viewport.center(),
+                scale: 200.,
+                center: a,
+            }
+        } else {
+            Projection {
+                ..projection
+            }
+        };
         let ctx = egui::Context::default();
         let mut world = MilitaryWorld::new(atlas.provinces.len());
         let own = ForceOwner::Player(0);
@@ -338,13 +356,23 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
             })
             .unwrap();
         world.movements[0].attack_target = Some(enemy);
+        world.movements[0].required_progress = 1.;
         let ownership = ProvinceOwnership {
             player_colors: vec![egui::Color32::from_rgb(210, 44, 60)],
             ..Default::default()
         };
         let mut anchors = Anchors::default();
         let mut previous: Option<(egui::Pos2, Vec<f32>)> = None;
-        for (frame, fraction) in [0., 0.05].into_iter().enumerate() {
+        let mut departure = None;
+        for (frame, fraction) in [0., 0.05, 0.5, 0.9, 0.99999]
+            .into_iter()
+            .take(if offscreen {
+                1
+            } else {
+                5
+            })
+            .enumerate()
+        {
             preview_fraction(&ctx, fraction);
             ctx.begin_pass(egui::RawInput {
                 screen_rect: Some(viewport),
@@ -390,6 +418,9 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
                 .unwrap()
                 .rect
                 .center();
+            if offscreen {
+                assert!(!viewport.contains(enemy_center), "The target must be outside the camera");
+            }
             let generic_endpoint = projection.point(anchors.positions[&(destination, own, 0)]);
             assert!(
                 generic_endpoint.distance(enemy_center) > 1.,
@@ -399,12 +430,19 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
             capture.frame(
                 &ctx,
                 &output,
-                match (fighting, frame) {
-                    (false, 0) => "march-attack-layered-stationary",
-                    (false, _) => "march-attack-layered-stationary-moving",
-                    (true, 0) => "march-attack-layered-battle",
-                    (true, _) => "march-attack-layered-battle-moving",
-                },
+                &format!(
+                    "march-attack-{}-{}-{frame}",
+                    if fighting {
+                        "battle"
+                    } else {
+                        "stationary"
+                    },
+                    if offscreen {
+                        "offscreen"
+                    } else {
+                        "visible"
+                    },
+                ),
             );
             output.textures_delta.clear();
             let egui::Shape::Vec(arrows) = &output.shapes[underlay.0].shape else {
@@ -438,17 +476,176 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
                 distances.push(tip.distance(enemy_center));
             }
             let army = hits.iter().find(|hit| hit.movement.is_some()).unwrap().rect.center();
+            let start = *departure.get_or_insert(army);
+            assert!(
+                army.distance(start.lerp(enemy_center, fraction)) < 0.01,
+                "Attacking units must follow the same straight line as the arrow, without overshooting"
+            );
+            assert!(
+                projection.point(anchors.marches[&world.movements[0].id].points[0]).distance(start)
+                    < 0.01,
+                "The route must keep its original departure point"
+            );
+            for shape in arrows {
+                let egui::Shape::Path(chevron) = shape else {
+                    unreachable!()
+                };
+                let egui::epaint::ColorMode::Solid(ink) = chevron.stroke.color else {
+                    unreachable!()
+                };
+                let behind = chevron.points[1].distance(start) <= army.distance(start);
+                assert_eq!(ink.r() == ink.g() && ink.g() == ink.b(), behind);
+            }
             if let Some((previous_army, previous_distances)) = previous {
                 let expected = previous_distances[previous_distances.len() / 2]
                     - previous_army.distance(army) * 0.25;
+                let spacing = 44.;
                 assert!(
-                    distances.iter().any(|distance| (distance - expected).abs() < 0.01),
+                    distances.iter().any(|distance| {
+                        let offset = (distance - expected).rem_euclid(spacing);
+                        offset < 0.01 || spacing - offset < 0.01
+                    }),
                     "Attack chevrons must advance toward the fighter at one quarter of army speed"
                 );
             }
             previous = Some((army, distances));
         }
     }
+}
+
+#[test]
+fn march_keeps_departure_and_gray_completed_legs_across_months_and_camera_changes() {
+    use crate::game::military::{MilitaryAccess, MilitaryProvince, MilitaryTerrain};
+    let atlas = atlas();
+    let provinces: Vec<_> = ["Galatia", "Cilicia", "Syria"]
+        .iter()
+        .map(|name| atlas.provinces.iter().position(|p| p.name == *name).unwrap())
+        .collect();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400., 1000.));
+    let mut graph = vec![
+        MilitaryProvince {
+            terrain: MilitaryTerrain::Plains,
+            area: 100.,
+            road_level: 0,
+            neighbors: vec![],
+        };
+        atlas.provinces.len()
+    ];
+    for edge in provinces.windows(2) {
+        graph[edge[0]].neighbors.push(edge[1]);
+    }
+    let ctx = egui::Context::default();
+    let own = ForceOwner::Player(0);
+    let ownership = ProvinceOwnership {
+        player_colors: vec![egui::Color32::from_rgb(210, 44, 60)],
+        ..Default::default()
+    };
+    let mut world = MilitaryWorld::new(atlas.provinces.len());
+    world.config.movement_scale = 0.1;
+    let unit = world.seed_unit(provinces[0], own, UnitType::HeavyInfantry).unwrap();
+    let mut anchors = Anchors::default();
+    let mut capture = crate::egui_capture::Capture::default();
+    let mut draw = |world: &MilitaryWorld, fraction, zoom, pan, name| {
+        preview_fraction(&ctx, fraction);
+        let projection = Projection {
+            origin: viewport.center() + pan,
+            scale: 18. * zoom,
+            center: atlas.provinces[provinces[1]].visual_center,
+        };
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(viewport),
+            ..Default::default()
+        });
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let underlay = painter.add(egui::Shape::Noop);
+        paint(
+            &painter,
+            Some(underlay),
+            world,
+            &ownership,
+            &projection,
+            zoom,
+            0.,
+            viewport,
+            &[],
+            &[],
+            &[],
+            &mut anchors,
+        );
+        let hits = ctx
+            .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+            .unwrap();
+        let mut output = ctx.end_pass();
+        capture.frame(&ctx, &output, name);
+        output.textures_delta.clear();
+        if let Some(order) = world.movements.first() {
+            let path = &anchors.marches[&order.id];
+            assert_eq!(path.provinces, provinces, "Completed legs must stay in the route");
+            if zoom <= CITY_BLEND_START {
+                assert!(hits.is_empty(), "Hidden troops must not create clickable targets");
+                return [0., 0.];
+            }
+            let egui::Shape::Vec(arrows) = &output.shapes[underlay.0].shape else {
+                panic!("Expected the route underlay");
+            };
+            if order.origin == provinces[1] {
+                let departure = projection.point(path.points[0]);
+                let bend = projection.point(path.points[1]);
+                let mut gray_count = 0;
+                let mut colored_count = 0;
+                for shape in arrows {
+                    let egui::Shape::Path(chevron) = shape else {
+                        unreachable!()
+                    };
+                    let egui::epaint::ColorMode::Solid(ink) = chevron.stroke.color else {
+                        unreachable!()
+                    };
+                    if chevron.points[1].distance(departure) < departure.distance(bend) {
+                        assert_eq!(ink.r(), ink.g());
+                        assert_eq!(ink.g(), ink.b());
+                        gray_count += 1;
+                    } else if ink.r() != ink.g() {
+                        colored_count += 1;
+                    }
+                }
+                assert!(gray_count > 0, "Completed legs need visible gray arrows");
+                assert!(colored_count > 0, "The remaining leg needs colored arrows");
+            }
+        }
+        let army = hits.iter().find(|hit| hit.owner == own).unwrap().rect.center();
+        projection.inverse(army)
+    };
+    let departure = draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-stationary");
+    world
+        .order_movement_route(provinces[0], own, &[unit], None, &provinces[1..], &graph, |_, _| {
+            MilitaryAccess::Peaceful
+        })
+        .unwrap();
+    let moving = draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-departure");
+    assert!(egui::vec2(moving[0] - departure[0], moving[1] - departure[1]).length() < 1e-5);
+    let arriving = draw(&world, 0.99999, 6., egui::Vec2::ZERO, "march-history-first-arrival");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    let next = draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-second-leg");
+    assert!(egui::vec2(next[0] - arriving[0], next[1] - arriving[1]).length() < 0.0001);
+    let paused = draw(&world, 0., 8., egui::vec2(-80., 40.), "march-history-camera");
+    assert!(egui::vec2(paused[0] - next[0], paused[1] - next[1]).length() < 1e-5);
+    draw(&world, 0.4, 8., egui::vec2(-80., 40.), "march-history-moving");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-arrived");
+    let unit = world.seed_unit(provinces[0], own, UnitType::HeavyInfantry).unwrap();
+    draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-next-departure");
+    world
+        .order_movement_route(provinces[0], own, &[unit], None, &provinces[1..], &graph, |_, _| {
+            MilitaryAccess::Peaceful
+        })
+        .unwrap();
+    draw(&world, 0., 1., egui::Vec2::ZERO, "march-history-hidden-departure");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    draw(&world, 0., 1., egui::Vec2::ZERO, "march-history-hidden-second-leg");
+    draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-revealed-second-leg");
+    world.advance_movement(&graph, |_, _| MilitaryAccess::Peaceful);
+    draw(&world, 0., 6., egui::Vec2::ZERO, "march-history-hidden-arrived");
+    assert!(anchors.marches.is_empty(), "Finished orders must release their route history");
 }
 
 #[test]

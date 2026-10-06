@@ -44,7 +44,7 @@ pub(in crate::app) fn draw(
     terminal: Res<TerminalPresentation>,
     mut celebration: ResMut<EventCelebration>,
 ) {
-    if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice || terminal.spectating {
+    if *state.get() != AppState::Map || !game.is_campaign() || terminal.spectating {
         celebration.started_at = None;
         return;
     }

@@ -12,7 +12,7 @@ use crate::game::politics::PoliticalRank;
 use std::collections::BTreeMap;
 
 /// How prominently a campaign event should be displayed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NoticeSeverity {
     /// An opportunity or newly acquired information.
     Info,
@@ -21,7 +21,7 @@ pub(crate) enum NoticeSeverity {
 }
 
 /// Domain event identity used for aggregation, auditing and future networking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NoticeKind {
     /// A player paid Influence with sufficient loyal senators to gain an office.
     SenateOfficeAppointed,
@@ -104,7 +104,7 @@ pub(crate) enum NoticeKind {
 }
 
 /// A reusable navigation intention; the renderer resolves canonical map coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NoticeAction {
     /// Open the persistent Senate chamber and current office requirements.
     OpenSenate,
@@ -124,7 +124,7 @@ pub(crate) enum NoticeAction {
 }
 
 /// A complete player-scoped event, retained after its transient toast disappears.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CampaignNotice {
     /// Stable history entry id.
     pub id: u64,
@@ -153,11 +153,13 @@ pub(crate) struct CampaignNotice {
 }
 
 /// Notification storage does not mutate gameplay and does not pause monthly resolution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CampaignNotifications {
+    #[serde(skip)]
     pending: Vec<CampaignNotice>,
     history: Vec<CampaignNotice>,
     /// Preserve scandal subjects for history colors after evidence is used or expires.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     scandal_targets: BTreeMap<u64, ScandalTarget>,
     next_id: u64,
     foreign_happiness: Vec<(usize, usize, usize, f64)>,
@@ -277,6 +279,9 @@ impl CampaignNotifications {
         notice.id = self.next_id;
         self.pending.push(notice.clone());
         self.history.push(notice);
+        if self.history.len() > 512 {
+            self.history.remove(0);
+        }
         if self.pending.len() > 200 {
             self.pending.remove(0);
         }
@@ -311,7 +316,7 @@ impl CampaignNotifications {
 }
 
 /// Previous final values needed for genuine threshold crossings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NotificationSnapshot {
     politics: Vec<(PoliticalState, Vec<f64>)>,
     controls: Vec<Vec<f64>>,

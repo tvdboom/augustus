@@ -18,7 +18,7 @@ pub(in crate::app) fn draw_map_hud(
     state: Res<State<AppState>>,
     game: Res<ActiveGame>,
     mut practice: ResMut<LocalPractice>,
-    lobby: Res<LobbyPreview>,
+    online_params: (Res<LobbyPreview>, Option<Res<online::OnlineClient>>),
     mut paused: ResMut<GamePaused>,
     mut clock: ResMut<GameClock>,
     mut next: ResMut<NextState<AppState>>,
@@ -26,6 +26,7 @@ pub(in crate::app) fn draw_map_hud(
     audio: Res<Audio>,
     assets: Res<AssetServer>,
 ) {
+    let (lobby, online) = online_params;
     panels.close_click.0 = false;
     if panels.terminal.as_ref().is_some_and(|terminal| terminal.spectating) {
         return;
@@ -39,7 +40,7 @@ pub(in crate::app) fn draw_map_hud(
     } else {
         practice.color_index.min(PLAYER_COLORS.len() - 1)
     };
-    if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
+    if game.is_campaign() && !practice.players.is_empty() {
         practice.active_player = practice.active_player.min(practice.players.len() - 1);
         color_index = practice.players[practice.active_player].color_index;
     }
@@ -62,7 +63,9 @@ pub(in crate::app) fn draw_map_hud(
             play_click(&sound, &audio, &assets);
         }
         if map_resource_strip_visible(context.content_rect(), scale) {
-            let minus_available = clock.speed_step > MIN_SPEED_STEP;
+            let controls_time =
+                *game != ActiveGame::Online || online.as_ref().is_some_and(|c| c.host());
+            let minus_available = controls_time && clock.speed_step > MIN_SPEED_STEP;
             let minus = map_date_hitbox(context, scale, "minus", 24.0, 24.0, minus_available);
             speed_button_state[0] = (
                 minus_available && minus.hovered(),
@@ -76,11 +79,11 @@ pub(in crate::app) fn draw_map_hud(
                     play_click(&sound, &audio, &assets);
                 }
             }
-            if map_date_hitbox(context, scale, "date", 51.0, 108.0, true).clicked() {
+            if map_date_hitbox(context, scale, "date", 51.0, 108.0, controls_time).clicked() {
                 paused.0 = !paused.0;
                 play_click(&sound, &audio, &assets);
             }
-            let plus_available = clock.speed_step < MAX_SPEED_STEP;
+            let plus_available = controls_time && clock.speed_step < MAX_SPEED_STEP;
             let plus = map_date_hitbox(context, scale, "plus", 162.0, 24.0, plus_available);
             speed_button_state[1] = (
                 plus_available && plus.hovered(),
@@ -152,7 +155,7 @@ pub(in crate::app) fn draw_map_hud(
         play_click(&sound, &audio, &assets);
     }
     volume_popover(&responses.1, &mut sound);
-    if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
+    if game.is_campaign() && !practice.players.is_empty() {
         let RankArtTextures {
             ranks: rank_textures,
             scepter: scepter_texture,
@@ -161,7 +164,9 @@ pub(in crate::app) fn draw_map_hud(
         let scepter = scepter_texture.get_or_insert_with(|| load_rank_scepter(context));
         let active_rank = practice.players[practice.active_player].rank.min(RANKS.len() - 1);
         draw_rank_ladder(context, scale, active_rank, textures, scepter);
-        draw_practice_players(context, scale, &mut practice, textures, &sound, &audio, &assets);
+        if *game == ActiveGame::LocalPractice {
+            draw_practice_players(context, scale, &mut practice, textures, &sound, &audio, &assets);
+        }
     }
 }
 
@@ -215,7 +220,7 @@ pub(in crate::app) fn draw_governance_panel(
     mut map_view: ResMut<MapView>,
     terminal: Res<TerminalPresentation>,
 ) {
-    if terminal.spectating || *state.get() != AppState::Map || *game != ActiveGame::LocalPractice {
+    if terminal.spectating || *state.get() != AppState::Map || !game.is_campaign() {
         panel_local.close_deadline = None;
         return;
     }
@@ -457,7 +462,7 @@ pub(in crate::app) fn draw_province_panel(
     if campaign.active {
         return;
     }
-    if *state.get() != AppState::Map || *game != ActiveGame::LocalPractice {
+    if *state.get() != AppState::Map || !game.is_campaign() {
         *close_deadline = None;
         return;
     }

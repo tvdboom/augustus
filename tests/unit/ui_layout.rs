@@ -25,6 +25,7 @@ fn spectator_uses_regular_province_sections_and_cannot_change_policies() {
         .insert_resource(LocalPractice {
             players: (0..2)
                 .map(|color_index| PracticePlayer {
+                    name: format!("Player {}", color_index + 1),
                     color_index,
                     rank: 0,
                     main_province: Some(color_index),

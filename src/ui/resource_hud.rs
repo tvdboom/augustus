@@ -309,13 +309,13 @@ pub(in crate::app) fn draw_map_resources(
         egui::Id::new("augustus_map_edge_frame"),
     ));
     let date_left = map_resource_strip_right(screen, scale) - MAP_DATE_SECTION_WIDTH;
-    let player = if *game == ActiveGame::LocalPractice {
+    let player = if game.is_campaign() {
         practice.active_player
     } else {
         0
     };
     let mut displayed = resources.for_player(player);
-    if *game == ActiveGame::LocalPractice && !campaign.active {
+    if game.is_campaign() && !campaign.active {
         for (resource, production) in
             displayed[..3].iter_mut().zip(ownership.net_production_for(player))
         {
@@ -330,11 +330,11 @@ pub(in crate::app) fn draw_map_resources(
             resources.famine_months.get(player).copied().unwrap_or(0),
         );
     }
-    let storage = (*game == ActiveGame::LocalPractice && campaign.active)
+    let storage = (game.is_campaign() && campaign.active)
         .then(|| campaign.economy.players.get(player).map(|wallet| &wallet.storage))
         .flatten();
     paint_hud_resources(&painter, screen.min, scale, date_left, &displayed, storage, icons);
-    if *game == ActiveGame::LocalPractice {
+    if game.is_campaign() {
         let pop_icons = pop_textures.get_or_insert_with(|| {
             std::array::from_fn(|index| load_pop_class_icon(context, index))
         });

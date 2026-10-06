@@ -6,7 +6,7 @@ use super::{
 };
 
 /// Geographic capacity category. Marsh preserves the existing map's extra type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Terrain {
     /// Productive agricultural land.
     Farmland,
@@ -25,7 +25,7 @@ pub enum Terrain {
 }
 
 /// Monthly ration policy; values index the matching configuration array.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FoodPolicy {
     /// Consume less food with lower happiness and higher mortality.
     Low,
@@ -37,7 +37,7 @@ pub enum FoodPolicy {
 }
 
 /// Monthly slave productivity and wellbeing tradeoff.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SlaveLabor {
     /// Lighter work, higher happiness, lower mortality.
     Light,
@@ -49,7 +49,7 @@ pub enum SlaveLabor {
 }
 
 /// Province policy affecting automatic migration, never a manual pop transfer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrationPolicy {
     /// More attractive to migrants.
     Encourage,
@@ -63,7 +63,7 @@ pub enum MigrationPolicy {
 }
 
 /// Labor allocation weights; every worker contributes to only one sector.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResourceFocus {
     /// Weight by geographic potential alone.
     #[default]
@@ -77,7 +77,7 @@ pub enum ResourceFocus {
 }
 
 /// Local construction speed versus productive workforce allocation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConstructionPace {
     /// Fewer workers and slower completion.
     Slow,
@@ -89,7 +89,7 @@ pub enum ConstructionPace {
 }
 
 /// Monthly local Coin budget for free-class wellbeing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CivicSpending {
     /// No spending, with lower free-class happiness.
     Frugal,
@@ -101,7 +101,7 @@ pub enum CivicSpending {
 }
 
 /// Recruitment speed, expense and local happiness while a cohort is being raised.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecruitmentEffort {
     /// Slower recruitment with less pressure on residents.
     Low,
@@ -113,7 +113,7 @@ pub enum RecruitmentEffort {
 }
 
 /// Local conversion between slaves and plebeians, with class happiness tradeoffs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ManumissionPolicy {
     /// Enslave a share of plebeians, reducing plebeian happiness.
     Enslave,
@@ -125,7 +125,7 @@ pub enum ManumissionPolicy {
 }
 
 /// Nationwide rations/labor and six province-local policy values.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProvincePolicies {
     /// Civilian food rations.
     pub food: FoodPolicy,
@@ -146,7 +146,7 @@ pub struct ProvincePolicies {
 }
 
 /// Global player balances. Physical storage is never attached to owned provinces.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlayerEconomy {
     /// Food, Metal, Stone currently stored.
     pub resources: [f64; 3],
@@ -188,7 +188,7 @@ impl PlayerEconomy {
 }
 
 /// Economic state attached to a map province, including independent NPCs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EconomicProvince {
     /// Display name supplied by the canonical map.
     pub name: String,
@@ -368,7 +368,7 @@ impl EconomicProvince {
 }
 
 /// External military/diplomatic facts consumed during this economic month.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonthlyInputs {
     /// Military food demand charged to each player: all hosted armies plus their marching troops.
     pub army_food: Vec<f64>,
@@ -394,7 +394,7 @@ impl MonthlyInputs {
 }
 
 /// Food, population, and production explanations for a province's latest month.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProvinceMonth {
     /// Effective comfortable capacity; never a hard population cap.
     pub capacity: f64,
@@ -433,7 +433,7 @@ pub struct ProvinceMonth {
 }
 
 /// Semantic events for the shared toast system; no UI dependency in the economy.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum EconomyEvent {
     /// A province's normal building finished.
     BuildingCompleted {
@@ -480,7 +480,7 @@ pub enum EconomyEvent {
 }
 
 /// Month result exposed to HUD, notifications, military, and politics.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonthlyReport {
     /// New month number, starting at one.
     pub month: u32,
@@ -497,7 +497,7 @@ pub struct MonthlyReport {
 }
 
 /// Authoritative economic simulation, with no renderer, clock, or random dependency.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EconomyWorld {
     /// Centralized game balance constants.
     pub config: EconomyConfig,
@@ -515,6 +515,7 @@ pub struct EconomyWorld {
     pub last_report: MonthlyReport,
     pub(super) next_trade_id: u64,
     /// Per-turn one-time relation rewards, preventing split-deal relation farming.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub(super) one_time_relation_awarded: std::collections::BTreeMap<(usize, usize), f64>,
     /// This month's open-market Buy/Sell volume by player and resource.
     pub(super) open_market_volume: Vec<[[f64; 3]; 2]>,

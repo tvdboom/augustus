@@ -15,7 +15,7 @@ pub type PlayerId = usize;
 pub type ProvinceId = usize;
 
 /// The six-rank political ladder from Quaestor to Augustus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PoliticalRank {
     /// Initial office, retained from the existing game.
     #[default]
@@ -59,7 +59,7 @@ impl PoliticalRank {
 }
 
 /// Mutable political actor; coin and Influence mirror the authoritative economy.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PoliticalPlayer {
     /// Current office; bonuses do not stack with earlier offices.
     pub rank: PoliticalRank,
@@ -90,7 +90,7 @@ impl PoliticalPlayer {
 }
 
 /// The two spendable political currencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Currency {
     /// Economic wealth.
     Coin,
@@ -99,7 +99,7 @@ pub enum Currency {
 }
 
 /// User-facing reasons why a requested political action cannot proceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PoliticalError {
     /// Amount was negative, infinite, or not a number.
     InvalidAmount,
@@ -177,7 +177,7 @@ impl std::fmt::Display for PoliticalError {
 }
 
 /// Reproducible authoritative random stream; clients render the recorded outcomes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PoliticalRng(u64);
 
 impl PoliticalRng {

@@ -3,7 +3,7 @@
 use super::EconomyWorld;
 
 /// Which side of a resource/Coin exchange the player takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MarketSide {
     /// Pay Coin for physical resources.
     Buy,
@@ -12,7 +12,7 @@ pub enum MarketSide {
 }
 
 /// A live quote includes affordability and storage checks; quoting does not transfer anything.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OpenMarketQuote {
     /// Requested resource units.
     pub quantity: f64,

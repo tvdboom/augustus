@@ -9,7 +9,7 @@ pub(in crate::app) fn draw_menu(
     state: Res<State<AppState>>,
     mut next: ResMut<NextState<AppState>>,
     mut draft: ResMut<MenuDraft>,
-    mut lobby: ResMut<LobbyPreview>,
+    online_params: (ResMut<LobbyPreview>, ResMut<online::OnlineClient>),
     mut loading: ResMut<LoadingSequence>,
     mut game: ResMut<ActiveGame>,
     mut practice_setup_params: PracticeSetupParams,
@@ -20,6 +20,7 @@ pub(in crate::app) fn draw_menu(
     audio: Res<Audio>,
     assets: Res<AssetServer>,
 ) {
+    let (mut lobby, mut online) = online_params;
     let Ok(context) = contexts.ctx_mut() else {
         return;
     };
@@ -92,6 +93,8 @@ pub(in crate::app) fn draw_menu(
     let is_game_overlay = matches!(current, AppState::GameMenu | AppState::GameSettings);
     let (pivot, content_y) = if is_main {
         (egui::Align2::CENTER_TOP, main_menu_top(context, menu_size))
+    } else if is_game_overlay {
+        (egui::Align2::CENTER_CENTER, menu_size.y * 0.5)
     } else {
         let footer_space = if current == AppState::CreateGame {
             48.0
@@ -101,21 +104,41 @@ pub(in crate::app) fn draw_menu(
         (egui::Align2::CENTER_CENTER, (menu_size.y - footer_space).max(0.0) * 0.5)
     };
     let content_id = egui::Id::new(("augustus_menu_content", current));
-    set_menu_layer_scale(context, content_id, egui::Order::Middle, viewport.min, scale);
+    let content_order = if is_game_overlay {
+        egui::Order::Foreground
+    } else {
+        egui::Order::Middle
+    };
+    if is_game_overlay {
+        egui::Area::new(egui::Id::new("augustus_gameplay_input_blocker"))
+            .fixed_pos(viewport.min)
+            .constrain(false)
+            .order(egui::Order::Middle)
+            .show(context, |ui| {
+                ui.allocate_exact_size(viewport.size(), egui::Sense::click_and_drag());
+            });
+    }
+    set_menu_layer_scale(context, content_id, content_order, viewport.min, scale);
     egui::Area::new(content_id)
         .pivot(pivot)
         .fixed_pos(egui::pos2(menu_size.x * 0.5, content_y))
         .constrain(false)
-        .order(egui::Order::Middle)
+        .order(content_order)
         .show(context, |ui| {
             ui.set_clip_rect(logical_content_rect(ui));
             apply_menu_style(ui);
             ui.set_width(content_width);
             ui.vertical_centered(|ui| match current {
                 AppState::MainMenu => main_menu(ui, &mut next, &menu_audio, &audio, &assets),
-                AppState::CreateGame => {
-                    create_game(ui, &mut draft, &mut lobby, &mut next, &menu_audio, &audio, &assets)
-                },
+                AppState::CreateGame => create_game(
+                    ui,
+                    &mut draft,
+                    &mut online,
+                    &mut next,
+                    &menu_audio,
+                    &audio,
+                    &assets,
+                ),
                 AppState::PracticeSetup => practice_setup(
                     ui,
                     &mut practice_setup_params.practice,
@@ -128,23 +151,27 @@ pub(in crate::app) fn draw_menu(
                     &assets,
                 ),
                 AppState::JoinGame => {
-                    join_game(ui, &mut draft, &mut lobby, &mut next, &menu_audio, &audio, &assets)
+                    join_game(ui, &mut draft, &mut online, &mut next, &menu_audio, &audio, &assets)
                 },
-                AppState::ResumeGame => resume_game(ui, &mut next, &menu_audio, &audio, &assets),
-                AppState::Lobby => show_lobby(
+                AppState::ResumeGame => resume_game(
                     ui,
-                    &mut lobby,
+                    &mut draft,
+                    &mut online,
                     &mut next,
-                    &mut loading,
-                    &mut game,
                     &menu_audio,
                     &audio,
                     &assets,
                 ),
+                AppState::RecoverPlayer => recover_game(ui, &mut draft, &mut online, &mut next),
+                AppState::Lobby => {
+                    show_lobby(ui, &mut lobby, &mut online, &menu_audio, &audio, &assets)
+                },
                 AppState::Settings => {
                     settings_screen(ui, &mut menu_audio, &mut next, &audio, &assets)
                 },
-                AppState::GameMenu => game_menu(ui, *game, &mut next, &menu_audio, &audio, &assets),
+                AppState::GameMenu => {
+                    game_menu(ui, *game, &mut online, &mut next, &menu_audio, &audio, &assets)
+                },
                 AppState::GameSettings => {
                     game_settings_screen(ui, &mut menu_audio, &mut next, &audio, &assets)
                 },
@@ -152,6 +179,13 @@ pub(in crate::app) fn draw_menu(
                 AppState::Map | AppState::EmptyScreen | AppState::EndGame => {},
             });
         });
+
+    if context
+        .data_mut(|data| data.remove_temp::<bool>(egui::Id::new("augustus_menu_click")))
+        .unwrap_or(false)
+    {
+        play_click(&menu_audio, &audio, &assets);
+    }
 
     if is_main {
         let title = main_menu_title(context, menu_size);
@@ -171,22 +205,87 @@ pub(in crate::app) fn draw_menu(
     }
 
     if is_game_overlay {
+        if current == AppState::GameMenu {
+            draw_game_access_codes(context, &online);
+        }
         return;
     }
 
+    draw_menu_footer(context, viewport.min, menu_size, scale, &online, current, content_width);
+}
+
+pub(in crate::app) fn draw_menu_footer(
+    context: &egui::Context,
+    origin: egui::Pos2,
+    menu_size: egui::Vec2,
+    scale: f32,
+    online: &online::OnlineClient,
+    state: AppState,
+    content_width: f32,
+) {
     let footer_id = egui::Id::new("augustus_menu_footer");
-    set_menu_layer_scale(context, footer_id, egui::Order::Foreground, viewport.min, scale);
-    egui::Area::new(footer_id)
+    set_menu_layer_scale(context, footer_id, egui::Order::Foreground, origin, scale);
+    let footer = egui::Area::new(footer_id)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(egui::pos2(menu_size.x - 24.0, menu_size.y - 18.0))
         .constrain(false)
         .order(egui::Order::Foreground)
         .show(context, |ui| {
+            ui.set_clip_rect(logical_content_rect(ui));
             ui.set_min_width(220.0);
             ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                connection_status_badge(ui);
+                connection_status_badge(ui, online);
                 ui.label(egui::RichText::new("Created by Mavs").weak());
             });
+        });
+    if let Some(error) = online.error() {
+        let id = egui::Id::new("augustus_menu_error");
+        set_menu_layer_scale(context, id, egui::Order::Foreground, origin, scale);
+        egui::Area::new(id)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(egui::pos2(menu_size.x - 24.0, footer.response.rect.top() - 10.0))
+            .constrain(false)
+            .interactable(false)
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                ui.set_clip_rect(logical_content_rect(ui));
+                reference_menu_error_panel_width(
+                    ui,
+                    reference_menu_error_title(state),
+                    error,
+                    reference_menu_error_width(menu_size, content_width, state),
+                );
+            });
+    }
+}
+
+fn draw_game_access_codes(context: &egui::Context, online: &online::OnlineClient) {
+    let Some(record) = online.record.as_ref() else {
+        return;
+    };
+    let viewport = context.viewport_rect();
+    let scale = viewport_ui_scale(viewport.size());
+    let width = (viewport.width() / scale * 0.28)
+        .clamp(300.0, 360.0)
+        .min((viewport.width() / scale - 48.0).max(240.0));
+    let id = egui::Id::new("augustus_game_access_codes");
+    set_menu_layer_scale(
+        context,
+        id,
+        egui::Order::Foreground,
+        egui::pos2(viewport.left(), viewport.bottom()),
+        scale,
+    );
+    egui::Area::new(id)
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
+        .constrain(false)
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            ui.set_clip_rect(logical_content_rect(ui));
+            apply_menu_style(ui);
+            ui.set_width(width);
+            lobby_code_card(ui, "Game code", &record.code, true);
+            lobby_code_card(ui, "Recovery code", &record.recovery_code, false);
         });
 }
 
@@ -404,9 +503,20 @@ pub(in crate::app) fn main_menu_top(context: &egui::Context, viewport: egui::Vec
     (viewport.y * 0.365).min(viewport.y - 96.0 - actions_height).max(title_bottom + 24.0)
 }
 
-pub(in crate::app) fn connection_status_badge(ui: &mut egui::Ui) {
+pub(in crate::app) fn connection_status_badge(ui: &mut egui::Ui, online: &online::OnlineClient) {
     let label = ui.painter().layout_no_wrap(
-        "Offline · local preview".to_string(),
+        if online.connected && online.error().is_some() {
+            "Connected with issues"
+        } else if online.connected {
+            "Connected"
+        } else if online.busy() {
+            "Connecting…"
+        } else if online.record.is_some() {
+            "Reconnecting…"
+        } else {
+            "Offline"
+        }
+        .to_string(),
         egui::FontId::proportional(14.0),
         CREAM,
     );
@@ -423,7 +533,15 @@ pub(in crate::app) fn connection_status_badge(ui: &mut egui::Ui) {
     ui.painter().circle_filled(
         egui::pos2(rect.left() + 14.0, center_y),
         4.0,
-        egui::Color32::from_rgb(224, 116, 91),
+        if online.connected && online.error().is_none() {
+            egui::Color32::from_rgb(91, 214, 133)
+        } else if online.connected || online.record.is_some() {
+            egui::Color32::from_rgb(246, 193, 88)
+        } else if online.busy() {
+            egui::Color32::from_rgb(111, 190, 255)
+        } else {
+            egui::Color32::from_rgb(255, 107, 119)
+        },
     );
     ui.painter().galley(
         egui::pos2(rect.left() + 28.0, center_y - label.size().y * 0.5),

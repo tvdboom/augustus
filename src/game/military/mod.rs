@@ -32,7 +32,7 @@ pub type PlayerId = usize;
 pub type UnitId = u64;
 
 /// Explicit strategic purpose of a player-issued province order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArmyOrderKind {
     /// Peaceful movement or invited stationing.
     Move,
@@ -46,7 +46,9 @@ pub enum ArmyOrderKind {
 pub const PEOPLE_PER_POPULATION: f64 = 100.0;
 
 /// Military ownership is independent of territorial ownership.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ForceOwner {
     /// A player-controlled force.
     Player(PlayerId),
@@ -55,7 +57,9 @@ pub enum ForceOwner {
 }
 
 /// Complete initial roster; the order indexes the configuration matrices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(usize)]
 pub enum UnitType {
     /// Cheap civilian infantry.
@@ -131,7 +135,9 @@ impl UnitType {
 }
 
 /// Explicit province recruitment capability; terrain never grants one implicitly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum RecruitmentTag {
     /// Steppe horse archery.
     HorseArchers,
@@ -144,7 +150,7 @@ pub enum RecruitmentTag {
 }
 
 /// Shared terrain order for combat and travel configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum MilitaryTerrain {
     /// Open cultivated land.
@@ -164,7 +170,7 @@ pub enum MilitaryTerrain {
 }
 
 /// Persistent unit state. A unit appears in exactly one province, movement, or battle.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     /// Unique identity used as the final deployment tie-break.
     pub id: UnitId,
@@ -264,7 +270,9 @@ pub fn merge_understrength_cohorts(units: &mut Vec<Unit>) -> usize {
 }
 
 /// Political rank never appears in this independent military ladder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(usize)]
 pub enum MilitaryRank {
     /// Initial military rank.
@@ -311,7 +319,7 @@ impl MilitaryRank {
 }
 
 /// Historic army size and victories stay earned after losses; Influence is spent on promotion.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MilitaryPromotionRequirements {
     /// Rank that must already be held.
     pub previous: MilitaryRank,
@@ -324,13 +332,15 @@ pub struct MilitaryPromotionRequirements {
 }
 
 /// A single province's forces and saved owner-specific plans.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProvinceMilitaryState {
     /// Stationary troops grouped by their actual owner.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub forces: BTreeMap<ForceOwner, Vec<Unit>>,
     /// Local troops raised by an enslaved-population revolt, for map and panel labels.
     pub slave_rebellion: bool,
     /// Defaults inherited by a new movement order.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub plans: BTreeMap<ForceOwner, BattlePlan>,
     /// The only active recruitment slot.
     pub recruitment: Option<RecruitmentProject>,
@@ -353,7 +363,7 @@ impl ProvinceMilitaryState {
 }
 
 /// Fully paid recruitment; waiting orders can be refunded until they start.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RecruitmentProject {
     /// Owner at time of drafting.
     pub owner: ForceOwner,
@@ -374,7 +384,7 @@ pub struct RecruitmentProject {
 }
 
 /// Domain errors suitable for action-button disabled explanations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MilitaryError {
     /// Province index does not exist.
     UnknownProvince,

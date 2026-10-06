@@ -4,7 +4,7 @@ use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer};
 use std::collections::{BTreeSet, VecDeque};
 
 /// Configurable diplomatic costs and diminishing-return curves.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiplomacyConfig {
     /// Coin price of one point of relation or political control before modifiers.
     pub coin_per_point: f64,
@@ -65,7 +65,7 @@ impl Default for DiplomacyConfig {
 }
 
 /// The mutually exclusive political states of a province.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PoliticalState {
     /// The protected capital has no political Control or bilateral Relation.
     Rome,
@@ -93,7 +93,7 @@ pub enum PoliticalState {
 }
 
 /// Tribute trades income against relation and therefore long-term stability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Tribute {
     /// Half normal tribute; +0.5 monthly relation.
     Low,
@@ -124,7 +124,7 @@ impl Tribute {
 }
 
 /// Independent switches for relationship and government-support spending.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonthlySupport {
     /// Spend coin for relation.
     pub relation_coin: bool,
@@ -137,7 +137,9 @@ pub struct MonthlySupport {
 }
 
 /// Direct interference actions are publicly attributed, not clandestine spy rolls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Interference {
     /// Influence reduces only the rival's relation.
     SmearCampaign,
@@ -156,7 +158,7 @@ pub enum Interference {
 }
 
 /// A monthly control breakdown for explanatory tooltips.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ControlBreakdown {
     /// Poor relation causes decay; friendship does not grant free control.
     pub relation: f64,
@@ -169,7 +171,7 @@ pub struct ControlBreakdown {
 }
 
 /// Mutable provincial politics with hidden-in-progress, simultaneously resolved pressure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvincePolitics {
     /// Current legal relationship.
     pub state: PoliticalState,

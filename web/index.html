@@ -53,7 +53,7 @@
         animation: spin 0.8s linear infinite;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
-      #status.error { padding: 1rem; color: #ffb4a9; font-size: 16px; pointer-events: auto; }
+      #status.error { padding: 1rem; color: #ffb4a9; font-size: 16px; white-space: pre-line; pointer-events: auto; }
       #status.error::before { display: none; }
     </style>
   </head>
@@ -61,8 +61,6 @@
     <canvas id="bevy" aria-label="Augustus game canvas"></canvas>
     <p id="status" role="status">Loading</p>
     <script type="module">
-      import init from "./augustus.js";
-
       // Canvas clipboard access needs a click in the page context. Start the read
       // from the menu's Paste action and deliver its result to egui on the next frame.
       let pendingPaste;
@@ -110,11 +108,17 @@
       // Right-click is also game input; keep the browser context menu from covering the canvas.
       document.addEventListener("contextmenu", (event) => event.preventDefault());
       try {
+        if (window.location.protocol === "file:") {
+          throw new Error("Open Augustus through an HTTP or HTTPS server so the browser can load the game files.");
+        }
+        // Keep module loading inside the error handler, including missing bundle files.
+        const { default: init } = await import("./augustus.js");
         await init();
         status.remove();
       } catch (error) {
         console.error(error);
-        status.textContent = "Augustus could not start. Reload the page or check the browser console.";
+        const detail = error instanceof Error ? error.message : String(error);
+        status.textContent = `Augustus could not start.\n${detail}\nReload the page or check the browser console.`;
         status.classList.add("error");
       }
     </script>

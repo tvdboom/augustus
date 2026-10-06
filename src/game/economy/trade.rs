@@ -4,7 +4,7 @@ use super::{BuildingType, EconomyEvent, EconomyWorld, MonthlyInputs, ResourceFoc
 use std::collections::{BTreeMap, VecDeque};
 
 /// A bundle is a gross commitment; the recipient receives it after route losses.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TradeBundle {
     /// Food, Metal, Stone sent.
     pub resources: [f64; 3],
@@ -42,7 +42,7 @@ impl TradeBundle {
 }
 
 /// Players use global stores; NPC provinces have abstract physical markets and real coin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TradeParty {
     /// Human/local player index.
     Player(usize),
@@ -51,7 +51,7 @@ pub enum TradeParty {
 }
 
 /// Immediate exchange or a repeatable monthly commitment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TradeFrequency {
     /// Executes once on acceptance and never produces control.
     OneTime,
@@ -60,7 +60,7 @@ pub enum TradeFrequency {
 }
 
 /// Explicit agreement lifecycle retained for explanation in the trade UI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TradeStatus {
     /// Awaiting the other human player's acceptance.
     Proposed,
@@ -75,7 +75,7 @@ pub enum TradeStatus {
 }
 
 /// The same agreement structure supports player barter and NPC value-tested offers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TradeAgreement {
     /// Stable ID assigned by `propose_trade`.
     pub id: u64,
@@ -137,7 +137,7 @@ impl TradeAgreement {
 }
 
 /// Public scarcity band, computed from production relative to internal need.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DemandBand {
     /// Major need relative to local supply.
     SevereShortage,
@@ -166,7 +166,7 @@ impl DemandBand {
 }
 
 /// Abstract physical supply/demand with per-month reservations preventing double sale.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct NpcResourceMarket {
     /// This month's estimated production.
     pub production_potential: f64,
@@ -187,7 +187,7 @@ pub struct NpcResourceMarket {
 }
 
 /// NPC cash persists while physical resources remain a monthly flow abstraction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NpcTradeEconomy {
     /// Food, Metal, Stone markets.
     pub resources: [NpcResourceMarket; 3],
@@ -221,7 +221,7 @@ impl Default for NpcTradeEconomy {
 }
 
 /// Political consequences from actual delivered trade; politics applies ownership rules.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TradePoliticalEffect {
     /// NPC province receiving the relationship/control pressure.
     pub province: usize,
@@ -236,7 +236,7 @@ pub struct TradePoliticalEffect {
 }
 
 /// Economy-level NPC sentiment effect; the campaign also applies political penalties.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TradeCancellationEffect {
     /// Province whose agreement was ended.
     pub province: usize,
@@ -247,7 +247,7 @@ pub struct TradeCancellationEffect {
 }
 
 /// Read-only preflight data for the trade proposal panel.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TradeQuote {
     /// Shortest valid sequence of province IDs.
     pub route: Vec<usize>,

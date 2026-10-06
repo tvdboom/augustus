@@ -265,6 +265,13 @@ pub(super) fn paint(
         let advance = (0.5 - 0.5 * (p * std::f32::consts::TAU).cos()) * size * lunge;
         let anchor = positions[index] + egui::vec2(actor.facing * advance, 0.);
         let rect = troop_rect(anchor, size, 0, 1, actor.kind);
+        // Marches can target a fighter outside the current camera viewport.
+        hits.push(ArmyHit {
+            rect,
+            province: battle.province,
+            owner: actor.owner,
+            movement: None,
+        });
         if !rect.intersects(viewport) {
             continue;
         }
@@ -275,12 +282,6 @@ pub(super) fn paint(
         }
         painter.image(texture, rect, uv, egui::Color32::from_white_alpha(alpha));
         occupied.push(rect);
-        hits.push(ArmyHit {
-            rect,
-            province: battle.province,
-            owner: actor.owner,
-            movement: None,
-        });
     }
     for (index, actor) in actors.iter().enumerate() {
         let enemy = target(index);

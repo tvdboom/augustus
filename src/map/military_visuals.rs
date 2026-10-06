@@ -18,11 +18,23 @@ const MARCH_ARROW_FLOW: f32 = 0.25;
 
 struct MarchRoute {
     points: Vec<egui::Pos2>,
-    start: egui::Pos2,
     travelled: f32,
     size: f32,
     color: egui::Color32,
-    target: Option<(usize, ForceOwner)>,
+}
+
+/// Keep the departure and every route leg in map coordinates for the whole order.
+struct MarchPath {
+    provinces: Vec<usize>,
+    points: Vec<[f32; 2]>,
+}
+
+impl MarchPath {
+    fn leg(&self, order: &MovementOrder) -> Option<usize> {
+        let leg = self.provinces.len().checked_sub(order.route.len() + 1)?;
+        (self.provinces[leg] == order.origin && self.provinces[leg + 1..] == order.route)
+            .then_some(leg)
+    }
 }
 
 /// Preview monthly travel continuously, sharing exactly the same fraction with the army bar.
@@ -61,12 +73,12 @@ pub(super) fn movement_visual_progress(ctx: &egui::Context, order: &MovementOrde
     })
 }
 
-/// Flowing open chevrons follow the remaining route from the army.
+/// Flowing open chevrons keep the full route, graying the ground already covered.
 /// Using travel progress keeps their motion tied to army speed and the paused clock.
 fn paint_march_arrows(
     shapes: &mut Vec<egui::Shape>,
     route: &[egui::Pos2],
-    phase: f32,
+    travelled: f32,
     size: f32,
     color: egui::Color32,
 ) {
@@ -74,7 +86,7 @@ fn paint_march_arrows(
     let spacing = 44. * scale;
     let clearance = size * 0.55;
     let length: f32 = route.windows(2).map(|edge| edge[0].distance(edge[1])).sum();
-    let mut distance = clearance + phase.rem_euclid(spacing);
+    let mut distance = clearance + (travelled * MARCH_ARROW_FLOW).rem_euclid(spacing);
     while distance < length - 8. * scale {
         let mut along = distance;
         for edge in route.windows(2) {
@@ -96,7 +108,12 @@ fn paint_march_arrows(
             if fade <= 0. {
                 break;
             }
-            let ink = color.gamma_multiply(0.95 * fade);
+            let ink = if distance <= travelled {
+                egui::Color32::from_rgba_unmultiplied(145, 145, 145, color.a())
+            } else {
+                color
+            }
+            .gamma_multiply(0.95 * fade);
             shapes.push(egui::Shape::line(
                 vec![
                     tip - forward * (12. * scale) + across * (8. * scale),
@@ -122,18 +139,32 @@ mod combat;
 pub(super) struct Anchors {
     positions: std::collections::BTreeMap<(usize, ForceOwner, u8), [f32; 2]>,
     battles: std::collections::BTreeMap<u64, combat::FieldAnchor>,
+    marches: std::collections::BTreeMap<u64, MarchPath>,
 }
 
 impl Anchors {
     fn retain_for(&mut self, world: &MilitaryWorld) {
         self.battles.retain(|id, _| world.battles.iter().any(|battle| battle.id == *id));
+        self.marches.retain(|id, _| world.movements.iter().any(|order| order.id == *id));
+        // Remember departures even while zoomed out, before the resolver consumes legs.
+        for order in &world.movements {
+            let path = self.marches.entry(order.id).or_insert_with(|| MarchPath {
+                provinces: Vec::new(),
+                points: Vec::new(),
+            });
+            if path.leg(order).is_none() {
+                path.provinces =
+                    std::iter::once(order.origin).chain(order.route.iter().copied()).collect();
+                path.points.clear();
+            }
+        }
+        let marches = &self.marches;
         self.positions.retain(|&(province, owner, side), _| {
             if side == 0 {
                 world.provinces.get(province).is_some_and(|state| {
                     state.forces.get(&owner).is_some_and(|units| !units.is_empty())
                 }) || world.movements.iter().any(|order| {
-                    order.owner == owner
-                        && (order.origin == province || order.route.contains(&province))
+                    order.owner == owner && marches[&order.id].provinces.contains(&province)
                 })
             } else {
                 world.battles.iter().any(|battle| {
@@ -378,9 +409,6 @@ pub(super) fn paint(
             continue;
         }
         let anchor = projection.point(map_province.visual_center);
-        if !viewport.expand(size * 2.).contains(anchor) {
-            continue;
-        }
         let owners: Vec<_> = state.forces.iter().filter(|(_, units)| !units.is_empty()).collect();
         for (cluster, (&owner, units)) in owners.iter().enumerate() {
             let mut types = map_representatives(units);
@@ -461,6 +489,18 @@ pub(super) fn paint(
             }) else {
                 continue;
             };
+            // Offscreen defenders still need a fixed, accurate attack objective.
+            if !viewport.expand(size * 2.).contains(center) {
+                if let Some(&kind) = types.first() {
+                    army_hits.push(ArmyHit {
+                        rect: troop_rect(center, size, 0, types.len(), kind),
+                        province,
+                        owner,
+                        movement: None,
+                    });
+                }
+                continue;
+            }
             draw_cluster(
                 painter,
                 &mut textures,
@@ -482,6 +522,43 @@ pub(super) fn paint(
             );
         }
     }
+    // Resolve battlefield fighter positions before choosing attack endpoints.
+    let mut audible = Vec::new();
+    for battle in &world.battles {
+        let Some(map_province) = atlas.provinces.get(battle.province).or_else(|| {
+            (battle.province == atlas.provinces.len())
+                .then(|| atlas.provinces.iter().find(|province| province.name == "Latium"))
+                .flatten()
+        }) else {
+            continue;
+        };
+        // Fighting armies use the same zoom fade as other units, including rebels.
+        if alpha == 0 {
+            continue;
+        }
+        if let Some(sound) = combat::paint(
+            painter,
+            &mut textures,
+            world,
+            ownership,
+            battle,
+            map_province,
+            projection,
+            zoom,
+            CITY_BLEND_START,
+            clock,
+            size,
+            alpha,
+            viewport,
+            landmarks,
+            label_areas.get(battle.province).copied().flatten(),
+            &mut anchors.battles,
+            &mut occupied,
+            &mut army_hits,
+        ) {
+            audible.push(sound);
+        }
+    }
     for movement in &world.movements {
         // Record departures even when sprites are hidden at this camera zoom.
         let fraction = movement_visual_progress(painter.ctx(), movement);
@@ -489,6 +566,9 @@ pub(super) fn paint(
             continue;
         }
         let types = map_representatives(&movement.units);
+        let Some(&leader) = types.first() else {
+            continue;
+        };
         let location = |id: usize| {
             atlas
                 .provinces
@@ -496,11 +576,8 @@ pub(super) fn paint(
                 .map(|p| p.visual_center)
                 .or_else(|| (id == atlas.provinces.len()).then_some(CITIES[0].position))
         };
-        let (Some(origin), Some(destination)) =
-            (location(movement.origin), movement.destination().and_then(location))
-        else {
-            continue;
-        };
+        let path = &anchors.marches[&movement.id];
+        let provinces = path.points.is_empty().then(|| path.provinces.clone());
         // Reuse the stationed army's geographic anchors at both ends of a march.
         // Arrival and the next edge then meet at exactly the same map position.
         let mut endpoint = |id: usize, geographic: [f32; 2]| {
@@ -548,28 +625,47 @@ pub(super) fn paint(
                 })
                 .unwrap_or(fallback)
         };
-        let start = endpoint(movement.origin, origin);
-        let end = endpoint(movement.destination().unwrap(), destination);
-        let anchor = start.lerp(end, fraction);
-        let mut route = vec![anchor];
-        route.extend(
-            movement
-                .route
+        // The first representative's visible center follows the arrow itself.
+        // Account for different sprite sizes instead of aiming its feet at the enemy.
+        let sprite_offset =
+            troop_rect(egui::Pos2::ZERO, size, 0, types.len(), leader).center() - egui::Pos2::ZERO;
+        if let Some(provinces) = provinces {
+            let mut points: Vec<_> = provinces
                 .iter()
-                .filter_map(|&id| location(id).map(|position| endpoint(id, position))),
-        );
+                .filter_map(|&id| {
+                    location(id).map(|position| endpoint(id, position) + sprite_offset)
+                })
+                .collect();
+            if points.len() != provinces.len() {
+                continue;
+            }
+            if let Some((owner, province)) =
+                movement.attack_target.zip(movement.route.last().copied())
+            {
+                if let Some(fighter) = army_hits.iter().find(|hit| {
+                    hit.province == province && hit.owner == owner && hit.movement.is_none()
+                }) {
+                    *points.last_mut().unwrap() = fighter.rect.center();
+                }
+            }
+            anchors.marches.get_mut(&movement.id).unwrap().points =
+                points.into_iter().map(|point| projection.inverse(point)).collect();
+        }
+        let path = &anchors.marches[&movement.id];
+        let leg = path.leg(movement).unwrap();
+        let route: Vec<_> = path.points.iter().map(|&point| projection.point(point)).collect();
+        let start = route[leg];
+        let end = route[leg + 1];
+        let anchor = start.lerp(end, fraction) - sprite_offset;
+        let travelled = route[..=leg].windows(2).map(|edge| edge[0].distance(edge[1])).sum::<f32>()
+            + fraction * start.distance(end);
         let color =
             owner_color(movement.owner, world, ownership).gamma_multiply(f32::from(alpha) / 255.);
         march_routes.push(MarchRoute {
             points: route,
-            start,
-            travelled: fraction * start.distance(end),
+            travelled,
             size,
             color,
-            target: movement
-                .attack_target
-                .zip(movement.route.last().copied())
-                .map(|(owner, province)| (province, owner)),
         });
         if !viewport.expand(size).contains(anchor) {
             continue;
@@ -594,59 +690,15 @@ pub(super) fn paint(
             end.x < start.x,
         );
     }
-    let mut audible = Vec::new();
-    for battle in &world.battles {
-        let Some(map_province) = atlas.provinces.get(battle.province).or_else(|| {
-            (battle.province == atlas.provinces.len())
-                .then(|| atlas.provinces.iter().find(|province| province.name == "Latium"))
-                .flatten()
-        }) else {
-            continue;
-        };
-        // Fighting armies use the same zoom fade as other units, including rebels.
-        if alpha == 0 {
-            continue;
-        }
-        if !viewport.intersects(projection.bounds_rect(map_province.bounds).expand(size * 4.)) {
-            continue;
-        }
-        if let Some(sound) = combat::paint(
-            painter,
-            &mut textures,
-            world,
-            ownership,
-            battle,
-            map_province,
-            projection,
-            zoom,
-            CITY_BLEND_START,
-            clock,
-            size,
-            alpha,
-            viewport,
-            landmarks,
-            label_areas.get(battle.province).copied().flatten(),
-            &mut anchors.battles,
-            &mut occupied,
-            &mut army_hits,
-        ) {
-            audible.push(sound);
-        }
-    }
     let mut route_shapes = vec![];
-    for mut route in march_routes {
-        if let Some((province, owner)) = route.target {
-            if let Some(fighter) = army_hits.iter().find(|hit| {
-                hit.province == province && hit.owner == owner && hit.movement.is_none()
-            }) {
-                *route.points.last_mut().unwrap() = fighter.rect.center();
-            }
-        }
-        // Cancel the moving route origin using its distance to the actual next
-        // endpoint, including a defender placed away from the arrival anchor.
-        let phase = route.travelled * MARCH_ARROW_FLOW + route.points[0].distance(route.points[1])
-            - route.start.distance(route.points[1]);
-        paint_march_arrows(&mut route_shapes, &route.points, phase, route.size, route.color);
+    for route in march_routes {
+        paint_march_arrows(
+            &mut route_shapes,
+            &route.points,
+            route.travelled,
+            route.size,
+            route.color,
+        );
     }
     if let Some(layer) = route_layer {
         painter.set(layer, egui::Shape::Vec(route_shapes));

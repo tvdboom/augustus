@@ -5,10 +5,10 @@ use thiserror::Error;
 use url::Url;
 
 /// Public Supabase project used by every Augustus client.
-pub const SUPABASE_URL: &str = "https://your-project-ref.supabase.co";
+pub const SUPABASE_URL: &str = "https://bbjsemzdjkgwymzjnlei.supabase.co";
 
 /// Browser-safe publishable key used by every Augustus client.
-pub const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_replace-me";
+pub const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_Ip3QixCsfs1hPW4tRhXeHg_6NM-ITI2";
 
 /// Public browser-safe values required by Supabase clients.
 #[derive(Clone, Debug, Eq, PartialEq)]

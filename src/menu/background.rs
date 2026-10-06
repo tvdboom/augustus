@@ -277,7 +277,7 @@ pub(in crate::app) fn map_visible(
     *state.get() == AppState::Map
         || revealing_map(*state.get(), &loading)
         || (matches!(*state.get(), AppState::GameMenu | AppState::GameSettings | AppState::EndGame)
-            && *game == ActiveGame::LocalPractice)
+            && game.is_campaign())
 }
 
 pub(in crate::app) fn start_loading_wallpaper(

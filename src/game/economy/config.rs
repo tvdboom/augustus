@@ -6,7 +6,7 @@ use super::{BuildingDefinition, BuildingType, WonderDefinition};
 pub const NOBLE_WAGE_PER_NOBLE: f64 = 0.1 / crate::map::POPULATION_SCALE;
 
 /// Policy modifiers, in consumption/happiness/birth/death order.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FoodModifiers {
     /// Fraction of ordinary civilian food consumption.
     pub consumption: f64,
@@ -19,7 +19,7 @@ pub struct FoodModifiers {
 }
 
 /// Slave policy productivity, happiness, and mortality modifiers.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaborModifiers {
     /// Multiplier on slave labor only.
     pub productivity: f64,
@@ -30,7 +30,7 @@ pub struct LaborModifiers {
 }
 
 /// Centralized population, resource, building, and trade tuning.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EconomyConfig {
     /// Farmland, Plains, Forest, Hills, Mountains, Desert, Marsh.
     pub terrain_capacity: [f64; 7],
@@ -126,7 +126,7 @@ pub struct EconomyConfig {
 }
 
 /// NPC valuation, budgets, transport losses, and agreement failure rules.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TradeConfig {
     /// Enabling influence exchanges needs explicit game configuration.
     pub allow_influence: bool,

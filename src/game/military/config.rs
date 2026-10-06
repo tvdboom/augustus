@@ -3,7 +3,7 @@
 use super::*;
 
 /// All recruitment and combat data for a roster type.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnitDefinition {
     /// Index into Nobles, Citizens, Plebeians, Slaves; only 1 or 2 is used.
     pub manpower_class: usize,
@@ -43,7 +43,7 @@ impl UnitDefinition {
 }
 
 /// Editable balance configuration; matrices are indexed by enum discriminants.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MilitaryConfig {
     /// Complete definitions in `UnitType::ALL` order.
     pub units: [UnitDefinition; 11],

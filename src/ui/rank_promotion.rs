@@ -388,7 +388,7 @@ pub(in crate::app) fn draw(
     mut view: ResMut<super::campaign_panel::CampaignUi>,
 ) {
     if !matches!(*state.get(), AppState::Map | AppState::EndGame)
-        || *game != ActiveGame::LocalPractice
+        || !game.is_campaign()
         || terminal.spectating
     {
         view.promotion = None;

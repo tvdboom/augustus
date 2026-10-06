@@ -116,45 +116,18 @@ pub(in crate::app) fn form_option_card(
     label: &str,
     tooltip: &str,
     contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> egui::Response {
     let frame = card_frame();
     let inner_width = (ui.available_width() - frame.total_margin().sum().x).max(1.0);
-    frame.show(ui, |ui| {
-        ui.set_width(inner_width);
-        ui.spacing_mut().item_spacing.y = 0.0;
-        code_card_heading(ui, label, tooltip, None);
-        ui.add_space(FORM_CARD_GAP);
-        contents(ui);
-    });
-}
-
-pub(in crate::app) fn editable_form_card(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut String,
-    hint: &str,
-    tooltip: &str,
-    char_limit: Option<usize>,
-) {
-    form_option_card(ui, label, tooltip, |ui| {
-        let mut editor = egui::TextEdit::singleline(value)
-            .id_salt(label)
-            .horizontal_align(egui::Align::Center)
-            .vertical_align(egui::Align::Center)
-            .font(egui::FontId::proportional(MENU_CONTROL_TEXT_SIZE))
-            .hint_text(egui::RichText::new(hint).size(MENU_CONTROL_TEXT_SIZE))
-            .margin(egui::vec2(12.0, 6.0));
-        if let Some(limit) = char_limit {
-            editor = editor.char_limit(limit);
-        }
-        let response = ui.add_sized(egui::vec2(ui.available_width(), MENU_CONTROL_HEIGHT), editor);
-        response.context_menu(|ui| {
-            if ui.button("Paste").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                request_menu_paste(ui, response.id);
-                ui.close();
-            }
-        });
-    });
+    frame
+        .show(ui, |ui| {
+            ui.set_width(inner_width);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            code_card_heading(ui, label, tooltip, None);
+            ui.add_space(FORM_CARD_GAP);
+            contents(ui);
+        })
+        .response
 }
 
 pub(in crate::app) fn menu_submit_pressed(ui: &egui::Ui) -> bool {

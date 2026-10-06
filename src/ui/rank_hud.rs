@@ -203,7 +203,7 @@ pub(in crate::app) fn draw_practice_players(
                         ui.painter().text(
                             rect.min + egui::vec2(57.0, rect.height() * 0.5),
                             egui::Align2::LEFT_CENTER,
-                            format!("Player {}", index + 1),
+                            player.name.clone(),
                             egui::FontId::proportional(12.0 * scale),
                             if selected || hovered {
                                 CREAM

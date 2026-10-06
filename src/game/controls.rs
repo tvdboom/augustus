@@ -9,12 +9,23 @@ pub(super) fn handle_escape(
     game: Res<ActiveGame>,
     mut next: ResMut<NextState<AppState>>,
     mut panels: MapPanelParams,
+    mut online: Option<ResMut<online::OnlineClient>>,
 ) {
     if !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
+    if online.as_ref().is_some_and(|c| c.busy()) && !game.is_campaign() {
+        return;
+    }
+    if online.as_ref().is_some_and(|c| c.record.is_some()) && *state.get() == AppState::Lobby {
+        return;
+    }
     if *state.get() == AppState::EndGame {
-        next.set(AppState::MainMenu);
+        if let Some(client) = online.as_mut().filter(|c| c.record.is_some()) {
+            client.leave();
+        } else {
+            next.set(AppState::MainMenu);
+        }
         return;
     }
     if panels.campaign_ui.dismiss_confirmation() {
@@ -43,6 +54,9 @@ pub(super) fn handle_escape(
         return;
     }
     if let Some(destination) = escape_destination(*state.get(), *game) {
+        if destination == AppState::MainMenu && online.as_ref().is_some_and(|c| c.busy()) {
+            return;
+        }
         next.set(destination);
     }
 }
@@ -67,6 +81,7 @@ pub(super) fn escape_destination(state: AppState, game: ActiveGame) -> Option<Ap
         AppState::Map | AppState::EmptyScreen => Some(AppState::GameMenu),
         AppState::GameMenu => Some(game.screen()),
         AppState::GameSettings => Some(AppState::GameMenu),
+        AppState::RecoverPlayer => Some(AppState::ResumeGame),
         AppState::EndGame => Some(AppState::MainMenu),
         _ => Some(AppState::MainMenu),
     }
@@ -86,6 +101,7 @@ pub(super) fn handle_game_shortcuts(
     mut resources: ResMut<HudResources>,
     mut ownership: ResMut<ProvinceOwnership>,
     terminal: Res<TerminalPresentation>,
+    online: Option<Res<online::OnlineClient>>,
 ) {
     if terminal.spectating || *state.get() == AppState::EndGame {
         return;
@@ -103,13 +119,16 @@ pub(super) fn handle_game_shortcuts(
         return;
     }
     if matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
+        && *game == ActiveGame::LocalPractice
         && keyboard.just_pressed(KeyCode::ArrowUp)
         && (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
         && (keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight))
     {
         apply_practice_boost(practice.active_player, &mut campaign, &mut resources, &mut ownership);
     }
-    if matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
+    let controls_time = online.as_ref().is_none_or(|c| c.record.is_none() || c.host());
+    if controls_time
+        && matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
         && (keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight))
     {
         let speed_change = if keyboard.just_pressed(KeyCode::ArrowLeft) {
@@ -131,7 +150,7 @@ pub(super) fn handle_game_shortcuts(
         return;
     }
     match *state.get() {
-        AppState::Map | AppState::EmptyScreen => paused.0 = !paused.0,
+        AppState::Map | AppState::EmptyScreen if controls_time => paused.0 = !paused.0,
         AppState::GameMenu => next.set(game.screen()),
         _ => {},
     }
@@ -220,16 +239,25 @@ pub(super) fn reset_game_time(
     mut campaign_ui: ResMut<campaign_panel::CampaignUi>,
     mut terminal: ResMut<TerminalPresentation>,
 ) {
-    paused.0 = false;
+    if *game != ActiveGame::Online {
+        paused.0 = false;
+    }
     governance_open.0 = false;
     province_open.0 = None;
     toasts.clear();
     *warning_watch = toasts::WarningWatch::default();
-    *clock = GameClock::default();
+    if *game != ActiveGame::Online {
+        *clock = GameClock::default();
+    }
     *resources = HudResources::default();
     *campaign_ui = campaign_panel::CampaignUi::default();
     *terminal = TerminalPresentation::default();
-    *campaign = campaign::Campaign::default();
+    if *game != ActiveGame::Online {
+        *campaign = campaign::Campaign::default();
+    }
+    if *game == ActiveGame::Online {
+        resources.start_players(practice.players.len(), &ownership);
+    }
     if *game == ActiveGame::LocalPractice && !practice.players.is_empty() {
         resources.start_players(practice.players.len(), &ownership);
         campaign.start(&ownership, practice.players.len());
@@ -245,7 +273,11 @@ pub(super) fn advance_game_time(
     game: Res<ActiveGame>,
     mut ownership: ResMut<ProvinceOwnership>,
     mut campaign: ResMut<campaign::Campaign>,
+    online: Option<Res<online::OnlineClient>>,
 ) {
+    if *game == ActiveGame::Online && !online.as_ref().is_some_and(|c| c.runs_time()) {
+        return;
+    }
     if !paused.0 && matches!(*state.get(), AppState::Map | AppState::EmptyScreen) {
         if campaign.active {
             let ticks = clock

@@ -4,7 +4,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Observable domain events for notifications and territorial/political integration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MilitaryEvent {
     /// A fully paid cohort completed training.
     Recruited {
@@ -76,7 +76,7 @@ pub enum MilitaryEvent {
 }
 
 /// Local authoritative military state; resource ownership stays with the economy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MilitaryWorld {
     /// Central editable balance data.
     pub config: MilitaryConfig,
@@ -87,12 +87,16 @@ pub struct MilitaryWorld {
     /// Active battles, containing their engaged units.
     pub battles: Vec<Battle>,
     /// Cumulative global military renown per owner.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub renown: BTreeMap<ForceOwner, f64>,
     /// Explicit paid career ranks, independent of battle renown.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub ranks: BTreeMap<ForceOwner, MilitaryRank>,
     /// Highest combined surviving manpower the owner has fielded at one time.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub peak_manpower: BTreeMap<ForceOwner, f64>,
     /// Completed battles won by this owner's participating forces.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub victories: BTreeMap<ForceOwner, u32>,
     /// Latest completed battle records for inspection.
     pub history: Vec<BattleOutcome>,

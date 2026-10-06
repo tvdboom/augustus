@@ -3,7 +3,7 @@
 use super::{ConstructionPace, EconomicProvince, EconomyConfig, EconomyEvent, EconomyWorld};
 
 /// Standard improvements, with explicit stable indexes for save/UI arrays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum BuildingType {
     /// Food storage.
@@ -71,7 +71,7 @@ impl BuildingType {
 }
 
 /// Linear benefits per completed level; costs increase exponentially instead.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct BuildingEffects {
     /// Contribution to the direct owner's global Food/Metal/Stone storage.
     pub storage: [f64; 3],
@@ -92,7 +92,7 @@ pub struct BuildingEffects {
 }
 
 /// Cost/time/effects definition for a normal building.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BuildingDefinition {
     /// Improvement whose completed levels receive these effects.
     pub building: BuildingType,
@@ -191,7 +191,7 @@ impl BuildingDefinition {
 }
 
 /// Stone/Metal payment and progress requirement shown before starting construction.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConstructionQuote {
     /// Payable rounded Stone cost.
     pub stone: f64,
@@ -202,7 +202,7 @@ pub struct ConstructionQuote {
 }
 
 /// A canonical existing map wonder's gameplay settings, without copied coordinates/art.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WonderDefinition {
     /// Index of the existing WONDERS site.
     pub wonder_id: usize,
@@ -233,7 +233,7 @@ impl WonderDefinition {
 }
 
 /// Ordinary building upgrade in the province's one construction slot.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BuildingProject {
     /// Improvement being built.
     pub building: BuildingType,
@@ -250,7 +250,7 @@ pub struct BuildingProject {
 }
 
 /// Monument construction attached permanently to its canonical province.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WonderProject {
     /// Canonical site ID.
     pub wonder_id: usize,
@@ -267,7 +267,7 @@ pub struct WonderProject {
 }
 
 /// Mutually exclusive construction slot contents.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ConstructionProject {
     /// Standard improvement/upgrade.
     Building(BuildingProject),

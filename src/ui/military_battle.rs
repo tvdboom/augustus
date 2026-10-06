@@ -86,13 +86,24 @@ pub(in crate::app) fn draw_battle_panel(
     let mut open = true;
     let mut action = None;
     let response = egui::Area::new(egui::Id::new(PANEL_ID).with("window"))
-        .order(egui::Order::Foreground).fixed_pos(rect.min).movable(false)
-        .sense(egui::Sense::hover()).show(ctx, |ui| {
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .sense(egui::Sense::hover())
+        .show(ctx, |ui| {
             *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
             let panel = ui.allocate_exact_size(rect.size(), egui::Sense::hover()).0;
             ui.painter().rect_filled(panel, 6. * scale, PAPER);
-            let header = egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), 42. * scale));
-            battle_header(ui, header, &format!("Battle of {}", economic.name), colors, scale, &mut open);
+            let header =
+                egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), 42. * scale));
+            battle_header(
+                ui,
+                header,
+                &format!("Battle of {}", economic.name),
+                colors,
+                scale,
+                &mut open,
+            );
             defense_icons(ui, header, terrain, fortification, attackers, world, scale);
             let field = egui::Rect::from_min_size(
                 panel.min + egui::vec2(12., 92.) * scale,
@@ -101,37 +112,71 @@ pub(in crate::app) fn draw_battle_panel(
             battlefield_background(ui, field, terrain, scale);
             for (index, side) in [attackers, defenders].into_iter().enumerate() {
                 let card = egui::Rect::from_min_size(
-                    panel.min + egui::vec2(10., if index == 0 { 46. } else { 248. }) * scale,
-                    egui::vec2(panel.width() - 20. * scale, if index == 0 { 42. } else { 50. } * scale),
+                    panel.min
+                        + egui::vec2(
+                            10.,
+                            if index == 0 {
+                                46.
+                            } else {
+                                248.
+                            },
+                        ) * scale,
+                    egui::vec2(
+                        panel.width() - 20. * scale,
+                        if index == 0 {
+                            42.
+                        } else {
+                            50.
+                        } * scale,
+                    ),
                 );
-                let mut side_ui = ui.new_child(egui::UiBuilder::new().id_salt(("battle-side", index)).max_rect(card));
+                let mut side_ui = ui.new_child(
+                    egui::UiBuilder::new().id_salt(("battle-side", index)).max_rect(card),
+                );
                 side_card(&mut side_ui, card, side, index, round, world, economy, reveal, scale);
+                if let Some(battle) =
+                    battle.filter(|battle| battle.result.is_none() && participant(side, player))
+                {
+                    let allowed = !inspection
+                        && battle.months >= world.config.minimum_retreat_months
+                        && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
+                    let retreat =
+                        side_dice_rect(card, scale).translate(egui::vec2(-34. * scale, 0.));
+                    if retreat_icon(&mut side_ui, retreat, allowed, scale) {
+                        action = Some((
+                            province,
+                            MilitaryUiAction::Retreat {
+                                battle: id,
+                                attacker: index == 0,
+                            },
+                        ));
+                    }
+                }
                 let rows = egui::Rect::from_min_size(
                     field.min + egui::vec2(0., 3. + index as f32 * 76.) * scale,
                     egui::vec2(field.width(), 72. * scale),
                 );
                 if reveal {
-                    battlefield_rows(&side_ui, rows, side, id, index == 0, finished, &world.config, scale);
+                    battlefield_rows(
+                        &side_ui,
+                        rows,
+                        side,
+                        id,
+                        index == 0,
+                        finished,
+                        &world.config,
+                        scale,
+                    );
                 } else {
                     public_composition(&side_ui, rows, side, finished, scale);
                 }
             }
-            if let Some(battle) = battle.filter(|battle| battle.result.is_none()) {
-                let footer = egui::Rect::from_min_max(panel.min + egui::vec2(12., 302.) * scale, panel.max - egui::vec2(12., 6.) * scale);
-                let mut footer_ui = ui.new_child(egui::UiBuilder::new().id_salt("battle-actions").max_rect(footer));
-                footer_ui.horizontal(|ui| {
-                    for (attacker, side) in [(true, attackers), (false, defenders)] {
-                        if participant(side, player) {
-                            let allowed = !inspection && battle.months >= world.config.minimum_retreat_months
-                                && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
-                            if ui.add_enabled(allowed, egui::Button::new("Retreat"))
-                                .on_disabled_hover_text("Requires a completed combat month and an adjacent province permitting stationing.")
-                                .clicked() { action = Some((province, MilitaryUiAction::Retreat { battle: id, attacker })); }
-                        }
-                    }
-                });
-            }
-            ui.painter().rect_stroke(panel, 6. * scale, egui::Stroke::new(1.5 * scale, RULE), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                panel,
+                6. * scale,
+                egui::Stroke::new(1.5 * scale, RULE),
+                egui::StrokeKind::Inside,
+            );
         });
     ctx.move_to_top(response.response.layer_id);
     if !open {
@@ -236,7 +281,7 @@ fn side_card(
     scale: f32,
 ) {
     let inset = rect.shrink2(egui::vec2(8., 2.) * scale);
-    let info_width = inset.width() - 132. * scale;
+    let info_width = inset.width() - 166. * scale;
     let names = side
         .initial_manpower
         .keys()
@@ -283,10 +328,7 @@ fn side_card(
     }
     let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(identity));
     name_ui.add(egui::Label::new(name_job).truncate().show_tooltip_when_elided(false));
-    let dice = egui::Rect::from_min_size(
-        egui::pos2(inset.right() - 124. * scale, rect.center().y - 14. * scale),
-        egui::vec2(28., 28.) * scale,
-    );
+    let dice = side_dice_rect(rect, scale);
     dice_face(
         ui,
         dice,
@@ -363,6 +405,34 @@ fn side_card(
         );
         compact_stat(ui, fact, kind, &value, tooltip, scale);
     }
+}
+
+fn side_dice_rect(rect: egui::Rect, scale: f32) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(rect.right() - 132. * scale, rect.center().y - 14. * scale),
+        egui::vec2(28., 28.) * scale,
+    )
+}
+
+fn retreat_icon(ui: &mut egui::Ui, rect: egui::Rect, enabled: bool, scale: f32) -> bool {
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            let response = ui.interact(rect, ui.id().with("retreat"), egui::Sense::click());
+            if response.hovered() || response.has_focus() {
+                let visuals = ui.style().interact(&response);
+                ui.painter().rect_filled(rect, 4. * scale, visuals.weak_bg_fill);
+            }
+            paint_icon(ui, Icon::SpyFlee, rect.shrink(4. * scale));
+            response
+        })
+        .inner;
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Retreat"));
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Retreat")
+        .on_disabled_hover_text("Retreat\nRequires a completed combat month and an adjacent province permitting stationing.")
+        .clicked()
 }
 
 fn compact_stat(

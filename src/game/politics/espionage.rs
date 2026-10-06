@@ -5,7 +5,7 @@ use super::{Currency, PlayerId, PoliticalError, PoliticalPlayer, PoliticalRng, P
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Central spy economics, random probabilities and evidence lifetime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EspionageConfig {
     /// One-time Influence prices for control, relations, scandals, and undermining.
     pub deployment_influence: [f64; 6],
@@ -79,7 +79,9 @@ impl EspionageConfig {
 }
 
 /// Mechanically meaningful evidence, with distinct affected Senate blocs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum ScandalKind {
     /// Low ration policy, discovered only while active.
     LowFood,
@@ -249,7 +251,7 @@ impl ScandalKind {
 }
 
 /// Severity scales discoverability, Senate penalties, and NPC political leverage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Severity {
     /// Small indiscretion.
     Minor,
@@ -287,7 +289,7 @@ impl Severity {
 }
 
 /// Spending evidence grants one provincial benefit; Senate use remains separate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ScandalUse {
     /// Undermine provincial legitimacy for immediate political control.
     Control,
@@ -298,7 +300,7 @@ pub enum ScandalUse {
 }
 
 /// Real player action or an NPC province whose government can be blackmailed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ScandalTarget {
     /// Player evidence is only used for political leverage.
     Player(PlayerId),
@@ -307,7 +309,7 @@ pub enum ScandalTarget {
 }
 
 /// Stored evidence persists after its underlying condition has ended.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Scandal {
     /// Globally unique evidence item.
     pub id: u64,
@@ -358,7 +360,7 @@ impl Scandal {
 }
 
 /// One active policy/condition activation or a retained completed action.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScandalOpportunity {
     /// Unique activation identity; never reuse after the condition is disabled.
     pub source_id: u64,
@@ -375,7 +377,7 @@ pub struct ScandalOpportunity {
 }
 
 /// A network performs one selected mission each month after surviving detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SpyAssignment {
     /// Build political power gradually in an independent province.
     GainControl,
@@ -415,7 +417,7 @@ impl SpyAssignment {
 }
 
 /// Costs and outcomes accumulated by one deployment, retained until recall.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SpyMissionTotals {
     /// Influence actually paid at launch.
     pub influence_spent: f64,
@@ -436,7 +438,7 @@ pub struct SpyMissionTotals {
 }
 
 /// Persistent, single-province spy network.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpyMission {
     /// Player paying and benefiting from the network.
     pub owner: PlayerId,
@@ -455,7 +457,7 @@ pub struct SpyMission {
 }
 
 /// Province input snapshot; contains real policy flags, not invented human scandals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpyProvince {
     /// Actual owning player; None means an NPC independent or vassal government.
     pub owner: Option<PlayerId>,
@@ -466,7 +468,7 @@ pub struct SpyProvince {
 }
 
 /// Expiring favorable trade applies only to one player–NPC relationship.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TradeLeverage {
     /// Benefiting player.
     pub player: PlayerId,
@@ -479,7 +481,7 @@ pub struct TradeLeverage {
 }
 
 /// Events for notifications and political relation updates.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum EspionageEvent {
     /// Network could no longer pay maintenance.
     Withdrawn(PlayerId, ProvinceId),
@@ -496,7 +498,7 @@ pub enum EspionageEvent {
 }
 
 /// Authoritative spy and evidence inventory, using its own deterministic random stream.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EspionageState {
     /// Active missions; duplicate owner/target pairs are rejected.
     pub missions: Vec<SpyMission>,
@@ -506,8 +508,10 @@ pub struct EspionageState {
     pub opportunities: Vec<ScandalOpportunity>,
     /// Player-specific blackmail modifiers.
     pub favorable_trade: Vec<TradeLeverage>,
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     hidden_npc: BTreeMap<ProvinceId, Vec<(u64, ScandalKind, Severity)>>,
     discovered_sources: BTreeSet<(PlayerId, u64)>,
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     global_conditions: BTreeMap<(PlayerId, ScandalKind), Severity>,
     next_id: u64,
     last_resolution_month: Option<u32>,

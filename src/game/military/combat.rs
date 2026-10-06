@@ -4,15 +4,17 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One coalition sharing frontage while retaining each owner's tactic and rank.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BattleSide {
     /// Surviving units, including troops routed in this battle.
     pub units: Vec<Unit>,
     /// Cohorts on engagement, retained for inspection after casualties remove survivors.
     pub initial_units: Vec<Unit>,
     /// Plans captured on engagement, immutable through public editing actions.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub plans: BTreeMap<ForceOwner, BattlePlan>,
     /// Military ranks captured for the engagement.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub ranks: BTreeMap<ForceOwner, MilitaryRank>,
     /// Current frontage, support, and reserves.
     pub formation: Formation,
@@ -21,8 +23,10 @@ pub struct BattleSide {
     /// Units actually committed, used for post-battle training.
     pub participated: BTreeSet<UnitId>,
     /// Starting manpower per owner for casualty reports.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub initial_manpower: BTreeMap<ForceOwner, f64>,
     /// Starting political strength per owner for renown calibration.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub initial_strength: BTreeMap<ForceOwner, f64>,
 }
 
@@ -83,7 +87,7 @@ impl BattleSide {
 }
 
 /// Battlefield winner or mutual destruction. Timeout is an attacker loss.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BattleResult {
     /// Attacker victory.
     AttackerVictory,
@@ -94,7 +98,7 @@ pub enum BattleResult {
 }
 
 /// Resolved, authoritative dice and damage factors for one simultaneous round.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BattleRound {
     /// Completed round number, starting at one.
     pub number: usize,
@@ -115,7 +119,7 @@ pub fn dice_multiplier(roll: u8, config: &MilitaryConfig) -> f64 {
 }
 
 /// Active province battle; tactics are locked until the record is resolved.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Battle {
     /// Stable battle identity.
     pub id: u64,
@@ -411,7 +415,7 @@ impl Battle {
 }
 
 /// Resolved battle, containing survivors for deterministic reinsertion/retreat.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BattleOutcome {
     /// Battle identity.
     pub id: u64,
@@ -428,6 +432,7 @@ pub struct BattleOutcome {
     /// Defender survivors and casualty baseline.
     pub defenders: BattleSide,
     /// Renown distributed by participating strength.
+    #[serde(with = "crate::multiplayer::patch::pairs")]
     pub renown: BTreeMap<ForceOwner, f64>,
     /// Rounds fought.
     pub rounds: usize,
