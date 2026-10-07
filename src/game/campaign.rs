@@ -64,6 +64,7 @@ pub(super) fn sync_campaign(
     mut toasts: ResMut<toasts::ToastQueue>,
     mut paused: ResMut<GamePaused>,
     terminal: Res<TerminalPresentation>,
+    game: Res<ActiveGame>,
 ) {
     if !campaign.active {
         return;
@@ -126,7 +127,8 @@ pub(super) fn sync_campaign(
     }
     if !terminal.spectating
         && (campaign.senate.winner.is_some()
-            || campaign.defeated.get(practice.active_player).copied().unwrap_or(false))
+            || (*game != ActiveGame::Online
+                && campaign.defeated.get(practice.active_player).copied().unwrap_or(false)))
     {
         paused.0 = true;
     }

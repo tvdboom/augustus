@@ -170,9 +170,18 @@ begin
     or jsonb_array_length(s#>'{campaign,economy,players}') is distinct from n
     or jsonb_array_length(s#>'{campaign,defeated}') is distinct from n
     or jsonb_array_length(s#>'{campaign,governance}') is distinct from n
+    or jsonb_array_length(s#>'{campaign,profiles}') is distinct from n
+    or jsonb_array_length(s#>'{campaign,wars}') is distinct from n
+    or jsonb_array_length(s#>'{campaign,npc_wars}') is distinct from n
+    or jsonb_array_length(s#>'{campaign,invitations}') is distinct from n
     or jsonb_array_length(s#>'{campaign,economy,provinces}') not between 1 and 1000
     or jsonb_array_length(s#>'{campaign,politics}') is distinct from jsonb_array_length(s#>'{campaign,economy,provinces}')
     or jsonb_array_length(s#>'{campaign,graph}') is distinct from jsonb_array_length(s#>'{campaign,politics}')
+    or jsonb_array_length(s#>'{campaign,economy,adjacency}') is distinct from jsonb_array_length(s#>'{campaign,politics}')
+    or jsonb_array_length(s#>'{campaign,military,provinces}') is distinct from jsonb_array_length(s#>'{campaign,politics}')
+    or jsonb_typeof(s#>'{campaign,military,battles}') is distinct from 'array'
+    or jsonb_typeof(s#>'{campaign,military,movements}') is distinct from 'array'
+    or jsonb_typeof(s#>'{campaign,military,history}') is distinct from 'array'
     or jsonb_typeof(s->'clock') is distinct from 'object'
     or jsonb_typeof(s#>'{clock,month}') is distinct from 'number'
     or jsonb_typeof(s#>'{clock,speed_step}') is distinct from 'number'
@@ -203,6 +212,49 @@ begin
   update public.augustus_games set status='active',single_player=(count_players=1),state=p_state,revision=1,saved_at=clock_timestamp() where id=p_game_id;
   return public.augustus_record(p_game_id,p_connection);
 end $$;
+-- Player commands may start/join battles or request retreat; only seat zero
+-- resolves dice, casualties, routs, and completed outcomes. Compare final state
+-- so replacing a parent object cannot bypass combat authority.
+create function public.augustus_validate_combat_commands(old_state jsonb,new_state jsonb)
+returns void language plpgsql set search_path=pg_catalog,public as $$
+declare old_battle jsonb; new_battle jsonb; side text; field text; unit jsonb;
+begin
+  foreach field in array array['history','renown','victories'] loop
+    if old_state#>array['campaign','military',field] is distinct from new_state#>array['campaign','military',field] then
+      raise exception 'Only the host resolves battle rounds.';
+    end if;
+  end loop;
+  for old_battle in select value from jsonb_array_elements(old_state#>'{campaign,military,battles}') loop
+    select value into new_battle from jsonb_array_elements(new_state#>'{campaign,military,battles}') where value->'id'=old_battle->'id';
+    if new_battle is null or (old_battle-array['attackers','defenders','retreat_requested'])
+      is distinct from (new_battle-array['attackers','defenders','retreat_requested']) then
+      raise exception 'Only the host resolves battle rounds.';
+    end if;
+    foreach side in array array['attackers','defenders'] loop
+      foreach field in array array['routed','participated'] loop
+        if old_battle#>array[side,field] is distinct from new_battle#>array[side,field] then
+          raise exception 'Only the host resolves battle rounds.';
+        end if;
+      end loop;
+      -- Reinforcements may add troops; existing combatants cannot lose strength
+      -- or disappear in a guest command.
+      foreach field in array array['units','initial_units'] loop
+        for unit in select value from jsonb_array_elements(old_battle#>array[side,field]) loop
+          if not exists(select 1 from jsonb_array_elements(new_battle#>array[side,field]) u where u.value=unit) then
+            raise exception 'Only the host resolves battle rounds.';
+          end if;
+        end loop;
+      end loop;
+    end loop;
+  end loop;
+  for new_battle in select value from jsonb_array_elements(new_state#>'{campaign,military,battles}') loop
+    if not exists(select 1 from jsonb_array_elements(old_state#>'{campaign,military,battles}') b where b.value->'id'=new_battle->'id')
+      and (new_battle->'round' is distinct from '0'::jsonb or new_battle->'months' is distinct from '0'::jsonb
+        or new_battle->'rounds' is distinct from '[]'::jsonb or new_battle->'result' is distinct from 'null'::jsonb) then
+      raise exception 'Only the host resolves battle rounds.';
+    end if;
+  end loop;
+end $$;
 create function public.augustus_save(p_game_id uuid,p_connection uuid,p_revision bigint,p_request_id uuid,p_changes jsonb)
 returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
 declare n smallint; g public.augustus_games; next_state jsonb; delta jsonb; path text[]; replay jsonb:='[]'; prior bigint; count_players integer;
@@ -227,6 +279,16 @@ begin
   count_players:=(select count(*) from public.augustus_players where game_id=p_game_id);
   perform public.augustus_validate_state(next_state,count_players);
   if n<>0 and next_state#>'{campaign,economy,month}' is distinct from g.state#>'{campaign,economy,month}' then raise exception 'Only the host advances the campaign.'; end if;
+  if n<>0 then perform public.augustus_validate_combat_commands(g.state,next_state); end if;
+  -- Simulation reads the whole campaign (orders, policies, diplomacy, supplies).
+  -- Never commit a host tick calculated before an unseen player command.
+  if n=0 and p_revision<>g.revision and (
+    next_state->'clock' is distinct from g.state->'clock'
+    or next_state#>'{campaign,economy,month}' is distinct from g.state#>'{campaign,economy,month}'
+    or next_state#>'{campaign,military,battles}' is distinct from g.state#>'{campaign,military,battles}'
+    or next_state#>'{campaign,military,history}' is distinct from g.state#>'{campaign,military,history}') then
+    raise exception 'State conflict. Sync and retry.';
+  end if;
   update public.augustus_games set state=next_state,revision=revision+1,saved_at=clock_timestamp(),
     status=case when next_state#>'{campaign,senate,winner}'<>'null'::jsonb then 'finished' else 'active' end,
     finished_at=case when next_state#>'{campaign,senate,winner}'<>'null'::jsonb then clock_timestamp() else null end

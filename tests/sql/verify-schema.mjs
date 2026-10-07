@@ -12,6 +12,8 @@ const schema=(await readFile(new URL('supabase/schema.sql',root),'utf8'))
   .replace('create extension pg_cron with schema pg_catalog;', 'null;');
 const single=await readFile(new URL('target/sql-verification/single.json',root),'utf8');
 const multi=await readFile(new URL('target/sql-verification/multi.json',root),'utf8');
+const interactions=JSON.parse(await readFile(new URL('target/sql-verification/interactions.json',root),'utf8'));
+const battle=JSON.parse(await readFile(new URL('target/sql-verification/battle.json',root),'utf8'));
 try {
   await db.exec(`
     create role anon; create role authenticated; create role service_role bypassrls;
@@ -114,6 +116,64 @@ try {
   assert(bigReplay.state);assert.equal(bigReplay.events.length,0);
   assert((await db.query('select coalesce(sum(octet_length(changes::text)),0)::int bytes from public.augustus_events where game_id=$1',[active.id])).rows[0].bytes<=262144);
   console.log('Multiplayer lifecycle, leases, private recovery, authorization, idempotency, atomic merge and compact replay passed.');
+
+  const replayState=(state,changes)=>{
+    const next=structuredClone(state);
+    for(const {path,after} of changes) {
+      let target=next;
+      for(const key of path.slice(0,-1)) target=target[key];
+      target[path.at(-1)]=after;
+    }
+    return next;
+  };
+  // JSON/PostgreSQL equate signed zeros; JavaScript's strict assertion does not.
+  const wireState=state=>JSON.parse(JSON.stringify(state));
+  const actors=[host,guest,outsider,recovered], connections=[hc,gc,oc,rc];
+  let audit=await create(host,hc,id(104));
+  for(let seat=1;seat<4;seat++) await call(actors[seat],'select public.augustus_join($1,$2,$3::uuid) result',[audit.code,`Player ${seat}`,connections[seat]]);
+  audit=await open(host,audit.id,hc);
+  audit=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb) result',[audit.id,hc,audit.roster_token,JSON.stringify(interactions.before)]);
+  const views=actors.map(()=>structuredClone(interactions.before));
+  for(const [index,step] of interactions.steps.entries()) {
+    const seat=step.player, revision=index+1;
+    const receipt=await save(actors[seat],audit.id,connections[seat],revision,id(700+index),step.changes);
+    assert.deepEqual(receipt,{revision:revision+1},`${step.name}: acknowledgement contains no snapshot`);
+    for(let viewer=0;viewer<4;viewer++) {
+      const response=await sync(actors[viewer],audit.id,connections[viewer],revision,audit.roster_token);
+      views[viewer]=response.state??response.events.reduce((state,event)=>replayState(state,event.changes),views[viewer]);
+      assert.deepEqual(wireState(views[viewer]),wireState(step.after),`${step.name}: player ${viewer} diverged`);
+    }
+  }
+  await db.query('delete from public.augustus_games where id=$1',[audit.id]);
+  console.log(`${interactions.steps.length} campaign interactions replayed identically through PostgreSQL for all four players.`);
+
+  let combat=await create(host,hc,id(105));
+  await call(guest,'select public.augustus_join($1,$2,$3::uuid) result',[combat.code,'Guest',gc]);
+  combat=await open(host,combat.id,hc);
+  combat=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb) result',[combat.id,hc,combat.roster_token,JSON.stringify(battle.before)]);
+  await assert.rejects(save(guest,combat.id,gc,1,id(901),battle.changes),/Only the host/);
+  const oldBattle=battle.before.campaign.military.battles[0];
+  for(const [field,after] of [['round',1],['months',1],['random_state',999],['result','AttackerVictory']]) {
+    await assert.rejects(save(guest,combat.id,gc,1,id(902),[change(['campaign','military','battles','0',field],oldBattle[field],after)]),/Only the host/);
+  }
+  const tampered=structuredClone(battle.before.campaign.military);
+  tampered.battles[0].attackers.units[0].morale-=1;
+  await assert.rejects(save(guest,combat.id,gc,1,id(903),[change(['campaign','military'],battle.before.campaign.military,tampered)]),/Only the host/);
+  await assert.rejects(save(guest,combat.id,gc,1,id(904),[change(['campaign','military','battles'],[oldBattle],[])]),/Only the host/);
+  await assert.rejects(save(guest,combat.id,gc,1,id(905),[change(['campaign'],battle.before.campaign,battle.after.campaign)]),/Only the host/);
+  const guestCoin=battle.before.campaign.economy.players[1].coin;
+  await save(guest,combat.id,gc,1,id(906),[change(['campaign','economy','players','1','coin'],guestCoin,guestCoin-1)]);
+  await assert.rejects(save(host,combat.id,hc,1,id(907),battle.changes),/State conflict/,'stale host combat cannot ignore an unseen command');
+  const receipt=await save(host,combat.id,hc,2,id(908),battle.changes);
+  assert.deepEqual(await save(host,combat.id,hc,2,id(908),battle.changes),receipt,'a retried round commits once');
+  const combatReplay=await sync(guest,combat.id,gc,2,combat.roster_token);
+  const expected=structuredClone(battle.after);expected.campaign.economy.players[1].coin=guestCoin-1;
+  const guestBefore=structuredClone(battle.before);guestBefore.campaign.economy.players[1].coin=guestCoin-1;
+  assert.deepEqual(combatReplay.state??combatReplay.events.reduce((s,e)=>replayState(s,e.changes),guestBefore),expected);
+  // Retreat remains an input; only the host resolves its outcome at a later boundary.
+  await save(guest,combat.id,gc,3,id(909),[change(['campaign','military','battles','0','retreat_requested'],null,false)]);
+  await db.query('delete from public.augustus_games where id=$1',[combat.id]);
+  console.log('Host-only combat, parent-object authorization, stale simulation rejection, round idempotency, guest replay and retreat commands passed.');
 
   const solo=await create(outsider,oc,id(102));
   assert.equal(solo.status,'lobby');assert.equal(solo.single_player,false);

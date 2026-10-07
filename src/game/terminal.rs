@@ -46,6 +46,7 @@ pub(super) fn detect_terminal(
     mut terminal: ResMut<TerminalPresentation>,
     mut next: ResMut<NextState<AppState>>,
     mut paused: ResMut<GamePaused>,
+    game: Res<ActiveGame>,
     sound: Res<MenuAudio>,
     audio: Res<Audio>,
     assets: Res<AssetServer>,
@@ -59,7 +60,9 @@ pub(super) fn detect_terminal(
     };
     terminal.outcome = Some(outcome);
     terminal.fade_elapsed = 0.0;
-    paused.0 = true;
+    if *game != ActiveGame::Online || campaign.senate.winner.is_some() {
+        paused.0 = true;
+    }
     next.set(AppState::EndGame);
     if sound.mode != AudioMode::Mute && sound.volume > 0.001 {
         let name = match outcome {
@@ -80,6 +83,7 @@ pub(super) fn prepare_spectator(
     mut province: ResMut<ProvincePanelOpen>,
     mut paused: ResMut<GamePaused>,
     mut toasts: ResMut<toasts::ToastQueue>,
+    game: Res<ActiveGame>,
 ) {
     if !terminal.spectating {
         return;
@@ -93,7 +97,9 @@ pub(super) fn prepare_spectator(
     }
     governance.0 = false;
     province.0 = None;
-    paused.0 = false;
+    if *game != ActiveGame::Online {
+        paused.0 = false;
+    }
     toasts.clear();
 }
 

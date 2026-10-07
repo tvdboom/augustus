@@ -273,19 +273,27 @@ pub(super) fn advance_game_time(
     game: Res<ActiveGame>,
     mut ownership: ResMut<ProvinceOwnership>,
     mut campaign: ResMut<campaign::Campaign>,
-    online: Option<Res<online::OnlineClient>>,
+    mut online: Option<ResMut<online::OnlineClient>>,
 ) {
     if *game == ActiveGame::Online && !online.as_ref().is_some_and(|c| c.runs_time()) {
         return;
     }
-    if !paused.0 && matches!(*state.get(), AppState::Map | AppState::EmptyScreen) {
+    let running_screen = matches!(*state.get(), AppState::Map | AppState::EmptyScreen)
+        || (*game == ActiveGame::Online && *state.get() == AppState::EndGame);
+    if !paused.0 && running_screen {
         if campaign.active {
             let ticks = clock
                 .advance_timeline(time.delta_secs(), campaign.military.config.rounds_per_month);
+            let combat_changed = !ticks.is_empty() && !campaign.military.battles.is_empty();
             for monthly in ticks {
                 campaign.advance_live_combat();
                 if monthly {
                     campaign.advance_live_month();
+                }
+            }
+            if combat_changed && *game == ActiveGame::Online {
+                if let Some(client) = online.as_mut() {
+                    client.save();
                 }
             }
         } else {

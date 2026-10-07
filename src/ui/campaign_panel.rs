@@ -1677,7 +1677,7 @@ fn open_military_province(
 }
 
 /// Dispatch validated military commands; never grant free recruits or mutate locked battle plans.
-pub(super) fn apply_military_action(
+pub(in crate::app) fn apply_military_action(
     campaign: &mut Campaign,
     province: usize,
     player: usize,

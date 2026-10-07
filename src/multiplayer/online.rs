@@ -246,9 +246,12 @@ fn install(world: &mut World, value: Value) -> Result<(), String> {
         || c.governance.len() != n
         || c.profiles.len() != n
         || c.wars.len() != n
+        || c.npc_wars.len() != n
         || c.invitations.len() != n
         || c.politics.len() != p
         || c.graph.len() != p
+        || c.economy.adjacency.len() != p
+        || c.military.provinces.len() != p
         || p != world.resource::<ProvinceOwnership>().province_count() + 1
         || snapshot.clock.month >= 12
         || !(-2..=2).contains(&snapshot.clock.speed_step)
@@ -437,7 +440,9 @@ fn reconcile(
             .cloned()
             .collect();
         for notice in notices.into_iter().rev() {
-            world.resource_mut::<toasts::ToastQueue>().push(toasts::Toast::from_notice(notice));
+            let mut toasts = world.resource_mut::<toasts::ToastQueue>();
+            toasts.set_player(player);
+            toasts.push(toasts::Toast::from_notice(notice));
         }
     }
     record.revision = sync.revision;
@@ -585,6 +590,8 @@ pub(super) fn draw_status(
     };
     let message = if client.error.is_some() {
         None
+    } else if record.members.iter().any(|m| m.player == 0 && !m.connected) {
+        Some("Waiting for the host to reconnect. Game time is paused.")
     } else if record.members.iter().any(|m| !m.connected && !client.eliminated(m.player)) {
         Some("Waiting for players to reconnect. Game time is paused.")
     } else {

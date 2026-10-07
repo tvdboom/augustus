@@ -37,6 +37,7 @@ fn entering_spectate_closes_player_controls_and_unpauses_the_map() {
     .insert_resource(ProvincePanelOpen(Some(MapDetail::Province(0))))
     .init_resource::<campaign_panel::CampaignUi>()
     .init_resource::<toasts::ToastQueue>()
+    .init_resource::<ActiveGame>()
     .add_systems(Update, prepare_spectator);
     app.world_mut().resource_mut::<campaign_panel::CampaignUi>().open =
         Some(campaign_panel::CampaignTab::Military);

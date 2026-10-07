@@ -113,6 +113,33 @@ pub mod pairs {
     }
 }
 
+/// Encode the two coalitions' structured-key maps using the same pair format.
+pub mod pair_maps {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    /// Encode both maps without converting structured owner keys to strings.
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
+        maps: &[BTreeMap<K, V>; 2],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        maps.each_ref().map(|map| map.iter().collect::<Vec<_>>()).serialize(serializer)
+    }
+
+    /// Restore each coalition's ordered map from its stable pair array.
+    pub fn deserialize<
+        'de,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
+        deserializer: D,
+    ) -> Result<[BTreeMap<K, V>; 2], D::Error> {
+        <[Vec<(K, V)>; 2]>::deserialize(deserializer)
+            .map(|maps| maps.map(|pairs| pairs.into_iter().collect()))
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/unit/online_patch.rs"]
 mod tests;

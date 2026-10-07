@@ -98,6 +98,103 @@ fn fixture(count: usize) -> Snapshot {
     }
 }
 
+fn battle_fixture() -> Snapshot {
+    use crate::game::military::{ForceOwner, MilitaryTerrain, UnitType};
+    let mut snapshot = fixture(2);
+    let campaign = &mut snapshot.campaign;
+    let province = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+    let owners = [ForceOwner::Player(0), ForceOwner::Player(1)];
+    campaign.wars[0][1] = true;
+    campaign.wars[1][0] = true;
+    for owner in owners {
+        campaign.military.seed_unit(province, owner, UnitType::HeavyInfantry).unwrap();
+    }
+    campaign
+        .military
+        .start_battle(
+            province,
+            &owners[..1],
+            &owners[1..],
+            Some(0),
+            None,
+            MilitaryTerrain::Plains,
+            0,
+            177,
+        )
+        .unwrap();
+    snapshot
+}
+
+#[test]
+fn host_resolves_combat_and_guests_install_the_committed_round_without_rerolling() {
+    use bevy::ecs::system::RunSystemOnce;
+    let before = serde_json::to_value(battle_fixture()).unwrap();
+    let mut host = reconnect_world();
+    let mut client = OnlineClient::default();
+    let mut record: GameRecord = serde_json::from_value(reconnect_record()).unwrap();
+    record.player = 0;
+    record.state = Some(before.clone());
+    enter(&mut host, &mut client, record.clone()).unwrap();
+    host.insert_resource(client);
+    host.insert_resource(State::new(AppState::Map));
+    host.resource_mut::<Time>().advance_by(std::time::Duration::from_secs_f32(0.75));
+    host.run_system_once(advance_game_time).unwrap();
+    let after = snapshot(&host).unwrap();
+    assert_eq!(after["campaign"]["military"]["battles"][0]["round"], 1);
+    assert!(
+        host.resource::<OnlineClient>().save_requested,
+        "Publish the completed round immediately"
+    );
+
+    let mut guest = reconnect_world();
+    let mut client = OnlineClient::default();
+    record.player = 1;
+    enter(&mut guest, &mut client, record).unwrap();
+    guest.insert_resource(client);
+    guest.insert_resource(State::new(AppState::Map));
+    guest.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(3));
+    guest.run_system_once(advance_game_time).unwrap();
+    assert_eq!(snapshot(&guest).unwrap(), before, "Guests never resolve their own dice or damage");
+    let replay: Vec<_> = patch::changes(&before, &after)
+        .into_iter()
+        .map(|mut change| {
+            change.before = None;
+            change
+        })
+        .collect();
+    guest.resource_scope(|world, mut client: Mut<OnlineClient>| {
+        reconcile(
+            world,
+            &mut client,
+            serde_json::from_value(json!({
+                "revision":2, "status":"active", "roster_token":"roster", "members":null,
+                "events":[{"revision":2,"changes":replay}], "state":null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        snapshot(&guest).unwrap(),
+        after,
+        "Replay preserves every authoritative combat field"
+    );
+    guest.run_system_once(advance_game_time).unwrap();
+    assert_eq!(snapshot(&guest).unwrap(), after, "Viewing a committed round cannot reroll it");
+
+    let mut resumed: Snapshot = serde_json::from_value(after).unwrap();
+    let mut original: Snapshot = serde_json::from_value(snapshot(&host).unwrap()).unwrap();
+    while original.campaign.military.history.is_empty() {
+        original.campaign.advance_live_combat();
+        resumed.campaign.advance_live_combat();
+        assert_eq!(
+            serde_json::to_value(&resumed).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+    }
+    assert!(!original.campaign.military.history[0].round_history.is_empty());
+}
+
 #[test]
 fn snapshots_restore_every_rule_and_continue_the_same_seeded_simulation() {
     for count in 1..=4 {
@@ -386,6 +483,7 @@ fn guests_enter_newly_started_games_without_a_second_resume_lobby() {
 fn sql_fixtures_and_delta_budget() {
     let folder = std::path::Path::new("target/sql-verification");
     std::fs::create_dir_all(folder).unwrap();
+    interactions::write_sql_interactions(folder);
     for (name, count) in [("single", 1), ("multi", 2)] {
         let mut snapshot = fixture(count);
         let before = serde_json::to_value(&snapshot).unwrap();
@@ -412,6 +510,9 @@ fn sql_fixtures_and_delta_budget() {
         println!("{name}: snapshot {snapshot_bytes} bytes, monthly replay {delta_bytes} bytes");
     }
 }
+
+#[path = "multiplayer_interactions.rs"]
+mod interactions;
 
 #[test]
 fn only_connected_host_advances_time() {

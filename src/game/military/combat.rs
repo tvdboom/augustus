@@ -107,6 +107,7 @@ pub struct BattleRound {
     /// Damage multipliers corresponding to the dice, attacker first.
     pub dice_multipliers: [f64; 2],
     /// Actual manpower-weighted tactic multipliers against engaged targets.
+    #[serde(with = "crate::multiplayer::patch::pair_maps")]
     pub tactics: [BTreeMap<ForceOwner, f64>; 2],
     /// Whole people lost by each side, attacker first.
     pub casualties: [u64; 2],
