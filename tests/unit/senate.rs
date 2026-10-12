@@ -642,8 +642,9 @@ fn unavailable_senator_actions_explain_the_actual_allegiance_and_relationship() 
                     months_remaining: s.senators[0].arrangement(0).unwrap().until - s.month,
                 }
             );
+            assert!(!error.to_string().contains("cross"));
             if active.upkeep(&c).is_some() {
-                assert!(error.to_string().contains("cross"));
+                assert!(error.to_string().contains("already"));
             } else {
                 assert!(error.to_string().contains("5 months remaining"));
             }

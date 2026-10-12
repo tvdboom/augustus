@@ -359,7 +359,11 @@ pub(super) fn show(
     let gold = egui::Color32::from_rgb(190, 150, 76);
     let mut yes = false;
     let mut no = false;
-    let modal = egui::Modal::new(egui::Id::new("augustus_action_confirmation"))
+    let id = egui::Id::new("augustus_action_confirmation");
+    let modal = egui::Modal::new(id)
+        // move_to_top preserves relative order when panels also raise themselves.
+        // A higher category keeps both the card and backdrop above panels and popups.
+        .area(egui::Modal::default_area(id).order(egui::Order::Debug))
         .frame(
             egui::Frame::new()
                 .fill(province_panel::PAPER)

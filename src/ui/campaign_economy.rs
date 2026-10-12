@@ -959,14 +959,14 @@ fn effect_number(value: f64) -> String {
     format!("{value:.2}").trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-fn building_cost_order<'a>(
+/// Preserve the initial card order as completed and queued upgrades raise costs.
+fn building_display_order<'a>(
     definitions: impl Iterator<Item = &'a BuildingDefinition>,
-    province: &EconomicProvince,
 ) -> Vec<&'a BuildingDefinition> {
     let mut ordered: Vec<_> = definitions.collect();
     ordered.sort_by(|a, b| {
-        let a_quote = a.quote(province.planned_building_level(a.building));
-        let b_quote = b.quote(province.planned_building_level(b.building));
+        let a_quote = a.quote(0);
+        let b_quote = b.quote(0);
         (a_quote.stone + a_quote.metal)
             .total_cmp(&(b_quote.stone + b_quote.metal))
             .then_with(|| a_quote.stone.total_cmp(&b_quote.stone))
@@ -1317,13 +1317,12 @@ pub(in crate::app) fn readonly_buildings(
         ("City", None, true),
         ("Countryside", Some("No countryside improvements available."), false),
     ] {
-        let definitions = building_cost_order(
+        let definitions = building_display_order(
             world
                 .config
                 .buildings
                 .iter()
                 .filter(|d| d.requires_city == city && (!city || p.has_city)),
-            p,
         );
         if definitions.is_empty() && empty.is_none() {
             continue;
@@ -1425,7 +1424,7 @@ pub(in crate::app) fn buildings(
         ("Countryside", Some("No countryside improvements available."), false),
     ] {
         let definitions =
-            building_cost_order(definitions.iter().filter(|d| d.requires_city == city), &p);
+            building_display_order(definitions.iter().filter(|d| d.requires_city == city));
         if definitions.is_empty() && empty.is_none() {
             continue;
         }

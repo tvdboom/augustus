@@ -1492,7 +1492,7 @@ pub(crate) fn draw_map(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     state: Res<State<crate::app::AppState>>,
-    campaign_ui: Res<crate::app::CampaignUi>,
+    mut campaign_ui: ResMut<crate::app::CampaignUi>,
     terminal: Res<crate::app::TerminalPresentation>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -1549,6 +1549,7 @@ pub(crate) fn draw_map(
             );
             if let Some(detail) = clicked_detail.filter(|_| !panel_close_click.0) {
                 province_open.0 = Some(detail);
+                campaign_ui.map_detail_clicked();
                 governance_open.0 = false;
             }
             response

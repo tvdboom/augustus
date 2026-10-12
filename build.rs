@@ -102,6 +102,7 @@ fn main() {
     println!("cargo:rerun-if-changed=scripts/military-animation.rs");
     println!("cargo:rerun-if-changed=scripts/military-gait.rs");
     println!("cargo:rerun-if-changed=scripts/military-combat.rs");
+    println!("cargo:rerun-if-changed=scripts/military-vehicles.rs");
     println!("cargo:rerun-if-changed=src/map/military_frames.rs");
     let repository = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source_root = repository.join("assets");

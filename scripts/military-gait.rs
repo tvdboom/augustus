@@ -2,7 +2,7 @@
 //! Bone transforms preserve painted limb shape; only the hip and knee joints
 //! blend. Feet follow a closed swing, and rigid upper bodies keep gear intact.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::PI;
 
 #[derive(Clone, Copy)]
 struct Leg {
@@ -14,16 +14,8 @@ struct Leg {
     knee_offset: [f32; 2],
 }
 
-#[derive(Clone, Copy)]
-struct Wheel {
-    center: [f32; 2],
-    radius: [f32; 2],
-    rotation: [f32; 2],
-}
-
 pub struct Rig {
     legs: Vec<Leg>,
-    wheels: Vec<Wheel>,
     size: [f32; 2],
     body_offset: [f32; 2],
     carriage: bool,
@@ -33,7 +25,6 @@ impl Rig {
     pub fn new(name: &str, width: f32, height: f32, theta: f32) -> Self {
         let mut rig = Self {
             legs: Vec::new(),
-            wheels: Vec::new(),
             size: [width, height],
             body_offset: [0.45 * theta.sin(), -1.05 * (theta * 2.).cos()],
             carriage: matches!(name, "ballista" | "catapult" | "war-chariots"),
@@ -73,22 +64,18 @@ impl Rig {
                 rig.leg([0.70, 0.72], [0.76, 0.81], [0.80, 0.87], theta, 0.20);
             },
             "war-chariots" => {
+                rig.body_offset = [0.; 2];
                 rig.leg([0.43, 0.69], [0.41, 0.83], [0.44, 0.95], theta, 0.26);
                 rig.leg([0.56, 0.69], [0.55, 0.83], [0.58, 0.93], theta + PI, 0.23);
                 rig.leg([0.67, 0.70], [0.72, 0.84], [0.76, 0.97], theta + PI, 0.26);
                 rig.leg([0.80, 0.66], [0.88, 0.80], [0.87, 0.94], theta, 0.23);
-                rig.wheel([0.13, 0.70], [0.095, 0.15], theta);
             },
             "ballista" | "catapult" => {
-                rig.body_offset = [0., -0.40 * (theta * 2.).cos()];
-                rig.leg([0.13, 0.61], [0.07, 0.78], [0.05, 0.94], theta, 0.24);
+                rig.body_offset = [0.; 2];
                 if name == "ballista" {
-                    rig.wheel([0.23, 0.78], [0.07, 0.12], theta);
-                    rig.wheel([0.59, 0.88], [0.075, 0.115], theta);
+                    rig.leg([0.185, 0.54], [0.13, 0.70], [0.055, 0.82], theta, 0.18);
                 } else {
-                    rig.wheel([0.18, 0.81], [0.065, 0.10], theta);
-                    rig.wheel([0.59, 0.91], [0.07, 0.09], theta);
-                    rig.wheel([0.94, 0.78], [0.055, 0.10], theta);
+                    rig.leg([0.20, 0.55], [0.10, 0.73], [0.08, 0.84], theta, 0.18);
                 }
             },
             _ => unreachable!("unknown military walking rig"),
@@ -116,14 +103,6 @@ impl Rig {
             thigh_rotation,
             shin_rotation,
             knee_offset,
-        });
-    }
-
-    fn wheel(&mut self, center: [f32; 2], radius: [f32; 2], theta: f32) {
-        self.wheels.push(Wheel {
-            center: self.to_pixels(center),
-            radius: self.to_pixels(radius),
-            rotation: rotation(theta.rem_euclid(TAU)),
         });
     }
 
@@ -196,9 +175,6 @@ impl Rig {
     /// The baker samples through the backward flow directly, so it does not
     /// need an iterative inverse that can jump between adjacent moving limbs.
     pub fn source_point(&self, x: f32, y: f32) -> [f32; 2] {
-        if let Some(point) = self.wheel_source(x, y) {
-            return point;
-        }
         let point = self.flow(x, y, -1.);
         [point[0] / self.size[0], point[1] / self.size[1]]
     }
@@ -207,27 +183,6 @@ impl Rig {
     pub fn displacement(&self, x: f32, y: f32) -> [f32; 2] {
         let initial = self.to_pixels([x, y]);
         subtract(self.flow(x, y, 1.), initial)
-    }
-
-    /// A wheel uses an exact inverse rigid rotation, rather than iterating a
-    /// deformation field through a half-turn. Preserve its elliptical outline
-    /// and leave the metal rim outside the rotating inset untouched.
-    pub fn wheel_source(&self, x: f32, y: f32) -> Option<[f32; 2]> {
-        let point = subtract(self.to_pixels([x, y]), self.body_offset);
-        for wheel in &self.wheels {
-            let radial = [
-                (point[0] - wheel.center[0]) / wheel.radius[0],
-                (point[1] - wheel.center[1]) / wheel.radius[1],
-            ];
-            if radial[0] * radial[0] + radial[1] * radial[1] < 0.85 * 0.85 {
-                let rotated = rotate(radial, [wheel.rotation[0], -wheel.rotation[1]]);
-                return Some([
-                    (wheel.center[0] + rotated[0] * wheel.radius[0]) / self.size[0],
-                    (wheel.center[1] + rotated[1] * wheel.radius[1]) / self.size[1],
-                ]);
-            }
-        }
-        None
     }
 }
 

@@ -99,18 +99,23 @@ impl CampaignUi {
         std::mem::take(&mut self.confirmation_sound_pending)
     }
 
-    /// Only the separate capital opens Rome; Latium uses the normal province inspector.
+    /// Treat every map click as a fresh selection, including the current city.
+    pub(crate) fn map_detail_clicked(&mut self) {
+        self.last_detail = None;
+    }
+
+    /// Cities open Buildings; the separate capital keeps its Senate destination.
     fn select_map_detail(&mut self, selected: MapDetail, campaign: &Campaign) {
         self.close_province_selector();
         let province = match selected {
             MapDetail::Province(id) | MapDetail::City(id) => id,
         };
-        if self.province.is_none() && campaign.economy.provinces[province].name != "Rome" {
-            self.section = if matches!(selected, MapDetail::City(_)) {
-                2
-            } else {
-                0
-            };
+        if campaign.economy.provinces[province].name != "Rome" {
+            if matches!(selected, MapDetail::City(_)) {
+                self.section = 2;
+            } else if self.province.is_none() {
+                self.section = 0;
+            }
         }
         self.province = Some(province);
         self.last_detail = Some(selected);
@@ -1423,6 +1428,13 @@ pub(in crate::app) fn draw(
             campaign_trade::open_routes(ctx, player);
         }
         open_notification(&mut view, &notice, campaign, &mut detail, &mut map_view);
+        close_click.0 = true;
+        play_click(&sound, &audio, &assets);
+    }
+    if campaign_military::take_military_overview_click(ctx) {
+        view.close_inspector(&mut detail);
+        view.open = Some(CampaignTab::Military);
+        governance_open.0 = false;
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
     }

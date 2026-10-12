@@ -301,6 +301,12 @@ struct SenatorEffect {
     until: u32,
 }
 impl Senator {
+    /// Whether the viewer has an unexpired action or temporary effect on this seat.
+    pub fn has_active_action(&self, player: PlayerId, month: u32) -> bool {
+        self.arrangements.iter().any(|a| a.player == player && a.until > month)
+            || self.effects.iter().any(|effect| effect.player == player && effect.until > month)
+    }
+
     /// The viewer's own ongoing action; other players' actions stay private in the UI.
     pub fn arrangement(&self, player: PlayerId) -> Option<SenatorArrangement> {
         self.arrangements.iter().find(|a| a.player == player).copied()

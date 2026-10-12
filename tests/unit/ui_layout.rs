@@ -3748,7 +3748,7 @@ fn rome_city_opens_senate_while_latium_opens_its_normal_province_panel() {
     assert_eq!(view.open, Some(CampaignTab::Province));
     assert_eq!(view.section, 0);
     view.select_map_detail(MapDetail::City(0), &c);
-    assert_eq!(view.section, 0, "City selection must retain the remembered province tab");
+    assert_eq!(view.section, 2, "City selection opens Buildings");
 }
 
 #[test]
@@ -3979,13 +3979,13 @@ fn selecting_a_map_battle_replaces_province_and_military_inspectors() {
 }
 
 #[test]
-fn province_selection_remembers_each_tab_across_map_changes_and_reopening() {
+fn province_selection_remembers_tabs_while_city_selection_opens_buildings() {
     let mut campaign = fixture();
     campaign.economy.provinces[2].name = "Latium".into();
     for section in 0..6 {
         let mut view = CampaignUi::default();
         view.open_province_section(0, section);
-        for selected in [MapDetail::Province(1), MapDetail::City(3), MapDetail::Province(2)] {
+        for selected in [MapDetail::Province(1), MapDetail::Province(3), MapDetail::Province(2)] {
             view.select_map_detail(selected, &campaign);
             assert_eq!(view.section, section);
         }
@@ -3994,6 +3994,15 @@ fn province_selection_remembers_each_tab_across_map_changes_and_reopening() {
         view.select_map_detail(MapDetail::Province(4), &campaign);
         assert_eq!(view.open, Some(CampaignTab::Province));
         assert_eq!(view.section, section);
+        view.select_map_detail(MapDetail::City(3), &campaign);
+        assert_eq!(view.open, Some(CampaignTab::Province));
+        assert_eq!(view.province, Some(3));
+        assert_eq!(view.section, 2, "City selection opens Buildings from every remembered tab");
+        view.section = section;
+        view.open = None;
+        view.select_map_detail(MapDetail::City(3), &campaign);
+        assert_eq!(view.open, Some(CampaignTab::Province));
+        assert_eq!(view.section, 2, "Reopening the same city selects Buildings");
     }
     let mut view = CampaignUi::default();
     view.select_map_detail(MapDetail::City(0), &campaign);

@@ -13,6 +13,8 @@ use std::{f32::consts::TAU, path::Path};
 mod combat;
 #[path = "military-gait.rs"]
 mod gait;
+#[path = "military-vehicles.rs"]
+mod vehicles;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Motion {
@@ -27,8 +29,7 @@ enum Body {
     Horse,
     Camel,
     Elephant,
-    Chariot,
-    Engine,
+    Vehicle,
 }
 
 struct Pose {
@@ -41,6 +42,7 @@ struct Pose {
     body: Body,
     spear: bool,
     name: String,
+    vehicle: Option<vehicles::Vehicle>,
 }
 
 #[derive(Clone, Copy)]
@@ -72,15 +74,19 @@ pub fn build(source: &Path, target: &Path, motion: Motion) {
         let phase = Phase::new(angle);
         let gait = matches!(motion, Motion::Movement)
             .then(|| gait::Rig::new(&pose.name, pose.width, pose.height, angle));
-        let combat = matches!(motion, Motion::Combat)
+        let combat = (matches!(motion, Motion::Combat) && pose.vehicle.is_none())
             .then(|| combat::Combat::new(&pose.name, pose.width, pose.height, angle));
+        let vehicle = pose.vehicle.as_ref().map(|vehicle| vehicle.animate(angle));
         let offset_x = frame as u32 % COLUMNS * SIZE;
         let offset_y = frame as u32 / COLUMNS * SIZE;
         for y in 0..SIZE {
             for x in 0..SIZE {
                 let destination = [x as f32, y as f32];
                 let mut source_point = destination;
-                if let Some(rig) = &gait {
+                if let Some(point) = vehicle.as_ref().and_then(|rig| rig.source_point(destination))
+                {
+                    source_point = point;
+                } else if let Some(rig) = &gait {
                     let local = rig.source_point(
                         (destination[0] - pose.left) / pose.width,
                         (destination[1] - pose.top) / pose.height,
@@ -166,7 +172,25 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
     let mut crop =
         image::imageops::crop_imm(&cell, left, top, right - left, bottom - top).to_image();
     let centered_width = (ground - left as f32).max(right as f32 - ground) * 2.;
-    let scale = (152. / centered_width).min(152. / crop.height() as f32);
+    let scale = if let Some(map_scale) = crate::military_frames::vehicle_scale(name) {
+        let row = match motion {
+            Motion::Idle => 0,
+            Motion::Movement => 1,
+            Motion::Combat => 2,
+        };
+        // Crown-to-chin landmarks in the original 313px cells, excluding
+        // helmet plumes. Crouching/riding cannot change anatomical scale.
+        let head = match name {
+            "ballista" => [40., 39., 38.][row],
+            "catapult" => [32., 36., 33.][row],
+            "war-chariots" => [32., 29., 33.][row],
+            _ => unreachable!(),
+        };
+        // Infantry crown-to-chin height including its common map scale.
+        26.5 / (head * map_scale)
+    } else {
+        (152. / centered_width).min(152. / crop.height() as f32)
+    };
     // The upright spear adds empty height above the light infantry's head.
     // Calibrate crown-to-sole stature and silhouette width separately against
     // the archer, without moving the grounded center.
@@ -195,6 +219,19 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
         .max()
         .expect("normalized military pose must be visible");
     let y = i64::from(BASELINE) - i64::from(foot);
+    let vehicle = vehicles::Vehicle::new(
+        name,
+        match motion {
+            Motion::Idle => vehicles::Motion::Idle,
+            Motion::Movement => vehicles::Motion::Movement,
+            Motion::Combat => vehicles::Motion::Combat,
+        },
+        [
+            x as f32 - left as f32 * width as f32 / crop.width() as f32,
+            y as f32 - top as f32 * height as f32 / crop.height() as f32,
+        ],
+        [width as f32 / crop.width() as f32, height as f32 / crop.height() as f32],
+    );
     let mut pixels = RgbaImage::new(SIZE, SIZE);
     image::imageops::replace(&mut pixels, &small, x, y);
     // Keep one soft fringe row below the opaque foot, without a hanging
@@ -208,8 +245,7 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
         "light-infantry" | "heavy-infantry" | "archers" => Body::Infantry,
         "war-camels" => Body::Camel,
         "war-elephants" => Body::Elephant,
-        "war-chariots" => Body::Chariot,
-        "ballista" | "catapult" => Body::Engine,
+        "war-chariots" | "ballista" | "catapult" => Body::Vehicle,
         "light-cavalry" | "heavy-cavalry" | "horse-archers" => Body::Horse,
         _ => panic!("unknown military rig {name}"),
     };
@@ -222,6 +258,7 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
         body,
         spear: name == "light-infantry",
         name: name.to_owned(),
+        vehicle,
     }
 }
 
@@ -232,12 +269,7 @@ fn prepare_pose(source: &Path, motion: Motion) -> Pose {
 fn idle_motion(pose: &Pose, p: Phase, x: f32, y: f32) -> [f32; 2] {
     match pose.body {
         Body::Infantry => infantry_idle(pose, p, x, y),
-        Body::Engine => {
-            // Only the operator leans over the windlass. The wheels and wooden
-            // frame are fixed, as are the operator's planted lower legs.
-            let crew = (1. - smooth(0.28, 0.49, x)) * (1. - smooth(0.40, 0.73, y));
-            [(3.5 * p.sin + 0.5 * p.sin2) * crew, (-1.8 * p.cos + 0.35 * p.cos2) * crew]
-        },
+        Body::Vehicle => unreachable!("vehicles use their dedicated rigid-part rig"),
         body => mounted_idle(body, p, x, y),
     }
 }
@@ -279,13 +311,7 @@ fn infantry_idle(pose: &Pose, p: Phase, x: f32, y: f32) -> [f32; 2] {
 
 fn mounted_idle(body: Body, p: Phase, x: f32, y: f32) -> [f32; 2] {
     let elephant = matches!(body, Body::Elephant);
-    let chariot = matches!(body, Body::Chariot);
     let upper = 1. - smooth(0.50, 0.90, y);
-    let animal = if chariot {
-        smooth(0.34, 0.50, x)
-    } else {
-        1.
-    };
     let rider = (1. - smooth(0.31, 0.53, y)) * (1. - smooth(0.62, 0.80, x));
     let head = smooth(0.56, 0.83, x) * smooth(0.18, 0.35, y) * (1. - smooth(0.58, 0.80, y));
     let tail = (1. - smooth(0.08, 0.24, x)) * smooth(0.39, 0.54, y) * (1. - smooth(0.68, 0.88, y));
@@ -295,12 +321,12 @@ fn mounted_idle(body: Body, p: Phase, x: f32, y: f32) -> [f32; 2] {
         0.
     };
     [
-        1.25 * p.sin * upper * animal
+        1.25 * p.sin * upper
             + (2.35 * p.sin + 0.70 * p.sin2) * rider
             + 2.1 * p.sin * head
             + (4.2 * p.sin2 + 0.6 * p.sin) * tail
             + 4.8 * p.sin * trunk,
-        (-1.2 * p.cos + 0.2 * p.cos2) * upper * animal - 1.1 * p.sin * rider
+        (-1.2 * p.cos + 0.2 * p.cos2) * upper - 1.1 * p.sin * rider
             + 2.4 * p.sin * head
             + 1.1 * p.cos2 * tail
             - 1.6 * (1. - p.cos) * trunk,

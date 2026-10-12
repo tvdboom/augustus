@@ -59,7 +59,7 @@ fn scandal_campaign(target: ScandalTarget, kind: ScandalKind, severity: Severity
 fn scandals_grant_immediate_severity_scaled_control_and_relation_against_both_target_types() {
     for (target, province) in [(ScandalTarget::Province(0), 0), (ScandalTarget::Player(1), 1)] {
         for (severity, expected) in
-            [(Severity::Minor, 5.0), (Severity::Medium, 7.5), (Severity::Major, 10.0)]
+            [(Severity::Minor, 10.0), (Severity::Medium, 20.0), (Severity::Major, 30.0)]
         {
             for usage in [ScandalUse::Control, ScandalUse::Relation] {
                 let mut campaign = scandal_campaign(target, ScandalKind::SecretPayments, severity);
@@ -144,7 +144,7 @@ fn provincial_claims_require_local_misconduct_and_never_waste_evidence_at_the_ca
             Err(PoliticalError::Ineligible)
         );
         assert_eq!(campaign.espionage.scandals.len(), 1);
-        assert_eq!(campaign.use_scandal(0, 1, 1, ScandalUse::Relation), Ok(10.0));
+        assert_eq!(campaign.use_scandal(0, 1, 1, ScandalUse::Relation), Ok(30.0));
     }
     for usage in [ScandalUse::Control, ScandalUse::Relation] {
         let mut campaign = scandal_campaign(

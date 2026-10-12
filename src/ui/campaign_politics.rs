@@ -12,6 +12,7 @@ const INK: egui::Color32 = egui::Color32::from_rgb(57, 43, 37);
 const UNDECIDED: egui::Color32 = egui::Color32::from_rgb(145, 143, 134);
 const POSITIVE: egui::Color32 = egui::Color32::from_rgb(32, 116, 58);
 const NEGATIVE: egui::Color32 = egui::Color32::from_rgb(166, 44, 34);
+const ACTIVE_ACTION: egui::Color32 = egui::Color32::from_rgb(184, 135, 52);
 
 #[cfg(test)]
 #[path = "../../tests/unit/senate_ui.rs"]
@@ -251,24 +252,6 @@ fn senator_actions(
             ui.ctx().move_to_top(tooltip.response.layer_id);
         }
         if let Some(cancel) = cancel {
-            if egui::Tooltip::should_show_tooltip(&cancel, false) {
-                let tooltip = senator_popover(
-                    &cancel,
-                    cancel.id.with("description"),
-                    ui.spacing().tooltip_width,
-                    scale,
-                    false,
-                    |ui| {
-                        ui.label("Cancel action");
-                        ui.label(match action {
-                            SenatorAction::Lobby => "You are already lobbying this senator.",
-                            SenatorAction::Bribe => "You are already bribing this senator.",
-                            _ => "You have an ongoing action with this senator.",
-                        });
-                    },
-                );
-                ui.ctx().move_to_top(tooltip.response.layer_id);
-            }
             if cancel.clicked() {
                 *message = Some(match senate.cancel_senator_action(player, id) {
                     Ok(()) => format!(
@@ -988,12 +971,16 @@ fn draw_chamber(
                 radius,
                 egui::Stroke::new(0.8, INK.gamma_multiply(0.65)),
             );
-            if senator.arrangement(player).is_some() || selected == Some(senator.id) {
+            if senator.has_active_action(player, senate.month) {
+                ui.painter().circle_stroke(point, radius + 2.3, egui::Stroke::new(3.5, PAPER));
                 ui.painter().circle_stroke(
                     point,
-                    radius + 1.8,
-                    egui::Stroke::new(1.3, egui::Color32::from_rgb(184, 135, 52)),
+                    radius + 2.3,
+                    egui::Stroke::new(2.0, ACTIVE_ACTION),
                 );
+            }
+            if selected == Some(senator.id) {
+                ui.painter().circle_stroke(point, radius + 0.5, egui::Stroke::new(1.5, INK));
             }
             let seat_response = ui
                 .interact(

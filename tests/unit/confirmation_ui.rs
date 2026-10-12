@@ -150,40 +150,68 @@ fn click(
 }
 
 #[test]
-fn confirmation_stays_above_foreground_panels() {
-    let ctx = egui::Context::default();
-    let mut campaign = fixture();
-    let mut view = CampaignUi::default();
-    campaign.military.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
-    view.confirmation = PendingConfirmation::new(&campaign, 0, 0, ConfirmationAction::DisbandArmy);
-    for _ in 0..2 {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 900.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                let panel = egui::Area::new(egui::Id::new("overlapping-army-panel"))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(500.0, 350.0))
-                    .show(ui.ctx(), |ui| {
-                        ui.set_min_size(egui::vec2(400.0, 400.0));
-                    });
-                ui.ctx().move_to_top(panel.response.layer_id);
-                show(ui.ctx(), &mut view, &mut campaign);
-            },
-        );
-        output.textures_delta.clear();
-        assert_eq!(
-            ctx.memory(|memory| memory.areas().top_layer_id(egui::Order::Foreground)),
-            Some(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("augustus_action_confirmation"),
-            )),
-        );
+fn reopened_confirmation_paints_and_blocks_input_above_panels() {
+    for order in [egui::Order::Foreground, egui::Order::Tooltip] {
+        let ctx = egui::Context::default();
+        let mut campaign = fixture();
+        let mut view = CampaignUi::default();
+        campaign.military.seed_unit(0, ForceOwner::Player(0), UnitType::LightInfantry).unwrap();
+        let pending = PendingConfirmation::new(&campaign, 0, 0, ConfirmationAction::DisbandArmy);
+
+        // egui remembers layer order after closing a modal. Open the panel later,
+        // then reopen the modal while both request move_to_top every frame.
+        view.confirmation = pending.clone();
+        frame(&ctx, &mut campaign, &mut view, vec![]);
+        view.dismiss_confirmation();
+        for phase in 0..4 {
+            if phase == 1 {
+                view.confirmation = pending.clone();
+            }
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let panel = egui::Area::new(egui::Id::new("overlapping-army-panel"))
+                        .order(order)
+                        .fixed_pos(egui::pos2(400.0, 300.0))
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::new().fill(egui::Color32::RED).show(ui, |ui| {
+                                ui.set_min_size(egui::vec2(500.0, 400.0));
+                                ui.label("Army panel");
+                            });
+                        });
+                    ui.ctx().move_to_top(panel.response.layer_id);
+                    show(ui.ctx(), &mut view, &mut campaign);
+                },
+            );
+            output.textures_delta.clear();
+            if phase == 0 {
+                continue;
+            }
+            let text_index = |label| {
+                output.shapes.iter().position(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+                }).unwrap()
+            };
+            assert!(
+                text_index("Disband army") > text_index("Army panel"),
+                "The reopened modal must paint above {order:?} panels"
+            );
+            let layer = ctx.layer_id_at(text_rect(&output, "Yes").center()).unwrap();
+            assert_eq!(layer.id, egui::Id::new("augustus_action_confirmation"));
+            assert!(
+                !ctx.memory(|memory| memory.allows_interaction(egui::LayerId::new(
+                    order,
+                    egui::Id::new("overlapping-army-panel"),
+                ))),
+                "The modal must block {order:?} panel input"
+            );
+        }
     }
 }
 

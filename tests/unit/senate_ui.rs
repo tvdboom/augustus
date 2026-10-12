@@ -404,6 +404,7 @@ fn ongoing_actions_are_private_in_the_chamber_and_popup() {
         ..Default::default()
     };
     senate.act_on_senator(1, 0, SenatorAction::Lobby, &mut players, &config).unwrap();
+    senate.act_on_senator(1, 1, SenatorAction::Gift, &mut players, &config).unwrap();
     let (chamber, _) = render(&egui::Context::default(), &senate, 590.0, 0.0, None);
     assert!(!chamber.shapes.iter().any(|shape| matches!(&shape.shape,
         egui::Shape::Circle(circle) if circle.stroke.color == egui::Color32::from_rgb(184, 135, 52))));
@@ -418,6 +419,27 @@ fn ongoing_actions_are_private_in_the_chamber_and_popup() {
     assert!(!texts(&owner)
         .iter()
         .any(|text| text.contains("Lobbying for") || text.contains("End senator lobbying")));
+
+    senate.act_on_senator(0, 0, SenatorAction::Lobby, &mut players, &config).unwrap();
+    senate.act_on_senator(0, 1, SenatorAction::Gift, &mut players, &config).unwrap();
+    let active_seats = |senate: &SenateState| {
+        let (chamber, _) = render(&egui::Context::default(), senate, 590.0, 0.0, None);
+        chamber
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape,
+            egui::Shape::Circle(circle) if circle.stroke.color == ACTIVE_ACTION)
+            })
+            .count()
+    };
+    assert_eq!(active_seats(&senate), 2);
+    senate.cancel_senator_action(0, 0).unwrap();
+    assert_eq!(active_seats(&senate), 1);
+    for _ in 0..4 {
+        senate.advance_month(&players, &[], &config);
+    }
+    assert_eq!(active_seats(&senate), 0);
 }
 
 #[test]
@@ -461,10 +483,8 @@ fn ongoing_action_cross_cancels_only_your_action_without_spending_and_can_restar
                 (frame == 1).then_some(egui::Event::PointerMoved(position)).into_iter().collect(),
             );
         }
-        assert!(texts(&hover).contains(&"Cancel action"));
-        if action == SenatorAction::Lobby {
-            assert!(texts(&hover).contains(&"You are already lobbying this senator."));
-        }
+        assert!(!texts(&hover).contains(&"Cancel action"));
+        assert!(!texts(&hover).iter().any(|text| text.contains("this senator")));
         let balances: Vec<_> = players.iter().map(|p| (p.coin, p.influence)).collect();
         let click = |pressed| egui::Event::PointerButton {
             pos: position,

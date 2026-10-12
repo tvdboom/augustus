@@ -818,6 +818,7 @@ fn province_access_is_local_and_notifies_the_guest_immediately_on_each_change() 
     let mut c = campaign();
     c.politics[1] = ProvincePolitics::owned(2, 0);
     c.economy.provinces[1].owner = Some(0);
+    c.initialize_notification_snapshot();
     for granted in [true, false, true] {
         c.set_province_access(0, 0, 1, granted).unwrap();
         assert_eq!(
@@ -838,6 +839,67 @@ fn province_access_is_local_and_notifies_the_guest_immediately_on_each_change() 
     assert!(c.notifications.history_for(0).next().is_none());
     c.set_province_access(0, 0, 1, true).unwrap();
     assert!(c.notifications.drain_for(1).is_empty());
+    c.advance_month();
+    assert!(!c.notifications.drain_for(1).iter().any(|notice| matches!(
+        notice.kind,
+        NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+    )));
+    assert_eq!(
+        c.notifications
+            .history_for(1)
+            .filter(|notice| matches!(
+                notice.kind,
+                NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+            ))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn immediate_access_changes_are_not_repeated_next_month_or_hide_other_access_changes() {
+    let mut c = campaign();
+    c.initialize_notification_snapshot();
+    // A separate invitation must still be reported by the monthly comparison.
+    c.invitations[1][0] = true;
+    for (index, granted) in [true, false].into_iter().enumerate() {
+        c.set_province_access(0, 0, 1, granted).unwrap();
+        let notices = c.notifications.drain_for(1);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].kind,
+            if granted {
+                NoticeKind::MilitaryAccessGranted
+            } else {
+                NoticeKind::MilitaryAccessRevoked
+            }
+        );
+        for _ in 0..2 {
+            c.advance_month();
+            assert!(!c.notifications.drain_for(1).iter().any(|notice| matches!(
+                notice.kind,
+                NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+            )));
+        }
+        assert_eq!(
+            c.notifications
+                .history_for(1)
+                .filter(|notice| matches!(
+                    notice.kind,
+                    NoticeKind::MilitaryAccessGranted | NoticeKind::MilitaryAccessRevoked
+                ))
+                .count(),
+            index + 1
+        );
+    }
+    assert_eq!(
+        c.notifications
+            .history_for(0)
+            .filter(|notice| notice.kind == NoticeKind::MilitaryAccessGranted
+                && notice.province == Some(2))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -958,6 +1020,7 @@ fn access_revocation_without_units_has_no_marching_claim_and_failure_preserves_a
 #[test]
 fn war_clears_province_access_and_prevents_new_grants() {
     let mut c = campaign();
+    c.initialize_notification_snapshot();
     c.set_province_access(0, 0, 1, true).unwrap();
     c.set_province_access(2, 1, 0, true).unwrap();
     c.declare_hostility(0, 2);
@@ -965,6 +1028,17 @@ fn war_clears_province_access_and_prevents_new_grants() {
     assert!(!c.province_access_granted(2, 1, 0));
     assert!(c.set_province_access(0, 0, 1, true).is_err());
     assert_eq!(c.access_snapshot()[1][0], MilitaryAccess::Invasion);
+    c.advance_month();
+    for player in 0..2 {
+        assert_eq!(
+            c.notifications
+                .history_for(player)
+                .filter(|notice| notice.kind == NoticeKind::MilitaryAccessRevoked)
+                .count(),
+            1,
+            "War must still report revocation of immediately granted access"
+        );
+    }
 }
 
 #[test]

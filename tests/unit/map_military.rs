@@ -1,6 +1,9 @@
 use super::*;
 use crate::game::military::BattlePlan;
 
+#[path = "../../scripts/military-vehicles.rs"]
+mod vehicle_rig;
+
 fn preview_order() -> MovementOrder {
     MovementOrder {
         id: 91,
@@ -1556,6 +1559,8 @@ fn light_infantry_matches_archer_stature_without_counting_its_spear() {
 #[test]
 fn idle_motion_has_visible_body_travel_and_keeps_planted_feet() {
     for kind in UnitType::ALL {
+        let vehicle =
+            matches!(kind, UnitType::Ballista | UnitType::Catapult | UnitType::WarChariots);
         let sheet = image::load_from_memory(IDLE_SHEETS[kind as usize]).unwrap().to_rgba8();
         let mut centers = Vec::with_capacity(frames::COUNT);
         for frame in 0..frames::COUNT as u32 {
@@ -1565,8 +1570,16 @@ fn idle_motion_has_visible_body_travel_and_keeps_planted_feet() {
             // Follow the visible upper body, excluding grounded boots/wheels.
             // This measures actual silhouette travel rather than byte changes
             // caused by subpixel filtering or transparency alone.
-            for y in 0..frames::BASELINE - 40 {
-                for x in 0..frames::SIZE {
+            // A vehicle's timber should stay still. Measure its crew separately
+            // instead of requiring the whole machine to sway with the operator.
+            let (sample_left, sample_top, sample_right, sample_bottom) = match kind {
+                UnitType::WarChariots => (45, 50, 85, 82),
+                UnitType::Ballista => (50, 46, 84, 80),
+                UnitType::Catapult => (40, 48, 74, 83),
+                _ => (0, 0, frames::SIZE, frames::BASELINE - 40),
+            };
+            for y in sample_top..sample_bottom {
+                for x in sample_left..sample_right {
                     let alpha = f64::from(sheet.get_pixel(left + x, top + y)[3]);
                     mass += alpha;
                     weighted_x += f64::from(x) * alpha;
@@ -1590,13 +1603,105 @@ fn idle_motion_has_visible_body_travel_and_keeps_planted_feet() {
             .iter()
             .flat_map(|a| centers.iter().map(move |b| (a[0] - b[0]).hypot(a[1] - b[1])))
             .fold(0_f64, f64::max);
-        // The previous 0.4–0.7px poses passed frame-uniqueness tests but looked
-        // stationary after map scaling. Demand meaningful travel across a cycle.
+        // Small crew gestures are magnified by the vehicle's larger map tile;
+        // infantry still needs the stronger whole-body weight shift.
         assert!(
-            excursion >= 2.,
+            excursion
+                >= if vehicle {
+                    0.75
+                } else {
+                    2.
+                },
             "{} idle is visually static: only {excursion:.2}px of upper-body travel",
             kind.name()
         );
+    }
+}
+
+#[test]
+fn vehicle_wheels_keep_rims_hubs_and_timber_fixed_in_every_state() {
+    use vehicle_rig::Motion;
+    for name in ["war-chariots", "ballista", "catapult"] {
+        for motion in [Motion::Idle, Motion::Movement, Motion::Combat] {
+            let vehicle = vehicle_rig::Vehicle::new(name, motion, [0.; 2], [1.; 2]).unwrap();
+            // Painted carriage/axle locations are below the crew and outside
+            // exposed walking limbs. Include both sides of the chariot rim.
+            let points: &[[f32; 2]] = if name == "war-chariots" {
+                &[[22., 220.], [78., 220.], [49., 181.], [49., 259.], [105., 185.]]
+            } else {
+                &[[156., 198.], [210., 204.], [265., 182.]]
+            };
+            for frame in 0..frames::COUNT {
+                let rig =
+                    vehicle.animate(std::f32::consts::TAU * frame as f32 / frames::COUNT as f32);
+                for &point in points {
+                    assert_eq!(
+                        rig.source_point(point),
+                        Some(point),
+                        "{name} frame {frame} at {point:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn wheel_spokes_rotate_inside_a_fixed_ellipse_without_moving_the_axle() {
+    for (name, center, radius) in [
+        ("war-chariots", [49., 220.], [30., 42.]),
+        ("ballista", [69., 225.], [26., 34.]),
+        ("catapult", [77., 215.], [26., 34.]),
+    ] {
+        let vehicle =
+            vehicle_rig::Vehicle::new(name, vehicle_rig::Motion::Movement, [0.; 2], [1.; 2])
+                .unwrap();
+        let spoke = [center[0] + radius[0] * 0.55, center[1]];
+        let mut moved = false;
+        for frame in 0..frames::COUNT {
+            let rig = vehicle.animate(std::f32::consts::TAU * frame as f32 / frames::COUNT as f32);
+            assert_eq!(rig.source_point(center), Some(center));
+            let source = rig.source_point(spoke).unwrap();
+            let distance = ((source[0] - center[0]) / radius[0]).powi(2)
+                + ((source[1] - center[1]) / radius[1]).powi(2);
+            assert!((distance - 0.55 * 0.55).abs() < 0.0001, "{name} changes wheel shape");
+            moved |= (source[1] - spoke[1]).abs() > 5.;
+        }
+        assert!(moved, "{name} spokes should visibly rotate while marching");
+    }
+}
+
+#[test]
+fn rendered_siege_crew_matches_infantry_scale() {
+    let head_width = |kind: UnitType, bounds: [u32; 4]| {
+        let sheet = image::load_from_memory(IDLE_SHEETS[kind as usize]).unwrap().to_rgba8();
+        let mut total = 0.;
+        for frame in 0..frames::COUNT as u32 {
+            let left = frame % frames::COLUMNS * frames::SIZE;
+            let top = frame / frames::COLUMNS * frames::SIZE;
+            // Painted head/face bands exclude weapons and the chariot plume.
+            // Compare the rendered artwork, including its actual map scale.
+            let width = (bounds[1]..bounds[3])
+                .filter_map(|y| {
+                    let pixels: Vec<_> = (bounds[0]..bounds[2])
+                        .filter(|&x| sheet.get_pixel(left + x, top + y)[3] > 127)
+                        .collect();
+                    Some(pixels.last()? - pixels.first()? + 1)
+                })
+                .max()
+                .unwrap();
+            total += width as f32 * troop_scale(kind);
+        }
+        total / frames::COUNT as f32
+    };
+    let infantry = head_width(UnitType::Archers, [80, 28, 115, 42]);
+    for (kind, bounds) in [
+        (UnitType::Ballista, [50, 60, 85, 72]),
+        (UnitType::Catapult, [40, 65, 75, 76]),
+        (UnitType::WarChariots, [55, 66, 84, 76]),
+    ] {
+        let ratio = head_width(kind, bounds) / infantry;
+        assert!((0.88..1.20).contains(&ratio), "{kind:?} head scale is {ratio:.2} of infantry");
     }
 }
 

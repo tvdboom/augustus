@@ -248,6 +248,23 @@ impl CampaignNotifications {
         }
     }
 
+    /// Advance only the access baseline already reported by an immediate notice.
+    pub fn record_notified_military_access(
+        &mut self,
+        player: usize,
+        province: usize,
+        access: MilitaryAccess,
+    ) {
+        if let Some(previous) = self
+            .last_final
+            .as_mut()
+            .and_then(|snapshot| snapshot.military_access.get_mut(player))
+            .and_then(|row| row.get_mut(province))
+        {
+            *previous = access;
+        }
+    }
+
     /// Aggregate monthly events while retaining each military access change.
     pub fn push(&mut self, mut notice: CampaignNotice) {
         let same = |old: &CampaignNotice| {

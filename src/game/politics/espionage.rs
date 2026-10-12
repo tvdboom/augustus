@@ -281,9 +281,9 @@ impl Severity {
     /// One-time provincial leverage, shared by control and relation settlements.
     pub fn control_gain(self) -> f64 {
         match self {
-            Self::Minor => 5.0,
-            Self::Medium => 7.5,
-            Self::Major => 10.0,
+            Self::Minor => 10.0,
+            Self::Medium => 20.0,
+            Self::Major => 30.0,
         }
     }
 }

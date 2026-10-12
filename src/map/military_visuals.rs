@@ -982,10 +982,11 @@ fn troop_scale(kind: UnitType) -> f32 {
     match kind {
         WarElephants => 2.15,
         WarCamels => 1.75,
-        WarChariots => 1.80,
+        WarChariots => frames::vehicle_scale("war-chariots").unwrap(),
         HeavyCavalry | LightCavalry | HorseArchers => 1.55,
         HeavyInfantry | LightInfantry | Archers => 1.15,
-        Ballista | Catapult => 1.35,
+        Ballista => frames::vehicle_scale("ballista").unwrap(),
+        Catapult => frames::vehicle_scale("catapult").unwrap(),
     }
 }
 

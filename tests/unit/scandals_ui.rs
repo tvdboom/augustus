@@ -486,12 +486,12 @@ fn scandal_actions_show_only_illustrated_icons_and_explain_each_use_on_hover() {
         (
             ScandalTarget::Province(0),
             Icon::Control,
-            "Spend this scandal to gain 10 Control in Achaia.",
+            "Spend this scandal to gain 30 Control in Achaia.",
         ),
         (
             ScandalTarget::Province(0),
             Icon::Relation,
-            "Spend this scandal to gain 10 Relation with Achaia.",
+            "Spend this scandal to gain 30 Relation with Achaia.",
         ),
         (
             ScandalTarget::Province(0),
@@ -510,7 +510,7 @@ fn scandal_actions_show_only_illustrated_icons_and_explain_each_use_on_hover() {
         let (mut output, _) = render_actions(&ctx, &campaign, 546.0, 0.0, vec![]);
         assert!(!output.shapes.iter().any(|shape| matches!(
             &shape.shape,
-            egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "+10" | "Trade" | "Senate" | "Use")
+            egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "+30" | "Trade" | "Senate" | "Use")
         )), "Action buttons must display icons only");
         let pos = action_position(&ctx, &output, icon);
         let mut capture = capture::Capture::default();
@@ -586,14 +586,14 @@ fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_target
                 assert_eq!(campaign.espionage.trade_ratio(0, 0, campaign.economy.month), 0.75);
                 continue;
             }
-            assert!(message.contains("+5"));
+            assert!(message.contains("+10"));
             assert_eq!(
                 if usage == ScandalUse::Control {
                     campaign.politics[0].control(0)
                 } else {
                     campaign.politics[0].relation(0) - 50.0
                 },
-                5.0
+                10.0
             );
         }
     }
@@ -626,8 +626,8 @@ fn compact_scandal_use_menu_lists_exact_benefits_and_only_players_get_senate_use
                 _ => None,
             })
             .collect();
-        assert!(labels.iter().any(|label| label.contains("gain 5 Control")));
-        assert!(labels.iter().any(|label| label.contains("gain 5 Relation")));
+        assert!(labels.iter().any(|label| label.contains("gain 10 Control")));
+        assert!(labels.iter().any(|label| label.contains("gain 10 Relation")));
         assert_eq!(
             labels.contains(&"Expose in Senate"),
             matches!(target, ScandalTarget::Player(_))
@@ -721,7 +721,7 @@ fn player_scandals_without_an_origin_require_a_province_choice_before_spending()
         .iter()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Text(text)
-                if text.galley.job.text == "Narbonensis · Use scandal: gain 5 Control" =>
+                if text.galley.job.text == "Narbonensis · Use scandal: gain 10 Control" =>
             {
                 Some(text.pos + egui::vec2(5.0, 5.0))
             },
@@ -748,7 +748,7 @@ fn player_scandals_without_an_origin_require_a_province_choice_before_spending()
     );
     apply_command(&mut campaign, 0, command);
     assert_eq!(campaign.politics[0].control(0), 0.0);
-    assert_eq!(campaign.politics[1].control(0), 5.0);
+    assert_eq!(campaign.politics[1].control(0), 10.0);
     assert!(campaign.espionage.scandals.is_empty());
 }
 

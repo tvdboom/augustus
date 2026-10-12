@@ -35,7 +35,7 @@ pub enum BuildingType {
 impl BuildingType {
     /// Number of supported normal buildings.
     pub const COUNT: usize = 12;
-    /// Stable building indexes; cards are sorted by their current cost in the UI.
+    /// Stable building indexes; cards use first-level costs for a fixed display order.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Granary,
         Self::Warehouse,

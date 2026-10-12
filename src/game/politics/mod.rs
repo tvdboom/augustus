@@ -139,23 +139,23 @@ impl std::fmt::Display for PoliticalError {
         } = self
         {
             return if *action == senate::SenatorAction::Lobby {
-                f.write_str(
-                    "You are already lobbying this senator. Cancel it using the card's cross.",
-                )
+                f.write_str("You are already lobbying this senator.")
             } else if *action == senate::SenatorAction::Bribe {
-                f.write_str(
-                    "You are already bribing this senator. Cancel it using the card's cross.",
-                )
+                f.write_str("You are already bribing this senator.")
             } else {
                 let months = if *months_remaining == 1 {
                     "month"
                 } else {
                     "months"
                 };
-                write!(f, "Active {}: {months_remaining} {months} remaining. Cancel it using the card's cross.", match action {
-                    senate::SenatorAction::Patronage => "patronage",
-                    _ => "coercion",
-                })
+                write!(
+                    f,
+                    "Active {}: {months_remaining} {months} remaining.",
+                    match action {
+                        senate::SenatorAction::Patronage => "patronage",
+                        _ => "coercion",
+                    }
+                )
             };
         }
         f.write_str(match self {

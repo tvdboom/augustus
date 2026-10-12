@@ -8,3 +8,13 @@ pub const BASELINE: u32 = 173;
 pub const COUNT: usize = (COLUMNS * ROWS) as usize;
 pub const WIDTH: u32 = COLUMNS * SIZE;
 pub const HEIGHT: u32 = ROWS * SIZE;
+
+/// Leave enough canvas for the vehicle while keeping its crew at infantry scale.
+pub fn vehicle_scale(name: &str) -> Option<f32> {
+    match name {
+        "ballista" => Some(1.55),
+        "catapult" => Some(1.85),
+        "war-chariots" => Some(1.90),
+        _ => None,
+    }
+}

@@ -1949,7 +1949,7 @@ fn deployment_slots_and_cohort_cards_are_read_only() {
     assert_eq!(world.provinces[0].forces[&ForceOwner::Player(0)].len(), 2);
 }
 #[test]
-fn military_banner_badges_toggle_recruitment_and_keep_rank_read_only() {
+fn military_banner_badges_toggle_recruitment_and_open_military_overview() {
     let (world, economy, graph) = military_fixture();
     let ctx = egui::Context::default();
     let (output, _) = render_military(&ctx, &world, &economy, &graph, 0., vec![]);
@@ -1972,10 +1972,14 @@ fn military_banner_badges_toggle_recruitment_and_keep_rank_read_only() {
     assert!(rank.x < recruit.x);
     assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
         egui::Shape::Text(text) if text.galley.job.text.starts_with("Army ·"))));
+    assert!(!take_military_overview_click(&ctx));
     render_military(&ctx, &world, &economy, &graph, 0.1, click_events(rank, true));
     let (output, action) =
         render_military(&ctx, &world, &economy, &graph, 0.2, click_events(rank, false));
     assert!(action.is_none());
+    assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+    assert!(take_military_overview_click(&ctx));
+    assert!(!take_military_overview_click(&ctx));
     assert!(banner.contains(text_position(&output, "Recruit units")));
     text_position(&output, "Army strength");
     let badge_fill = |output: &egui::FullOutput| {
@@ -2009,6 +2013,11 @@ fn military_banner_badges_toggle_recruitment_and_keep_rank_read_only() {
         render_military(&ctx, &world, &economy, &graph, 0.5, click_events(recruit, false));
     text_position(&output, "RECRUITMENT");
     let stationed = text_position(&output, "Stationed units");
+    render_military(&ctx, &world, &economy, &graph, 0.51, click_events(rank, true));
+    let (_, action) =
+        render_military(&ctx, &world, &economy, &graph, 0.52, click_events(rank, false));
+    assert!(action.is_none());
+    assert!(take_military_overview_click(&ctx));
     render_military(&ctx, &world, &economy, &graph, 0.6, click_events(stationed, true));
     let (output, action) =
         render_military(&ctx, &world, &economy, &graph, 0.7, click_events(stationed, false));

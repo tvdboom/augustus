@@ -875,6 +875,15 @@ impl Campaign {
             ),
             body,
         );
+        self.notifications.record_notified_military_access(
+            guest,
+            province,
+            if granted {
+                MilitaryAccess::Peaceful
+            } else {
+                MilitaryAccess::Blocked
+            },
+        );
         Ok(())
     }
 

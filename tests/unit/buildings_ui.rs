@@ -325,20 +325,64 @@ fn four_building_cards_fill_each_category_width_evenly() {
 }
 
 #[test]
-fn building_cards_follow_the_current_upgrade_cost() {
-    let ctx = egui::Context::default();
-    let mut campaign = fixture(true);
-    campaign.economy.provinces[0].wonder_sites.clear();
-    let (first, _) = render(&ctx, &mut campaign, egui::vec2(570.0, 720.0), 1.0, "", 0.0, vec![]);
-    assert!(cell_rect(&first, "Market").left() < cell_rect(&first, "Temple").left());
-
-    campaign.economy.provinces[0].buildings[BuildingType::UrbanMarket as usize] = 1;
-    let (upgraded, _) = render(&ctx, &mut campaign, egui::vec2(570.0, 720.0), 1.0, "", 0.1, vec![]);
-    let market = cell_rect(&upgraded, "Market");
-    let arena = cell_rect(&upgraded, "Arena");
-    let walls = cell_rect(&upgraded, "Walls");
-    assert_eq!(market.top(), arena.top());
-    assert!(arena.left() < market.left() && market.left() < walls.left());
+fn building_cards_keep_the_initial_order_through_construction_and_upgrades() {
+    let expected = [
+        "Market",
+        "Temple",
+        "City Hall",
+        "Forum",
+        "Baths",
+        "Academy",
+        "Arena",
+        "Walls",
+        "Granary",
+        "Road",
+        "Warehouse",
+        "Aqueduct",
+    ];
+    for owner in [0, 1] {
+        let ctx = egui::Context::default();
+        let mut campaign = fixture(true);
+        campaign.economy.provinces[0].owner = Some(owner);
+        campaign.economy.players[owner].resources = [1_000_000.0; 3];
+        campaign.economy.provinces[0].wonder_sites.clear();
+        let mut time = 0.0;
+        let mut assert_order = |campaign: &mut Campaign| {
+            let (output, _) =
+                render(&ctx, campaign, egui::vec2(570.0, 720.0), 1.0, "", time, vec![]);
+            time += 0.1;
+            let names: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if expected.contains(&text.galley.job.text.as_str()) =>
+                    {
+                        Some(text.galley.job.text.as_str())
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(names, expected, "Building cards moved for province owner {owner}");
+        };
+        assert_order(&mut campaign);
+        for building in [
+            BuildingType::Granary,
+            BuildingType::UrbanMarket,
+            BuildingType::Granary,
+            BuildingType::UrbanMarket,
+        ] {
+            campaign.economy.start_building(owner, 0, building).unwrap();
+            assert_order(&mut campaign);
+        }
+        for _ in 0..20 {
+            campaign.economy.advance_month(&Default::default());
+            assert_order(&mut campaign);
+        }
+        assert!(campaign.economy.provinces[0].construction.is_none());
+        assert_eq!(campaign.economy.provinces[0].level(BuildingType::Granary), 2);
+        assert_eq!(campaign.economy.provinces[0].level(BuildingType::UrbanMarket), 2);
+    }
 }
 
 #[test]

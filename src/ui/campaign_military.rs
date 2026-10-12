@@ -103,6 +103,13 @@ const ARMY_PANEL_ID: &str = "campaign-army-panel";
 const ARMY_COLLAPSED_ID: &str = "campaign-army-collapsed";
 const ARMY_TITLE_SEARCH_ID: &str = "campaign-army-title-search";
 const ARMY_PROVINCE_CLICK_ID: &str = "campaign-army-province-click";
+const MILITARY_OVERVIEW_CLICK_ID: &str = "campaign-military-overview-click";
+
+pub(super) fn take_military_overview_click(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| {
+        data.remove_temp::<bool>(egui::Id::new(MILITARY_OVERVIEW_CLICK_ID)).unwrap_or(false)
+    })
+}
 
 pub(in crate::app) fn take_army_province_click(ctx: &egui::Context) -> Option<usize> {
     ctx.data_mut(|data| data.remove_temp::<usize>(egui::Id::new(ARMY_PROVINCE_CLICK_ID)))
@@ -741,14 +748,30 @@ fn military_banner(
         egui::pos2(banner.right() - margin - switch_width * badge_scale, bottom - button_height),
         egui::pos2(banner.right() - margin, bottom),
     );
-    ui.interact(rank_rect, ui.id().with("military-rank-badge"), egui::Sense::hover())
-        .inspection_hover_text("Current military rank.");
+    let rank_response = ui
+        .interact(rank_rect, ui.id().with("military-rank-badge"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .inspection_hover_text("Open the Military panel.");
+    rank_response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, rank.name()));
+    if rank_response.clicked() {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new(MILITARY_OVERVIEW_CLICK_ID), true);
+        });
+    }
+    let rank_fill = egui::Color32::from_black_alpha(if rank_response.is_pointer_button_down_on() {
+        215
+    } else if rank_response.hovered() {
+        140
+    } else {
+        180
+    });
     paint_army_banner_badge(
         ui,
         rank_rect,
         rank.name(),
         Icon::MilitaryRank(rank),
-        egui::Color32::from_black_alpha(180),
+        rank_fill,
         badge_scale,
     );
     if !can_recruit {
