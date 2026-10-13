@@ -270,7 +270,7 @@ fn marching_sprites_face_each_route_leg_and_keep_their_owner_banner_upright() {
                     .then_some(mesh.vertices[1].uv.x - mesh.vertices[0].uv.x)
             })
             .collect();
-        assert_eq!(sprites.len(), 3);
+        assert_eq!(sprites.len(), 2);
         assert!(
             sprites.iter().all(|width| if west {
                 *width < 0.
@@ -877,7 +877,7 @@ fn a_revolt_battle_fades_with_other_units_when_zoomed_out() {
 }
 
 #[test]
-fn map_shows_strongest_types_from_each_category_independent_of_deployment() {
+fn large_armies_show_three_distinct_types_independent_of_deployment() {
     let mut world = MilitaryWorld::new(1);
     let owner = ForceOwner::Player(0);
     for _ in 0..8 {
@@ -903,13 +903,7 @@ fn map_shows_strongest_types_from_each_category_independent_of_deployment() {
     let shown = map_representatives(units);
     assert_eq!(
         shown.iter().copied().collect::<std::collections::BTreeSet<_>>(),
-        [
-            UnitType::HeavyInfantry,
-            UnitType::Archers,
-            UnitType::HeavyCavalry,
-            UnitType::WarElephants,
-        ]
-        .into()
+        [UnitType::HeavyInfantry, UnitType::Archers, UnitType::HeavyCavalry].into()
     );
     assert_eq!(shown, map_representatives(units));
     // The old map order followed these private plan fields. Changing them must
@@ -928,7 +922,7 @@ fn map_falls_back_to_surviving_types_without_repeating_a_sprite() {
     let units = &world.provinces[0].forces[&owner];
     assert_eq!(
         map_representatives(units).into_iter().collect::<std::collections::BTreeSet<_>>(),
-        [UnitType::HeavyInfantry, UnitType::Archers, UnitType::HeavyCavalry].into()
+        [UnitType::HeavyInfantry, UnitType::Archers].into()
     );
     assert_eq!(map_representatives(&units[..1]), vec![UnitType::HeavyInfantry]);
     let mut depleted = units.to_vec();
@@ -950,7 +944,7 @@ fn absent_categories_use_other_strong_types_and_large_troops_keep_their_feet_ali
         map_representatives(&world.provinces[0].forces[&owner])
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>(),
-        [UnitType::LightInfantry, UnitType::Archers, UnitType::HeavyInfantry].into()
+        [UnitType::Archers, UnitType::HeavyInfantry].into()
     );
     let anchor = egui::pos2(100., 100.);
     let infantry = troop_rect(anchor, 30., 0, 1, UnitType::HeavyInfantry);
@@ -970,23 +964,49 @@ fn absent_categories_use_other_strong_types_and_large_troops_keep_their_feet_ali
 }
 
 #[test]
-fn several_cohorts_of_one_type_still_show_three_figures() {
+fn figure_count_tracks_surviving_army_size_even_with_one_unit_type() {
     let mut world = MilitaryWorld::new(1);
     let owner = ForceOwner::Player(0);
-    for _ in 0..3 {
+    assert!(map_representatives(&[]).is_empty());
+    for cohorts in 1..=12 {
         world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+        let figures = if cohorts >= 10 {
+            3
+        } else {
+            cohorts.min(2)
+        };
+        assert_eq!(
+            map_representatives(&world.provinces[0].forces[&owner]),
+            vec![UnitType::HeavyInfantry; figures],
+            "wrong figure count for {cohorts} cohorts"
+        );
     }
-    assert_eq!(
-        map_representatives(&world.provinces[0].forces[&owner]),
-        vec![UnitType::HeavyInfantry; 3]
-    );
+    let mut depleted = world.provinces[0].forces[&owner].clone();
+    for unit in &mut depleted {
+        unit.current_manpower *= 0.5;
+    }
+    assert_eq!(map_representatives(&depleted), vec![UnitType::HeavyInfantry; 2]);
+    for unit in &mut depleted {
+        unit.current_manpower = 0.;
+    }
+    assert!(map_representatives(&depleted).is_empty());
 }
 
 #[test]
-fn rome_has_fifty_cohorts_including_all_four_guard_types() {
+fn rome_has_150_cohorts_including_all_four_guard_types() {
     let defenders = crate::game::military::initial_defenders("Rome");
-    assert_eq!(defenders.len(), 50);
-    assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 6);
+    assert_eq!(defenders.len(), 150);
+    assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 18);
+    assert_eq!(
+        defenders.iter().copied().collect::<std::collections::BTreeSet<_>>(),
+        [
+            UnitType::HeavyInfantry,
+            UnitType::Archers,
+            UnitType::HeavyCavalry,
+            UnitType::LightCavalry
+        ]
+        .into()
+    );
     let mut world = MilitaryWorld::new(1);
     for kind in defenders {
         world.seed_unit(0, ForceOwner::Local(0), kind).unwrap();
@@ -995,13 +1015,7 @@ fn rome_has_fifty_cohorts_including_all_four_guard_types() {
         map_representatives(&world.provinces[0].forces[&ForceOwner::Local(0)])
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>(),
-        [
-            UnitType::HeavyInfantry,
-            UnitType::Archers,
-            UnitType::HeavyCavalry,
-            UnitType::LightCavalry,
-        ]
-        .into()
+        [UnitType::HeavyInfantry, UnitType::Archers, UnitType::HeavyCavalry].into()
     );
 }
 
@@ -1045,14 +1059,14 @@ fn romes_garrison_is_hidden_while_latium_shows_its_normal_defenders() {
         assert_eq!(
             markers.len(),
             3,
-            "Only Latium's two normal types and badge should be visible at zoom {zoom}"
+            "Only Latium's two troop figures and badge should be visible at zoom {zoom}"
         );
         let hits = context
             .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
             .unwrap();
         assert!(hits.iter().all(|hit| hit.province == province));
-        assert_eq!(world.provinces[rome].forces[&ForceOwner::Local(rome)].len(), 50);
-        for (&kind, sprite) in types.iter().zip(&markers[..2]) {
+        assert_eq!(world.provinces[rome].forces[&ForceOwner::Local(rome)].len(), 150);
+        for (&kind, sprite) in types.iter().zip(&markers[..types.len()]) {
             let expected = troop_size(zoom) * troop_scale(kind) * 2.;
             assert!(
                 (sprite.width() - expected).abs() < 0.001,
@@ -1067,7 +1081,9 @@ fn romes_garrison_is_hidden_while_latium_shows_its_normal_defenders() {
                 "Latium's {kind:?} ground anchor leaves its province at zoom {zoom}"
             );
         }
-        assert!(atlas().provinces[province].contains(projection.inverse(markers[2].center())));
+        assert!(
+            atlas().provinces[province].contains(projection.inverse(markers[types.len()].center()))
+        );
         let mut output = context.end_pass();
         output.textures_delta.clear();
     }

@@ -2256,22 +2256,91 @@ fn top_bar_draws_civic_power_before_stock_limits_with_abbreviated_population() {
                 _ => None,
             })
             .expect("Monthly change must be below the stock total");
-        assert_eq!(
-            delta.galley.job.text,
-            if index <= 1 {
-                "0"
-            } else {
-                "+6"
-            }
-        );
+        assert_eq!(delta.galley.job.text, ["+718", "+75", "+6"][index]);
         assert_eq!(
             delta.galley.job.sections[0].format.color,
-            super::super::resource_hud::hud_delta_color(if index <= 1 {
-                0.0
+            if index <= 1 {
+                super::super::resource_hud::HUD_OVERFLOW_COLOR
             } else {
-                6.0
-            }),
+                super::super::resource_hud::hud_delta_color(6.0)
+            },
         );
+    }
+}
+
+#[test]
+fn full_stockpiles_show_orange_surplus_and_red_net_losses_instead_of_hiding_flow() {
+    let ctx = layout_context();
+    let icons = std::array::from_fn(|index| {
+        super::super::resource_hud::load_hud_resource_icon(&ctx, index)
+    });
+    for (amount, capacity, flow, label, color) in [
+        (2400.0, 2400.0, 75.0, "+75", egui::Color32::from_rgb(163, 87, 15)),
+        (2400.0, 2400.0, -19.0, "-19", super::super::resource_hud::hud_delta_color(-19.0)),
+        (2400.0, 2400.0, 0.0, "0", super::super::resource_hud::hud_delta_color(0.0)),
+        (2000.0, 2400.0, 75.0, "+75", super::super::resource_hud::hud_delta_color(75.0)),
+        (0.0, 0.0, 75.0, "+75", egui::Color32::from_rgb(163, 87, 15)),
+    ] {
+        let mut resources = [HudResource {
+            amount: 0.0,
+            monthly_delta: 0.0,
+        }; 7];
+        resources[0] = HudResource {
+            amount,
+            monthly_delta: flow,
+        };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |root| {
+                super::super::resource_hud::paint_hud_resources(
+                    root.painter(),
+                    egui::Pos2::ZERO,
+                    1.0,
+                    1200.0,
+                    &resources,
+                    Some(&[capacity, 2400.0, 2400.0]),
+                    &icons,
+                );
+            },
+        );
+        let stock_label = format!(
+            "{} / {}",
+            super::super::resource_hud::format_hud_number(amount),
+            super::super::resource_hud::format_hud_number(capacity)
+        );
+        output.textures_delta.clear();
+        let stock = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == stock_label => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        let delta = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.pos.y > stock.pos.y
+                        && ((text.pos.x + text.galley.size().x)
+                            - (stock.pos.x + stock.galley.size().x))
+                            .abs()
+                            < 0.01 =>
+                {
+                    Some(text)
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(delta.galley.job.text, label);
+        assert_eq!(delta.galley.job.sections[0].format.color, color);
     }
 }
 
@@ -4044,10 +4113,10 @@ fn economy_overview_policies_buildings_and_trade_fit_compact_panels() {
 }
 
 #[test]
-fn national_trade_routes_composer_and_market_fit_compact_widths() {
+fn national_trade_routes_and_market_fit_compact_widths() {
     use crate::game::economy::{TradeAgreement, TradeBundle, TradeFrequency, TradeParty};
     for (width, scale) in [(546.0, 1.0), (380.0, 0.85), (380.0, 1.0)] {
-        for page in 0..3 {
+        for page in 0..2 {
             let mut campaign = fixture();
             // Leave room for a live purchase quote and its full delivery preview.
             campaign.economy.players[0].resources = [100.0; 3];
@@ -4117,6 +4186,105 @@ fn province_trade_composer_fits_and_targets_the_selected_owner_or_npc() {
                     campaign_trade::show_province(ui, &mut campaign, province, 0, scale);
                 },
             );
+        }
+    }
+}
+
+#[test]
+fn provincial_trade_page_fits_below_the_real_header_without_a_scroll_area() {
+    for (screen, width, height) in [
+        (egui::vec2(1600.0, 900.0), 570.0, 720.0),
+        (egui::vec2(1156.0, 650.0), 480.0, 560.0),
+        (egui::vec2(800.0, 600.0), 380.0, 480.0),
+    ] {
+        for influence in [false, true] {
+            let ctx = layout_context();
+            ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+            let mut campaign = fixture();
+            campaign.economy.config.trade.allow_influence = influence;
+            let province = campaign
+                .economy
+                .provinces
+                .iter()
+                .position(|p| p.owner.is_none() && p.name != "Rome")
+                .unwrap();
+            let mut view = CampaignUi {
+                open: Some(CampaignTab::Province),
+                province: Some(province),
+                section: 1,
+                ..Default::default()
+            };
+            let panel =
+                egui::Rect::from_min_size(egui::pos2(30.0, 30.0), egui::vec2(width, height));
+            let scale = super::super::viewport_ui_scale(screen);
+            let mut capture = capture::Capture::default();
+            for frame in 0..2 {
+                let mut used = egui::Rect::NOTHING;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                        time: Some(frame as f64 * 0.1),
+                        ..Default::default()
+                    },
+                    |root| {
+                        root.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                            panel_style(ui, scale);
+                            used = panel_frame(scale)
+                                .show(ui, |ui| {
+                                    ui.set_width(width);
+                                    panel_header(
+                                        ui,
+                                        &campaign.economy.provinces[province].name.clone(),
+                                        scale,
+                                        &campaign.economy.provinces,
+                                        0,
+                                        &mut view,
+                                        None,
+                                    );
+                                    egui::Frame::new()
+                                        .inner_margin((12.0 * scale).round() as i8)
+                                        .show(ui, |ui| {
+                                            province_trade_body(
+                                                ui,
+                                                panel.bottom() - 12.0 * scale,
+                                                &mut campaign,
+                                                province,
+                                                0,
+                                                scale,
+                                            );
+                                        });
+                                })
+                                .response
+                                .rect;
+                        });
+                    },
+                );
+                capture.frame(
+                    &ctx,
+                    &output,
+                    &format!("province-trade-page-{width:.0}-{height:.0}-{influence}"),
+                );
+                output.textures_delta.clear();
+                assert!(
+                    used.bottom() <= panel.bottom() + 1.0,
+                    "Trade page exceeds its panel: {used:?} / {panel:?}"
+                );
+                assert!(
+                    used.right() <= panel.right() + 1.0,
+                    "Trade page exceeds its width: {used:?}"
+                );
+                let action = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == "Open monthly route" => {
+                            Some(text.galley.rect.translate(text.pos.to_vec2()))
+                        },
+                        _ => None,
+                    })
+                    .expect("Trade action must remain visible");
+                assert!(action.bottom() < panel.bottom(), "Trade action is clipped: {action:?}");
+            }
         }
     }
 }
@@ -4828,14 +4996,17 @@ fn province_policy_choices_apply_only_for_the_direct_owner() {
 #[test]
 fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_owner() {
     use crate::game::economy::{
-        CivicSpending, ConstructionPace, ManumissionPolicy, RecruitmentEffort, ResourceFocus,
+        CitizenshipPolicy, CivicSpending, ConstructionPace, ManumissionPolicy, RecruitmentEffort,
+        ResourceFocus,
     };
-    for owner in [0, 1] {
+    for (owner, occupied) in [(0, false), (1, false), (0, true)] {
         let ctx = layout_context();
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         let mut campaign = fixture();
         campaign.economy.provinces[0].owner = Some(owner);
+        campaign.economy.provinces[0].occupied = occupied;
         campaign.economy.provinces[0].policies.focus = ResourceFocus::Food;
+        let mut capture = capture::Capture::default();
         let mut render = |time, events| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -4860,6 +5031,7 @@ fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_own
                     );
                 },
             );
+            capture.frame(&ctx, &output, &format!("province-policy-choices-{owner}-{occupied}"));
             output.textures_delta.clear();
             output
         };
@@ -4881,6 +5053,9 @@ fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_own
             "Migration Focus",
             "Civic Spending",
             "Manumission",
+            "Citizenship",
+            "Revoke",
+            "Grant",
             "Recruitment Effort",
             "Balanced",
         ] {
@@ -4889,7 +5064,9 @@ fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_own
         assert!(!labels.contains(&"All"));
         assert!(!labels.contains(&"PROVINCE POLICIES"));
         for (index, label) in
-            ["Balanced", "Urgent", "Generous", "Free", "High"].into_iter().enumerate()
+            ["Balanced", "Urgent", "Generous", "Free", "Grant", "Revoke", "Grant", "High"]
+                .into_iter()
+                .enumerate()
         {
             let output = render(index as f64 + 0.1, vec![]);
             let position = output
@@ -4918,17 +5095,19 @@ fn province_policy_sections_and_new_choices_are_available_only_to_the_direct_own
             }
         }
         let policies = campaign.economy.provinces[0].policies;
-        if owner == 0 {
+        if owner == 0 && !occupied {
             assert_eq!(policies.focus, ResourceFocus::Balanced);
             assert_eq!(policies.construction, ConstructionPace::Urgent);
             assert_eq!(policies.civic_spending, CivicSpending::Generous);
             assert_eq!(policies.manumission, ManumissionPolicy::Free);
+            assert_eq!(policies.citizenship, CitizenshipPolicy::Grant);
             assert_eq!(policies.recruitment, RecruitmentEffort::High);
         } else {
             assert_eq!(policies.focus, ResourceFocus::Food);
             assert_eq!(policies.construction, ConstructionPace::Normal);
             assert_eq!(policies.civic_spending, CivicSpending::Normal);
             assert_eq!(policies.manumission, ManumissionPolicy::Normal);
+            assert_eq!(policies.citizenship, CitizenshipPolicy::Normal);
             assert_eq!(policies.recruitment, RecruitmentEffort::Normal);
         }
     }

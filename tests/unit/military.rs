@@ -757,7 +757,7 @@ fn recruitment_ownership_change_cancels_and_npc_defenders_do_not_regenerate() {
     assert_eq!(pop[2], 10.);
     assert_eq!(metal, 88.);
     world.seed_local_defenders(0, "Achaia").unwrap();
-    assert_eq!(world.all_units().count(), 4);
+    assert_eq!(world.all_units().count(), 12);
     world.provinces[0].forces.clear();
     for _ in 0..12 {
         world.advance_recruitment(|_| None);

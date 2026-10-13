@@ -5,6 +5,35 @@ use super::{BuildingDefinition, BuildingType, WonderDefinition};
 /// Default monthly wage per noble at medium nationwide wages.
 pub const NOBLE_WAGE_PER_NOBLE: f64 = 0.1 / crate::map::POPULATION_SCALE;
 
+fn default_citizenship_rates() -> [f64; 3] {
+    [-0.002, 0.0, 0.002]
+}
+
+fn default_citizenship_happiness() -> [[f64; 4]; 3] {
+    [[0.0, -1.0, 0.0, 0.0], [0.0; 4], [-1.0, 0.0, 0.0, 0.0]]
+}
+
+fn default_npc_minimum_import_demand() -> f64 {
+    5.0
+}
+
+fn default_npc_reserve_demand_share() -> f64 {
+    0.25
+}
+
+fn default_surplus_import_value_share() -> f64 {
+    0.25
+}
+
+fn default_one_time_cooldown_months() -> u32 {
+    3
+}
+
+fn default_open_market_sell_multiplier() -> f64 {
+    // Unlimited resale should supplement taxes at ordinary monthly production.
+    0.01
+}
+
 /// Policy modifiers, in consumption/happiness/birth/death order.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FoodModifiers {
@@ -79,7 +108,7 @@ pub struct EconomyConfig {
     pub class_change_rates: [f64; 2],
     /// Free workers and slaves' baseline productivity.
     pub productivity: [f64; 2],
-    /// Food, Metal, Stone output per allocated labor/potential.
+    /// Food, Metal, Stone output per allocated labor; equal defaults preserve base resource ratios.
     pub production_scale: [f64; 3],
     /// Resource focus weights, ordered Balanced, Food, Metal, Stone.
     pub focus_weights: [[f64; 3]; 4],
@@ -103,7 +132,13 @@ pub struct EconomyConfig {
     pub manumission_rates: [f64; 3],
     /// Per-class happiness changes for Enslave, Normal and Free.
     pub manumission_happiness: [[f64; 4]; 3],
-    /// Global physical storage without buildings.
+    /// Revoke, Normal, Grant monthly rates: negative demotes citizens, positive promotes plebeians.
+    #[serde(default = "default_citizenship_rates")]
+    pub citizenship_rates: [f64; 3],
+    /// Per-class happiness changes for Revoke, Normal and Grant.
+    #[serde(default = "default_citizenship_happiness")]
+    pub citizenship_happiness: [[f64; 4]; 3],
+    /// Equal starting physical storage for every player; owned buildings add capacity.
     pub base_storage: [f64; 3],
     /// New player starting stocks; preserves a food buffer for specialization.
     pub starting_stock: [f64; 3],
@@ -146,6 +181,9 @@ pub struct TradeConfig {
     pub required_value_ratios: [f64; 5],
     /// Additional one-time transaction margin.
     pub one_time_margin: f64,
+    /// Completed months required between single-time exchanges with the same partner.
+    #[serde(default = "default_one_time_cooldown_months")]
+    pub one_time_cooldown_months: u32,
     /// Relation lost with the partner when an accepted route ends without notice.
     pub cancellation_relation_penalty: f64,
     /// Influence lost when an active route is broken immediately.
@@ -154,6 +192,9 @@ pub struct TradeConfig {
     pub cancellation_notice_months: u32,
     /// Open-market spread above/below base resource values.
     pub open_market_spread: f64,
+    /// Resale share of base value for the open market's unlimited buyer.
+    #[serde(default = "default_open_market_sell_multiplier")]
+    pub open_market_sell_multiplier: f64,
     /// Quantity at which transaction size adds one full base-value margin.
     pub open_market_depth: [f64; 3],
     /// Coin value of one influence when exchanges are enabled.
@@ -170,9 +211,18 @@ pub struct TradeConfig {
     pub export_share: f64,
     /// Share of NPC shortage requested as imports.
     pub import_share: f64,
-    /// Maximum accepted imports as a multiple of current demand.
+    /// Minimum replenishment demand per resource, even when production covers needs.
+    #[serde(default = "default_npc_minimum_import_demand")]
+    pub npc_minimum_import_demand: f64,
+    /// Share of internal need requested for replenishing civilian/development reserves.
+    #[serde(default = "default_npc_reserve_demand_share")]
+    pub npc_reserve_demand_share: f64,
+    /// Preferred imports at full value as a multiple of current demand.
     pub maximum_import_multiple: f64,
-    /// Extra physical export allowance for a one-time trade.
+    /// Share of listed resource value paid for imports beyond preferred demand (1–100%).
+    #[serde(default = "default_surplus_import_value_share")]
+    pub surplus_import_value_share: f64,
+    /// Export capacity and preferred import multiplier for a single-time trade.
     pub one_time_export_multiplier: f64,
     /// Share of recurring income budgeted for imports.
     pub income_budget_share: f64,
@@ -267,12 +317,9 @@ impl Default for EconomyConfig {
             migration_weights: [2.0, 1.0, 0.25],
             class_change_rates: [0.0008, 0.00025],
             productivity: [1.0, 1.5],
-            // Only plebs/slaves produce; Food supports all four classes.
-            production_scale: [
-                3.3 / population_scale,
-                0.9 / population_scale,
-                1.2 / population_scale,
-            ],
+            // Potential allocates labor once. A shared yield makes Balanced output
+            // proportional to the map values, while preserving the opening food pace.
+            production_scale: [4.5 / population_scale; 3],
             focus_weights: [[1.0; 3], [3.0, 1.0, 1.0], [1.0, 3.0, 1.0], [1.0, 1.0, 3.0]],
             construction_speed: [0.75, 1.0, 1.25],
             construction_labor: [0.05, 0.10, 0.20],
@@ -284,7 +331,10 @@ impl Default for EconomyConfig {
             recruitment_happiness: [1.0, 0.0, -1.0],
             manumission_rates: [-0.002, 0.0, 0.002],
             manumission_happiness: [[0.0, 0.0, -1.0, 0.0], [0.0; 4], [-1.0, 0.0, 0.0, 0.0]],
-            base_storage: [2400.0, 1600.0, 4000.0],
+            citizenship_rates: default_citizenship_rates(),
+            citizenship_happiness: default_citizenship_happiness(),
+            // Keeps room for the opening economy; a 2500-Stone wonder needs a warehouse.
+            base_storage: [2400.0; 3],
             starting_stock: [450.0, 120.0, 200.0],
             tax_rates: [0.0, 0.5 / population_scale, 0.2 / population_scale, 0.0],
             influence_per_noble: 0.25 / population_scale,
@@ -317,10 +367,12 @@ impl Default for TradeConfig {
             demand_band_thresholds: [0.1, 0.5],
             required_value_ratios: [1.5, 1.25, 1.1, 1.05, 1.0],
             one_time_margin: 1.1,
+            one_time_cooldown_months: default_one_time_cooldown_months(),
             cancellation_relation_penalty: 10.0,
             cancellation_influence_penalty: 10.0,
             cancellation_notice_months: 6,
             open_market_spread: 0.1,
+            open_market_sell_multiplier: default_open_market_sell_multiplier(),
             open_market_depth: [1000.0, 400.0, 600.0],
             influence_value: 8.0,
             npc_base_need: [0.0, 2.0, 2.0],
@@ -329,8 +381,11 @@ impl Default for TradeConfig {
             npc_development_stone_need: 6.0,
             export_share: 1.0,
             import_share: 1.0,
+            npc_minimum_import_demand: default_npc_minimum_import_demand(),
+            npc_reserve_demand_share: default_npc_reserve_demand_share(),
             maximum_import_multiple: 1.5,
-            one_time_export_multiplier: 1.5,
+            surplus_import_value_share: default_surplus_import_value_share(),
+            one_time_export_multiplier: 3.0,
             income_budget_share: 0.4,
             treasury_budget_share: 0.05,
             maximum_treasury_draw: 25.0,

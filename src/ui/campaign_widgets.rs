@@ -109,6 +109,7 @@ pub(in crate::app) enum Icon {
     Population,
     Happiness,
     Amount,
+    Maximum,
     BaseAmount,
     Delta,
     Change,
@@ -191,7 +192,11 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         };
     }
     let bytes = match kind {
-        Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee => {
+        Icon::PoliticalDistance
+        | Icon::Vassalize
+        | Icon::Integrate
+        | Icon::SpyFlee
+        | Icon::Maximum => {
             unreachable!("vector diplomacy symbols are painted directly")
         },
         Icon::Food => prepared!("food"),
@@ -701,7 +706,10 @@ pub(in crate::app) fn work_queue(
 
 /// Paint within an already allocated badge or ledger cell without advancing layout.
 pub(in crate::app) fn paint_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
-    if matches!(kind, Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee) {
+    if matches!(
+        kind,
+        Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee | Icon::Maximum
+    ) {
         paint_diplomacy_symbol(ui, kind, rect);
         return;
     }
@@ -734,6 +742,27 @@ fn paint_diplomacy_symbol(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
     let ink = province_panel::INK;
     let stroke = egui::Stroke::new((rect.width() / 12.0).max(1.0), gold);
     match kind {
+        Icon::Maximum => {
+            // Double chevrons meeting an end bar mean fill to the available limit.
+            let ink = if ui.is_enabled() {
+                ink
+            } else {
+                province_panel::RULE
+            };
+            let gold = if ui.is_enabled() {
+                gold
+            } else {
+                province_panel::RULE
+            };
+            for (color, width) in [(ink, 0.13), (gold, 0.065)] {
+                let stroke = egui::Stroke::new((rect.width() * width).max(1.0), color);
+                for x in [0.18, 0.43] {
+                    painter.line_segment([at(x, 0.24), at(x + 0.23, 0.5)], stroke);
+                    painter.line_segment([at(x + 0.23, 0.5), at(x, 0.76)], stroke);
+                }
+                painter.line_segment([at(0.84, 0.18), at(0.84, 0.82)], stroke);
+            }
+        },
         Icon::PoliticalDistance => {
             painter.line_segment([at(0.2, 0.72), at(0.8, 0.28)], stroke);
             for (x, y) in [(0.2, 0.72), (0.5, 0.5), (0.8, 0.28)] {

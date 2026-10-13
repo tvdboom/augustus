@@ -2612,7 +2612,12 @@ fn paint_cities(
     let image_tint = egui::Color32::from_white_alpha((blend * 255.0).round() as u8);
     for marker in markers {
         if blend < 1.0 {
-            paint_marker_icon(painter, marker.icon, MarkerIcon::City, icon_tint);
+            let icon = if marker.is_rome {
+                MarkerIcon::Rome
+            } else {
+                MarkerIcon::City
+            };
+            paint_marker_icon(painter, marker.icon, icon, icon_tint);
         }
         if blend > 0.0 {
             let city_image = if marker.is_rome {

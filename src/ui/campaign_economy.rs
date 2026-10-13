@@ -44,10 +44,10 @@ pub(super) fn ledger_text(
         }
         font_size *= 0.9;
     };
-    let x = if align == egui::Align::Min {
-        rect.left()
-    } else {
-        rect.center().x - text.size().x * 0.5
+    let x = match align {
+        egui::Align::Min => rect.left(),
+        egui::Align::Center => rect.center().x - text.size().x * 0.5,
+        egui::Align::Max => rect.right() - text.size().x,
     };
     ui.painter().galley(egui::pos2(x, rect.center().y - text.size().y * 0.5), text, color);
 }
@@ -575,6 +575,10 @@ pub(in crate::app) fn overview_for_player(
                     "Manumission policy",
                     world.config.manumission_happiness[p.policies.manumission as usize][class],
                 ),
+                (
+                    "Citizenship policy",
+                    world.config.citizenship_happiness[p.policies.citizenship as usize][class],
+                ),
                 ("Events / unrest", p.happiness_modifiers[class] + p.temporary_happiness[class]),
             ];
             if class == 1 || class == 2 {
@@ -784,7 +788,7 @@ pub(in crate::app) fn overview_for_player(
                     ui,
                     cells[1],
                     &p.potential[resource].to_string(),
-                    "This province's natural resource potential.",
+                    "These values give the production ratio at Balanced focus, before bonuses. Food gain also subtracts what civilians and troops eat.",
                     ink,
                     scale,
                 );

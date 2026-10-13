@@ -5,6 +5,7 @@ use bevy_egui::egui;
 #[derive(Clone, Copy)]
 pub(crate) enum MarkerIcon {
     City,
+    Rome,
     Wonder,
 }
 
@@ -16,6 +17,27 @@ const CITY_LINES: &[&[[f32; 2]]] = &[
     &[[0.61, 0.50], [0.61, 0.77]],
     &[[0.81, 0.50], [0.81, 0.77]],
     &[[0.12, 0.82], [0.88, 0.82]],
+];
+
+// A triumphal arch gives the capital a distinct silhouette at the city's footprint.
+const ROME_LINES: &[&[[f32; 2]]] = &[
+    &[[0.11, 0.16], [0.89, 0.16]],
+    &[
+        [0.16, 0.16],
+        [0.16, 0.82],
+        [0.34, 0.82],
+        [0.34, 0.56],
+        [0.36, 0.49],
+        [0.42, 0.43],
+        [0.50, 0.40],
+        [0.58, 0.43],
+        [0.64, 0.49],
+        [0.66, 0.56],
+        [0.66, 0.82],
+        [0.84, 0.82],
+        [0.84, 0.16],
+    ],
+    &[[0.14, 0.30], [0.86, 0.30]],
 ];
 
 const WONDER_LINES: &[&[[f32; 2]]] = &[
@@ -37,6 +59,7 @@ pub(crate) fn paint_marker_icon(
     let origin = rect.center() - egui::vec2(size, size) * 0.5;
     let lines = match icon {
         MarkerIcon::City => CITY_LINES,
+        MarkerIcon::Rome => ROME_LINES,
         MarkerIcon::Wonder => WONDER_LINES,
     };
     let ink = egui::Stroke::new((size * 0.082).max(1.3), color);

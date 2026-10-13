@@ -150,6 +150,22 @@ pub(in crate::app) fn province(
             &[(conversion_icon, format!("{}%", compact_decimal(config.manumission_rates[manumission].abs() * 100.0))), (Icon::Happiness, signed_decimal(happiness))],
             &descriptions, scale);
 
+        let citizenship = p.policies.citizenship as usize;
+        let descriptions = vec![
+            format!("Citizens becoming plebeians: {}% per month; Citizen happiness: {}", compact_decimal(config.citizenship_rates[0].abs() * 100.0), signed_decimal(config.citizenship_happiness[0][1])),
+            "Policy class conversion: 0%; Happiness: 0; Ordinary class promotion continues".to_owned(),
+            format!("Plebeians becoming citizens: {}% per month; Noble happiness: {}", compact_decimal(config.citizenship_rates[2] * 100.0), signed_decimal(config.citizenship_happiness[2][0])),
+        ];
+        let (conversion_icon, happiness) = match p.policies.citizenship {
+            CitizenshipPolicy::Revoke => (Icon::Plebeians, config.citizenship_happiness[citizenship][1]),
+            CitizenshipPolicy::Normal => (Icon::Change, 0.0),
+            CitizenshipPolicy::Grant => (Icon::Citizens, config.citizenship_happiness[citizenship][0]),
+        };
+        card(ui, "Citizenship", &mut p.policies.citizenship,
+            &[(CitizenshipPolicy::Revoke, "Revoke"), (CitizenshipPolicy::Normal, "Normal"), (CitizenshipPolicy::Grant, "Grant")],
+            &[(conversion_icon, format!("{}%", compact_decimal(config.citizenship_rates[citizenship].abs() * 100.0))), (Icon::Happiness, signed_decimal(happiness))],
+            &descriptions, scale);
+
         policy_widgets::section(ui, scale, "MILITARY");
         let effort = p.policies.recruitment as usize;
         let monthly_cost = |level: usize| {

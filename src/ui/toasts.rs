@@ -31,6 +31,7 @@ pub(in crate::app) enum ToastLevel {
 pub(in crate::app) enum ToastAction {
     OpenGovernance,
     OpenMilitary,
+    OpenTrade,
     OpenProvince(usize),
     FocusWonder(usize),
     /// Navigate to a province's evidence controls or the global Senate inventory.
@@ -123,6 +124,7 @@ impl Toast {
         let action = match notice.action {
             NoticeAction::OpenSenate => ToastAction::OpenEvidence(None),
             NoticeAction::OpenMilitary => ToastAction::OpenMilitary,
+            NoticeAction::OpenTrade(_) | NoticeAction::OpenMarket => ToastAction::OpenTrade,
             NoticeAction::OpenProvince(id) => ToastAction::OpenProvince(id),
             NoticeAction::FocusWonder(id) => ToastAction::FocusWonder(id),
             NoticeAction::OpenScandal {
@@ -424,8 +426,8 @@ pub(in crate::app) fn draw(
         let toast = toasts.0.remove(index).expect("clicked notice exists");
         if let Some(notice) = toast.notice {
             governance_open.0 = false;
-            if notice.kind == super::campaign_notifications::NoticeKind::TradeInterrupted {
-                super::campaign_trade::open_routes(context, notice.recipient);
+            if notice.kind.is_trade() {
+                super::campaign_trade::open_notice(context, &notice);
             }
             super::campaign_panel::open_notification(
                 &mut campaign_ui,
@@ -445,6 +447,14 @@ pub(in crate::app) fn draw(
                     governance_open.0 = false;
                     campaign_ui.open = Some(super::campaign_panel::CampaignTab::Military);
                     province_open.0 = None;
+                },
+                ToastAction::OpenTrade => {
+                    governance_open.0 = false;
+                    campaign_ui.open = Some(super::campaign_panel::CampaignTab::Trade);
+                    province_open.0 = None;
+                    if let Some(player) = toasts.2 {
+                        super::campaign_trade::open_routes(context, player);
+                    }
                 },
                 ToastAction::OpenProvince(id) => {
                     province_open.0 = Some(super::MapDetail::Province(id));

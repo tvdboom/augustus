@@ -16,6 +16,10 @@ mod military_integration_tests;
 #[path = "../../tests/unit/campaign.rs"]
 mod integration_tests;
 
+#[cfg(test)]
+#[path = "../../tests/unit/trade_notifications.rs"]
+mod trade_notification_tests;
+
 /// Campaign authority; UI/HUD and map ownership are projections of these rules.
 #[derive(Resource, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Campaign {
@@ -87,16 +91,17 @@ pub(super) fn sync_campaign(
         let balances = wallet.balances();
         let delta =
             campaign.economy.last_report.player_delta.get(player).copied().unwrap_or([0.0; 5]);
+        let flow = campaign.hud_resource_flow(player, &monthly_inputs);
         for r in 0..5 {
             resources.players[player][r] = HudResource {
                 amount: balances[r],
-                monthly_delta: delta[r],
+                monthly_delta: if r < 3 {
+                    flow[r]
+                } else {
+                    delta[r]
+                },
             };
         }
-        // Show the current monthly food flow, including army rations, before
-        // the first turn and immediately after province or army changes.
-        resources.players[player][0].monthly_delta =
-            campaign.projected_food_delta(player, &monthly_inputs);
         let (total, _, change) = campaign.economy.player_population(player);
         resources.players[player][5] = HudResource {
             amount: total,
@@ -532,6 +537,29 @@ impl Campaign {
             .collect()
     }
 
+    /// HUD flow includes discarded surplus so full storage does not hide production.
+    fn hud_resource_flow(&self, player: usize, inputs: &MonthlyInputs) -> [f64; 3] {
+        let report = &self.economy.last_report;
+        let mut flow = if let Some(delta) = report.player_delta.get(player) {
+            let overflow = report.storage_overflow.get(player).copied().unwrap_or([0.0; 3]);
+            std::array::from_fn(|r| delta[r] + overflow[r])
+        } else {
+            let mut production = [0.0; 3];
+            for province in self.economy.provinces.iter().filter(|p| p.owner == Some(player)) {
+                for (total, output) in
+                    production.iter_mut().zip(province.production(&self.economy.config).1)
+                {
+                    *total += output;
+                }
+            }
+            production
+        };
+        // Food reflects current civilian/army rations even before the first turn
+        // and immediately after province or army changes.
+        flow[0] = self.projected_food_delta(player, inputs);
+        flow
+    }
+
     pub(crate) fn projected_food_delta(&self, player: usize, inputs: &MonthlyInputs) -> f64 {
         let local_flow: f64 = self
             .economy
@@ -548,21 +576,7 @@ impl Campaign {
 
     /// Price distance from owned provinces and vassals, using the sea/land province graph.
     pub fn distance(&self, player: usize, target: usize) -> Option<usize> {
-        if target >= self.economy.provinces.len() {
-            return None;
-        }
-        let sources: Vec<_> = self
-            .economy
-            .provinces
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                (p.owner == Some(player) || p.overlord == Some(player)).then_some(i)
-            })
-            .collect();
-        // Disconnected map components still permit political and spy activity.
-        // Price them at the farthest tier instead of treating them as inaccessible.
-        Some(political_distance(&self.economy.adjacency, &sources, target).unwrap_or(16))
+        self.economy.territorial_distance(player, target)
     }
 
     /// Movement permission separates invitations/friendship from declared invasions.
@@ -1192,7 +1206,9 @@ impl Campaign {
             }
         }
         let inputs = self.inputs();
-        self.economy.suspend_blocked_trade_routes(&inputs);
+        for event in self.economy.suspend_blocked_trade_routes(&inputs) {
+            self.record_trade_event(&event, self.economy.month);
+        }
         if ownership_changed {
             self.economy.recalculate_storage();
             for wallet in &mut self.economy.players {
@@ -1993,7 +2009,6 @@ impl Campaign {
         use super::campaign_notifications::{
             CampaignNotice, NoticeAction, NoticeKind, NoticeSeverity,
         };
-        let mut failed_trades = vec![Vec::<u64>::new(); self.actors.len()];
         for event in &report.events {
             match event {
                 EconomyEvent::BuildingCompleted {
@@ -2049,39 +2064,14 @@ impl Campaign {
                     ..
                 } => {},
                 EconomyEvent::TradeSuspended {
-                    agreement,
                     ..
                 }
                 | EconomyEvent::TradeCancelled {
-                    agreement,
-                } => {
-                    if let Some(trade) = self.economy.trades.iter().find(|t| t.id == *agreement) {
-                        for party in [trade.party_a, trade.party_b] {
-                            if let TradeParty::Player(player) = party {
-                                failed_trades[player].push(*agreement);
-                            }
-                        }
-                    }
-                },
-                EconomyEvent::TradeNoticeCompleted {
-                    agreement,
-                } => {
-                    if let Some(trade) = self.economy.trades.iter().find(|t| t.id == *agreement) {
-                        if let (TradeParty::Player(player), TradeParty::Npc(province)) =
-                            (trade.party_a, trade.party_b)
-                        {
-                            self.notifications.province_notice(
-                                player,
-                                province,
-                                report.month,
-                                NoticeSeverity::Info,
-                                NoticeKind::TradeInterrupted,
-                                "Trade route ended",
-                                format!("Route #{agreement} ended without a relation penalty."),
-                            );
-                        }
-                    }
-                },
+                    ..
+                }
+                | EconomyEvent::TradeNoticeCompleted {
+                    ..
+                } => self.record_trade_event(event, report.month),
                 _ => {},
             }
         }
@@ -2098,29 +2088,6 @@ impl Campaign {
                         NoticeKind::FoodShortage,
                         "Food shortage",
                         format!("Only {:.0}% of food demand was met.", supplied * 100.0),
-                    );
-                }
-            }
-        }
-        for (player, mut failures) in failed_trades.into_iter().enumerate() {
-            failures.sort();
-            failures.dedup();
-            if !failures.is_empty() {
-                if let Some(province) =
-                    self.economy.provinces.iter().position(|p| p.owner == Some(player))
-                {
-                    self.notifications.province_notice(
-                        player,
-                        province,
-                        report.month,
-                        NoticeSeverity::Warning,
-                        NoticeKind::TradeInterrupted,
-                        "Trade interrupted",
-                        if failures.len() == 1 {
-                            format!("Agreement #{} was interrupted.", failures[0])
-                        } else {
-                            format!("{} trade agreements were interrupted.", failures.len())
-                        },
                     );
                 }
             }

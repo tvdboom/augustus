@@ -200,6 +200,13 @@ fn snapshots_restore_every_rule_and_continue_the_same_seeded_simulation() {
     for count in 1..=4 {
         let mut original = fixture(count);
         original.campaign.province_access.insert((0, 0, count - 1), true);
+        for (province, policy) in original.campaign.economy.provinces.iter_mut().zip([
+            crate::game::economy::CitizenshipPolicy::Revoke,
+            crate::game::economy::CitizenshipPolicy::Normal,
+            crate::game::economy::CitizenshipPolicy::Grant,
+        ]) {
+            province.policies.citizenship = policy;
+        }
         for _ in 0..4 {
             original.campaign.advance_month();
         }
@@ -221,6 +228,82 @@ fn snapshots_restore_every_rule_and_continue_the_same_seeded_simulation() {
 }
 
 #[test]
+fn single_time_trade_cooldown_survives_snapshot_install_and_delta_replay() {
+    use crate::game::economy::{TradeAgreement, TradeBundle, TradeFrequency, TradeParty};
+    for count in [1, 2] {
+        let mut original = fixture(count);
+        let campaign = &mut original.campaign;
+        campaign.economy.players[0].coin = 1000.0;
+        campaign.pull_wallets();
+        let (npc, resource) = campaign
+            .economy
+            .provinces
+            .iter()
+            .enumerate()
+            .filter(|(id, province)| {
+                province.owner.is_none()
+                    && campaign
+                        .economy
+                        .trade_route(
+                            TradeParty::Player(0),
+                            TradeParty::Npc(*id),
+                            &campaign.inputs(),
+                        )
+                        .is_ok()
+            })
+            .find_map(|(id, province)| {
+                province
+                    .market
+                    .resources
+                    .iter()
+                    .position(|market| market.export_capacity >= 2.0)
+                    .map(|resource| (id, resource))
+            })
+            .expect("The canonical map must have a reachable market");
+        let mut resources = [0.0; 3];
+        resources[resource] = 1.0;
+        let proposal = TradeAgreement::new(
+            TradeParty::Player(0),
+            TradeParty::Npc(npc),
+            TradeBundle {
+                coin: 100.0,
+                ..Default::default()
+            },
+            TradeBundle {
+                resources,
+                ..Default::default()
+            },
+            TradeFrequency::OneTime,
+        );
+        let before = serde_json::to_value(&original).unwrap();
+        original.campaign.propose_national_trade(proposal.clone()).unwrap();
+        let after = serde_json::to_value(&original).unwrap();
+        let changes = patch::changes(&before, &after);
+        let replayed = patch::apply(&before, &changes, true).unwrap();
+        assert_eq!(replayed, after);
+        for saved in [after.clone(), replayed] {
+            let mut world = World::new();
+            world.init_resource::<ProvinceOwnership>();
+            world.init_resource::<GamePaused>();
+            install(&mut world, saved).unwrap();
+            let campaign = world.resource::<campaign::Campaign>();
+            assert_eq!(
+                campaign.economy.one_time_trade_cooldown(proposal.party_a, proposal.party_b),
+                3
+            );
+            assert!(campaign
+                .economy
+                .quote_trade(&proposal, &campaign.inputs())
+                .unwrap_err()
+                .contains("3 months"));
+            let mut monthly = proposal.clone();
+            monthly.frequency = TradeFrequency::Monthly;
+            assert!(campaign.economy.quote_trade(&monthly, &campaign.inputs()).is_ok());
+        }
+    }
+}
+
+#[test]
 fn new_snapshots_install_with_the_protected_rome_province() {
     for count in 1..=4 {
         let snapshot = fixture(count);
@@ -232,6 +315,55 @@ fn new_snapshots_install_with_the_protected_rome_province() {
             world.resource::<campaign::Campaign>().economy.provinces.last().unwrap().name,
             "Rome"
         );
+    }
+}
+
+#[test]
+fn older_snapshots_default_citizenship_and_replay_new_policy_changes() {
+    use crate::game::economy::{CitizenshipPolicy, EconomyConfig};
+    for count in [1, 2] {
+        let mut legacy = serde_json::to_value(fixture(count)).unwrap();
+        let economy = legacy["campaign"]["economy"].as_object_mut().unwrap();
+        let config = economy["config"].as_object_mut().unwrap();
+        config.remove("citizenship_rates");
+        config.remove("citizenship_happiness");
+        for province in economy["provinces"].as_array_mut().unwrap() {
+            province["policies"].as_object_mut().unwrap().remove("citizenship");
+        }
+        let mut world = World::new();
+        world.init_resource::<ProvinceOwnership>();
+        world.init_resource::<GamePaused>();
+        install(&mut world, legacy.clone()).unwrap();
+        let campaign = world.resource::<campaign::Campaign>();
+        assert!(campaign
+            .economy
+            .provinces
+            .iter()
+            .all(|p| p.policies.citizenship == CitizenshipPolicy::Normal));
+        assert_eq!(
+            campaign.economy.config.citizenship_rates,
+            EconomyConfig::default().citizenship_rates
+        );
+        assert_eq!(
+            campaign.economy.config.citizenship_happiness,
+            EconomyConfig::default().citizenship_happiness
+        );
+        let mut before = legacy;
+        for policy in
+            [CitizenshipPolicy::Grant, CitizenshipPolicy::Revoke, CitizenshipPolicy::Normal]
+        {
+            world.resource_mut::<campaign::Campaign>().economy.provinces[0].policies.citizenship =
+                policy;
+            let after = snapshot(&world).unwrap();
+            let changes = patch::changes(&before, &after);
+            assert_eq!(patch::apply(&before, &changes, true).unwrap(), after);
+            install(&mut world, patch::apply(&before, &changes, false).unwrap()).unwrap();
+            assert_eq!(
+                world.resource::<campaign::Campaign>().economy.provinces[0].policies.citizenship,
+                policy
+            );
+            before = after;
+        }
     }
 }
 

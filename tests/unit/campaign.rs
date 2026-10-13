@@ -22,6 +22,9 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
             ownership.start_game(&vec![egui::Color32::RED; player_count]);
             let mut campaign = Campaign::default();
             campaign.start(&ownership, player_count);
+            for wallet in &campaign.economy.players {
+                assert_eq!(wallet.storage, [2400.0; 3]);
+            }
             let mut discovered = false;
             for player in 0..player_count {
                 let province = campaign
@@ -34,6 +37,8 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                 let production = p.production(&campaign.economy.config).1;
                 let food_need = p.food_request(&campaign.economy.config)
                     + campaign.military.food_demand(ForceOwner::Player(player));
+                let food_surplus = production[0] - food_need;
+                let food_storage = campaign.economy.players[player].storage[0];
                 let coin_income = p.tax_income(&campaign.economy.config);
                 let influence_income =
                     p.population[0] * campaign.economy.config.influence_per_noble;
@@ -47,6 +52,18 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                 assert!(
                     production[0] >= food_need,
                     "{} opens with a food deficit: {production:?} versus {food_need}",
+                    p.name
+                );
+                assert!(
+                    food_surplus <= food_storage * 0.1,
+                    "{} adds too much opening food: {food_surplus:.1} per month for {food_storage:.1} storage",
+                    p.name
+                );
+                let mut focused = p.clone();
+                focused.policies.focus = ResourceFocus::Food;
+                assert!(
+                    focused.production(&campaign.economy.config).1[0] > production[0],
+                    "{} must still benefit from focusing on food",
                     p.name
                 );
                 assert!(
@@ -76,6 +93,19 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                         .position(|p| p.owner == Some(player))
                         .unwrap();
                     let province = &campaign.economy.provinces[owned];
+                    let wallet = &campaign.economy.players[player];
+                    // Three passive months should leave room for food trade and
+                    // future growth instead of immediately wasting production.
+                    if month < 3 {
+                        assert!(
+                            wallet.resources[0] <= wallet.storage[0] * 0.5,
+                            "{} filled more than half its food storage by month {}: {:.1}/{:.1}",
+                            province.name,
+                            month + 1,
+                            wallet.resources[0],
+                            wallet.storage[0]
+                        );
+                    }
                     assert!(
                         campaign.economy.last_report.food_supply_ratio[player] >= 0.999,
                         "{} has a food shortage in month {} of its opening year: ratio {:.3}, stock {:.1}, output {:.1}, need {:.1}, pop {:?}, cap {:.1}, happiness {:?}, owner {:?}, rebellion {}, players {} sample {}",
@@ -95,6 +125,104 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
         }
     }
     assert_eq!(starts.len(), 7, "cover every urban starting province");
+}
+
+#[test]
+fn opening_monthly_surplus_sales_supplement_tax_income_in_every_starting_province() {
+    use crate::game::economy::MarketSide;
+
+    let mut starts = std::collections::BTreeSet::new();
+    // Achaia cannot occur in every multiplayer start arrangement.
+    'samples: for player_count in 1..=4 {
+        for _ in 0..32 {
+            let mut ownership = ProvinceOwnership::default();
+            ownership.start_game(&vec![egui::Color32::RED; player_count]);
+            let mut campaign = Campaign::default();
+            campaign.start(&ownership, player_count);
+            let fresh_starts: Vec<_> = campaign
+                .economy
+                .provinces
+                .iter()
+                .enumerate()
+                .filter_map(|(province, p)| {
+                    p.owner
+                        .filter(|_| starts.insert(p.name.clone()))
+                        .map(|player| (province, player, p.name.clone()))
+                })
+                .collect();
+            if fresh_starts.is_empty() {
+                continue;
+            }
+            for month in 1..=12 {
+                campaign.advance_month();
+                for (province, player, name) in &fresh_starts {
+                    let surplus =
+                        campaign.hud_resource_flow(*player, &campaign.inputs()).map(|v| v.max(0.0));
+                    let taxes = campaign.economy.last_report.province_reports[*province].tax_income;
+                    let income = campaign.economy.last_report.player_delta[*player][3];
+                    let quote = campaign
+                        .economy
+                        .price_open_market_order(*player, MarketSide::Sell, surplus)
+                        .unwrap();
+                    if month == 1 {
+                        eprintln!("{name}: surplus {surplus:.1?}, taxes {taxes:.2}, net {income:.2}, surplus sale {:.2}", quote.coin);
+                    }
+                    assert!(quote.coin > 0.0, "{name} should still have useful surplus sales");
+                    assert!(
+                        quote.coin <= taxes * 0.3,
+                        "{name} month {month}: selling ordinary surplus pays {:.2} against {taxes:.2} in taxes",
+                        quote.coin
+                    );
+                    assert!(
+                        quote.coin <= income * 0.75,
+                        "{name} month {month}: selling ordinary surplus pays {:.2} against {income:.2} in net income",
+                        quote.coin
+                    );
+                }
+            }
+            if starts.len() == 7 {
+                break 'samples;
+            }
+        }
+    }
+    assert_eq!(starts.len(), 7, "Cover every live starting province");
+}
+
+#[test]
+fn hud_resource_flow_shows_production_before_the_first_month_and_after_storage_fills() {
+    let mut campaign = atlas_campaign();
+    let inputs = campaign.inputs();
+    let mut produced = [0.0; 3];
+    for province in campaign.economy.provinces.iter().filter(|p| p.owner == Some(0)) {
+        for (total, output) in
+            produced.iter_mut().zip(province.production(&campaign.economy.config).1)
+        {
+            *total += output;
+        }
+    }
+    let opening = campaign.hud_resource_flow(0, &inputs);
+    for resource in 1..3 {
+        assert!((opening[resource] - produced[resource]).abs() < 1e-8);
+    }
+    for wallet in &mut campaign.economy.players {
+        wallet.resources = wallet.storage;
+    }
+    campaign.advance_month();
+    let report = &campaign.economy.last_report;
+    let full = campaign.hud_resource_flow(0, &campaign.inputs());
+    for resource in 1..3 {
+        assert_eq!(report.player_delta[0][resource], 0.0);
+        assert!((full[resource] - produced[resource]).abs() < 1e-8);
+        assert_eq!(
+            campaign.economy.players[0].resources[resource],
+            campaign.economy.players[0].storage[resource]
+        );
+    }
+    for province in campaign.economy.provinces.iter_mut().filter(|p| p.owner == Some(0)) {
+        province.potential[0] = 0.0;
+    }
+    let loss = campaign.hud_resource_flow(0, &campaign.inputs());
+    assert!(loss[0] < 0.0, "Consumption must remain visible as a real net loss");
 }
 
 #[test]
@@ -181,13 +309,13 @@ fn surviving_spy_control_resolves_in_the_same_campaign_month() {
 }
 
 #[test]
-fn rome_starts_protected_with_fifty_supplied_cohorts_and_rejects_provincial_actions() {
+fn rome_starts_protected_with_150_supplied_cohorts_and_rejects_provincial_actions() {
     let mut c = atlas_campaign();
     let rome = c.rome_location().unwrap();
     assert_eq!(c.politics[rome].state, PoliticalState::Rome);
     assert_eq!(c.economy.provinces[rome].owner, None);
     assert_eq!(c.access_snapshot()[0][rome], MilitaryAccess::Blocked);
-    assert_eq!(c.military.all_units().filter(|u| u.owner == ForceOwner::Local(rome)).count(), 50);
+    assert_eq!(c.military.all_units().filter(|u| u.owner == ForceOwner::Local(rome)).count(), 150);
     assert_eq!(c.inputs().npc_army_food[rome], 0.0);
     let influence = c.actors[0].influence;
     assert!(c.espionage.deploy(0, rome, &mut c.actors, &c.politics, &c.espionage_config).is_err());
@@ -267,7 +395,7 @@ fn unguarded_rome_requires_hostility_and_presence_then_wins_immediately() {
 }
 
 #[test]
-fn latium_is_a_normal_rural_province_with_trade_and_two_local_cohorts() {
+fn latium_is_a_normal_rural_province_with_trade_and_six_local_cohorts() {
     let mut c = atlas_campaign();
     let latium = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
     let etruria = c.economy.provinces.iter().position(|p| p.name == "Etruria").unwrap();
@@ -278,7 +406,7 @@ fn latium_is_a_normal_rural_province_with_trade_and_two_local_cohorts() {
     let defenders = &c.military.provinces[latium].forces[&ForceOwner::Local(latium)];
     assert_eq!(
         defenders.iter().map(|u| u.unit_type).collect::<Vec<_>>(),
-        vec![UnitType::LightInfantry, UnitType::Archers]
+        [UnitType::LightInfantry, UnitType::Archers].repeat(3)
     );
     assert!(c.inputs().npc_army_food[latium] > 0.0);
     assert_eq!(c.economy.provinces[rome].population, [0.0; 4]);
@@ -354,7 +482,7 @@ fn rome_can_be_attacked_only_from_its_three_approaches_and_fights_on_arrival() {
         }
         let battle = c.military.battles.iter().find(|b| b.province == rome).unwrap();
         assert_eq!(battle.attackers.units[0].id, unit);
-        assert_eq!(battle.defenders.units.len(), 50);
+        assert_eq!(battle.defenders.units.len(), 150);
         assert!(battle.defenders.units.iter().all(|u| u.owner == ForceOwner::Local(rome)));
         assert_eq!(c.senate.winner, None);
     }

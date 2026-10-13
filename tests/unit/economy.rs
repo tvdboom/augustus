@@ -364,6 +364,153 @@ fn manumission_converts_in_both_directions_and_changes_only_the_affected_class_h
     }
 }
 
+#[test]
+fn citizenship_converts_in_both_directions_with_a_standing_happiness_tradeoff() {
+    for has_city in [false, true] {
+        for (policy, transferred, happiness) in [
+            (CitizenshipPolicy::Revoke, -0.04, [50.0, 49.0, 50.0, 50.0]),
+            (CitizenshipPolicy::Normal, 0.0, [50.0; 4]),
+            (CitizenshipPolicy::Grant, 0.2, [49.0, 50.0, 50.0, 50.0]),
+        ] {
+            let mut w = world(1, 1);
+            w.config.overcrowding_scale = 0.0;
+            w.config.birth_rates = [0.0; 4];
+            w.config.death_rates = [0.0; 4];
+            w.config.class_change_rates = [0.0; 2];
+            w.provinces[0].has_city = has_city;
+            w.provinces[0].population = [10.0, 20.0, 100.0, 40.0];
+            w.provinces[0].policies.citizenship = policy;
+            let before = w.provinces[0].population;
+            for month in 0..2 {
+                let population = w.provinces[0].population;
+                let source = if transferred >= 0.0 {
+                    population[2]
+                } else {
+                    population[1]
+                };
+                let transfer = source * w.config.citizenship_rates[policy as usize];
+                w.advance_month(&MonthlyInputs::default());
+                let p = &w.provinces[0];
+                close(p.population[1], population[1] + transfer);
+                close(p.population[2], population[2] - transfer);
+                close(p.population[0], before[0]);
+                close(p.population[3], before[3]);
+                close(p.total_population(), 170.0);
+                assert_eq!(p.happiness, happiness);
+                if month == 0 {
+                    close(p.population[1], before[1] + transferred);
+                }
+            }
+            w.provinces[0].policies.citizenship = CitizenshipPolicy::Normal;
+            let population = w.provinces[0].population;
+            w.advance_month(&MonthlyInputs::default());
+            assert_eq!(w.provinces[0].population, population);
+            assert_eq!(w.provinces[0].happiness, [50.0; 4]);
+        }
+    }
+}
+
+#[test]
+fn citizenship_and_manumission_happiness_effects_combine() {
+    let mut w = world(1, 1);
+    let p = &mut w.provinces[0];
+    p.policies.manumission = ManumissionPolicy::Free;
+    p.policies.citizenship = CitizenshipPolicy::Grant;
+    assert_eq!(p.calculate_happiness(&w.config), [48.0, 50.0, 50.0, 50.0]);
+    p.policies.manumission = ManumissionPolicy::Enslave;
+    p.policies.citizenship = CitizenshipPolicy::Revoke;
+    assert_eq!(p.calculate_happiness(&w.config), [50.0, 49.0, 49.0, 50.0]);
+}
+
+#[test]
+fn citizenship_keeps_ordinary_promotion_and_bounds_competing_class_conversions() {
+    let w = world(1, 1);
+    let mut config = w.config.clone();
+    config.birth_rates = [0.0; 4];
+    config.death_rates = [0.0; 4];
+    let mut p = w.provinces[0].clone();
+    for has_city in [false, true] {
+        p.has_city = has_city;
+        p.population = [0.0, 10.0, 100.0, 0.0];
+        p.advance_demographics(
+            &mut ProvinceMonth {
+                food_supply_ratio: 1.0,
+                ..Default::default()
+            },
+            &config,
+        );
+        let promoted = 100.0
+            * config.class_change_rates[0]
+            * if has_city {
+                1.0
+            } else {
+                0.5
+            };
+        let nobles = 10.0
+            * config.class_change_rates[1]
+            * if has_city {
+                1.0
+            } else {
+                0.25
+            };
+        close(p.population[0], nobles);
+        close(p.population[1], 10.0 + promoted - nobles);
+        close(p.population[2], 100.0 - promoted);
+        close(p.total_population(), 110.0);
+    }
+    p.has_city = true;
+    config.class_change_rates = [1.0; 2];
+    config.manumission_rates = [-2.0, 0.0, 2.0];
+    config.citizenship_rates = [-2.0, 0.0, 2.0];
+    for (manumission, citizenship, population, expected) in [
+        (
+            ManumissionPolicy::Free,
+            CitizenshipPolicy::Grant,
+            [0.0, 0.0, 0.0, 10.0],
+            [0.0, 0.0, 10.0, 0.0],
+        ),
+        (
+            ManumissionPolicy::Normal,
+            CitizenshipPolicy::Grant,
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 10.0, 0.0, 0.0],
+        ),
+        (
+            ManumissionPolicy::Enslave,
+            CitizenshipPolicy::Grant,
+            [0.0, 0.0, 10.0, 0.0],
+            [0.0, 0.0, 0.0, 10.0],
+        ),
+        (
+            ManumissionPolicy::Enslave,
+            CitizenshipPolicy::Revoke,
+            [0.0, 10.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0],
+        ),
+        (
+            ManumissionPolicy::Free,
+            CitizenshipPolicy::Revoke,
+            [0.0, 10.0, 10.0, 10.0],
+            [0.0, 10.0, 20.0, 0.0],
+        ),
+        (ManumissionPolicy::Normal, CitizenshipPolicy::Revoke, [0.0; 4], [0.0; 4]),
+        (ManumissionPolicy::Normal, CitizenshipPolicy::Grant, [0.0; 4], [0.0; 4]),
+    ] {
+        p.policies.manumission = manumission;
+        p.policies.citizenship = citizenship;
+        p.population = population;
+        p.advance_demographics(
+            &mut ProvinceMonth {
+                food_supply_ratio: 1.0,
+                ..Default::default()
+            },
+            &config,
+        );
+        assert_eq!(p.population, expected);
+        close(p.total_population(), population.iter().sum());
+    }
+}
+
 fn npc_route(world: &mut EconomyWorld) -> u64 {
     world.players[0].coin = 10_000.0;
     let agreement = TradeAgreement::new(
@@ -456,6 +603,130 @@ fn player_route_cancellation_changes_neither_wallets_nor_province_relations() {
         world.provinces.iter().map(|p| p.relation_by_player.clone()).collect::<Vec<_>>(),
         relations
     );
+}
+
+#[test]
+fn open_market_resale_pays_small_coin_amounts_without_discounting_purchases() {
+    let mut market = world(1, 1);
+    for resource in 0..3 {
+        let sell = market.quote_open_market(0, resource, MarketSide::Sell, 1.0).unwrap();
+        assert!(sell.coin > 0.0 && sell.coin < 0.1);
+        let buy = market.quote_open_market(0, resource, MarketSide::Buy, 1.0).unwrap();
+        assert!(buy.coin > market.config.trade.base_value[resource]);
+        market.config.trade.open_market_sell_multiplier = 1.0;
+        let legacy = market.quote_open_market(0, resource, MarketSide::Sell, 1.0).unwrap();
+        close(sell.coin, legacy.coin * 0.01);
+        close(market.quote_open_market(0, resource, MarketSide::Buy, 1.0).unwrap().coin, buy.coin);
+        market.config.trade.open_market_sell_multiplier =
+            TradeConfig::default().open_market_sell_multiplier;
+    }
+    // The screenshot's production can provide useful income without eclipsing taxes.
+    let surplus = market.price_open_market_order(0, MarketSide::Sell, [78.0, 27.0, 108.0]).unwrap();
+    assert!(surplus.coin > 2.0 && surplus.coin < 3.0);
+}
+
+#[test]
+fn older_economy_saves_use_the_balanced_resale_rate_and_keep_monthly_volume() {
+    let mut market = world(1, 1);
+    market.exchange_open_market(0, 1, MarketSide::Sell, 10.0).unwrap();
+    let expected = market.quote_open_market(0, 1, MarketSide::Sell, 10.0).unwrap();
+    let mut legacy = serde_json::to_value(&market).unwrap();
+    legacy["config"]["trade"].as_object_mut().unwrap().remove("open_market_sell_multiplier");
+    let restored: EconomyWorld = serde_json::from_value(legacy).unwrap();
+    let quote = restored.quote_open_market(0, 1, MarketSide::Sell, 10.0).unwrap();
+    close(quote.coin, expected.coin);
+    close(quote.prior_volume, 10.0);
+    assert_eq!(restored.open_market_volume, market.open_market_volume);
+}
+
+#[test]
+fn open_market_orders_exchange_all_selected_resources_at_the_same_cumulative_prices() {
+    for side in [MarketSide::Buy, MarketSide::Sell] {
+        let mut batch = world(1, 1);
+        batch.players[0].coin = 10_000.0;
+        batch.players[0].resources = [500.0; 3];
+        batch.exchange_open_market_order(0, side, [10.0, 15.0, 20.0]).unwrap();
+        let mut separate = batch.clone();
+        let quantities = [50.0, 25.0, 30.0];
+        let before = batch.players[0].balances();
+        let prices = batch.price_open_market_order(0, side, quantities).unwrap();
+        let quote = batch.exchange_open_market_order(0, side, quantities).unwrap();
+        close(quote.coin, prices.coin);
+        let mut total = 0.0;
+        for (resource, quantity) in quantities.into_iter().enumerate() {
+            let quote = separate.exchange_open_market(0, resource, side, quantity).unwrap();
+            total += quote.coin;
+            close(batch.players[0].resources[resource], separate.players[0].resources[resource]);
+            close(
+                batch.players[0].resources[resource] - before[resource],
+                if side == MarketSide::Buy {
+                    quantity
+                } else {
+                    -quantity
+                },
+            );
+        }
+        close(quote.coin, total);
+        close(batch.players[0].coin, separate.players[0].coin);
+        assert_eq!(batch.open_market_volume, separate.open_market_volume);
+    }
+}
+
+#[test]
+fn open_market_orders_show_total_cost_and_reject_combined_overspending_atomically() {
+    let mut market = world(1, 1);
+    market.players[0].coin = 10_000.0;
+    let quantities = [100.0; 3];
+    let prices = market.price_open_market_order(0, MarketSide::Buy, quantities).unwrap();
+    let largest =
+        prices.resources.into_iter().flatten().map(|quote| quote.coin).fold(0.0, f64::max);
+    market.players[0].coin = largest;
+    for (resource, &quantity) in quantities.iter().enumerate() {
+        assert!(market.quote_open_market(0, resource, MarketSide::Buy, quantity).is_ok());
+    }
+    let before = serde_json::to_value(&market).unwrap();
+    close(
+        market.price_open_market_order(0, MarketSide::Buy, quantities).unwrap().coin,
+        prices.coin,
+    );
+    assert!(market
+        .exchange_open_market_order(0, MarketSide::Buy, quantities)
+        .unwrap_err()
+        .contains("Not enough sestertii"));
+    assert_eq!(serde_json::to_value(&market).unwrap(), before);
+}
+
+#[test]
+fn open_market_orders_reject_bad_resources_without_partially_exchanging_other_goods() {
+    let mut market = world(1, 1);
+    market.players[0].coin = 10_000.0;
+    for side in [MarketSide::Buy, MarketSide::Sell] {
+        for quantities in [
+            [0.0; 3],
+            [1.0, 1_000_000.0, 1.0],
+            [1.0, -1.0, 1.0],
+            [1.0, f64::NAN, 1.0],
+            [1.0, f64::INFINITY, 1.0],
+        ] {
+            let before = serde_json::to_value(&market).unwrap();
+            assert!(market.exchange_open_market_order(0, side, quantities).is_err());
+            assert_eq!(serde_json::to_value(&market).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn open_market_orders_fill_remaining_storage_and_skip_full_resources() {
+    let mut market = world(1, 1);
+    market.players[0].coin = 1000.0;
+    let storage = market.players[0].storage;
+    market.players[0].resources = [storage[0] - 0.25, storage[1], storage[2] - 0.5];
+    let quote = market.exchange_open_market_order(0, MarketSide::Buy, [0.25, 0.0, 0.5]).unwrap();
+    assert_eq!(market.players[0].resources, storage);
+    assert!(quote.resources[1].is_none());
+    let before = serde_json::to_value(&market).unwrap();
+    assert!(market.exchange_open_market_order(0, MarketSide::Buy, [0.0, 0.01, 0.0]).is_err());
+    assert_eq!(serde_json::to_value(&market).unwrap(), before);
 }
 
 #[test]
@@ -705,6 +976,50 @@ fn immediate_quote_and_acceptance_share_bilateral_affordability() {
     world.accept_trade(id, 1, &inputs).unwrap();
     assert_eq!(world.players[0].coin, before - 20.0);
     assert_eq!(world.trades[0].status, TradeStatus::Completed);
+}
+
+#[test]
+fn base_resource_ratios_and_focus_determine_relative_production() {
+    let config = EconomyConfig::default();
+    let mut province = EconomicProvince::new(
+        "Achaia",
+        100.0,
+        Terrain::Plains,
+        true,
+        [2.0, 1.0, 4.0],
+        [120.0, 230.0, 370.0, 280.0],
+        1,
+    );
+    let balanced = province.production(&config).1;
+    close(balanced[0], balanced[1] * 2.0);
+    close(balanced[2], balanced[0] * 2.0);
+    close(balanced[2], balanced[1] * 4.0);
+    for (focus, ratio) in [
+        (ResourceFocus::Food, [6.0, 1.0, 4.0]),
+        (ResourceFocus::Metal, [2.0, 3.0, 4.0]),
+        (ResourceFocus::Stone, [2.0, 1.0, 12.0]),
+    ] {
+        province.policies.focus = focus;
+        let output = province.production(&config).1;
+        let unit = output[0] / ratio[0];
+        for resource in 0..3 {
+            close(output[resource], unit * ratio[resource]);
+        }
+        close(output.into_iter().sum(), balanced.into_iter().sum());
+    }
+    // The HUD's stock gains need not have the gross production ratio: rations
+    // consume food, while the other goods accumulate in full without spending.
+    province.policies.focus = ResourceFocus::Balanced;
+    province.owner = Some(0);
+    let food_requested = province.food_request(&config);
+    let mut world = EconomyWorld::new(1, vec![province], vec![vec![]]);
+    let report = world.advance_month(&MonthlyInputs::default());
+    for (resource, &production) in balanced.iter().enumerate() {
+        close(report.province_reports[0].production[resource], production);
+    }
+    close(report.player_delta[0][0], balanced[0] - food_requested);
+    close(report.player_delta[0][1], balanced[1]);
+    close(report.player_delta[0][2], balanced[2]);
 }
 
 #[test]
@@ -1013,6 +1328,38 @@ fn countryside_and_city_catalogs_have_four_and_eight_distinct_buildings() {
         world.start_building(0, 0, building).unwrap();
         world.cancel_construction(0, 0).unwrap();
         world.provinces[0].has_city = false;
+    }
+}
+
+#[test]
+fn storage_overflow_keeps_monthly_flow_visible_after_rations_without_adding_stock() {
+    for army_food in [0.0, 20.0] {
+        let mut world = world(1, 1);
+        world.players[0].resources = world.players[0].storage;
+        let mut expected_flow = world.provinces[0].production(&world.config).1;
+        expected_flow[0] -= world.provinces[0].food_request(&world.config) + army_food;
+        let report = world.advance_month(&MonthlyInputs {
+            army_food: vec![army_food],
+            ..Default::default()
+        });
+        for (resource, &flow) in expected_flow.iter().enumerate() {
+            close(report.player_delta[0][resource], flow.min(0.0));
+            close(report.storage_overflow[0][resource], flow.max(0.0));
+            close(report.player_delta[0][resource] + report.storage_overflow[0][resource], flow);
+            close(
+                world.players[0].resources[resource],
+                world.players[0].storage[resource] + flow.min(0.0),
+            );
+        }
+        let saved = serde_json::to_value(&world).unwrap();
+        let loaded: EconomyWorld = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.last_report.storage_overflow, report.storage_overflow);
+        // Older snapshots do not carry the display-only discarded-surplus field.
+        let mut old_report = serde_json::to_value(&report).unwrap();
+        old_report.as_object_mut().unwrap().remove("storage_overflow");
+        let loaded: MonthlyReport = serde_json::from_value(old_report).unwrap();
+        assert!(loaded.storage_overflow.is_empty());
+        assert_eq!(loaded.player_delta, report.player_delta);
     }
 }
 
@@ -1326,6 +1673,410 @@ fn monthly_failure_suspends_then_cancels_without_partial_payment() {
 }
 
 #[test]
+fn surplus_npc_provinces_still_accept_goods_for_reserves() {
+    let mut world = world(4, 1);
+    for province in &mut world.provinces[1..] {
+        province.potential = [100.0; 3];
+    }
+    world.refresh_npc_markets(&MonthlyInputs::default());
+    for province in &world.provinces[1..] {
+        for market in province.market.resources {
+            assert!(market.production_potential > market.internal_need);
+            assert!(market.import_demand >= 5.0);
+        }
+    }
+    let proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            resources: [0.0, 5.0, 0.0],
+            ..Default::default()
+        },
+        TradeBundle {
+            coin: 5.0,
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    world.propose_trade(proposal, &MonthlyInputs::default()).unwrap();
+    world.advance_month(&MonthlyInputs::default());
+    close(world.provinces[1].market.resources[1].imported, 5.0);
+    assert_eq!(world.trades[0].status, TradeStatus::Active);
+}
+
+#[test]
+fn scarce_food_barter_accepts_generous_surplus_offers_without_an_import_cutoff() {
+    let mut world = world(2, 1);
+    let npc = &mut world.provinces[1];
+    npc.name = "Arabia".into();
+    npc.market.resources[0].local_unit_value = 1.75;
+    npc.market.resources[0].import_demand = 193.0;
+    npc.market.resources[2].local_unit_value = 1.05;
+    npc.market.resources[2].import_demand = 5.0;
+    npc.market.resources[2].internal_need = 2.0;
+    npc.market.resources[2].export_capacity = 111.0;
+    npc.market.trade_budget = 25.0;
+    npc.market.coin_treasury = 50.0;
+    let mut deal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            resources: [7.0, 0.0, 0.0],
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 5.0],
+            coin: 5.0,
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    let inputs = MonthlyInputs::default();
+    let quote = world.quote_trade(&deal, &inputs).unwrap();
+    close(quote.b_receives.value([1.75, 2.5, 1.05], 8.0), 12.25);
+    close(deal.b_gives.value([1.75, 2.5, 1.05], 8.0), 10.25);
+    close(quote.fulfillment, 1.0);
+    assert!(quote.limit_reason.is_none());
+    // Neutral single-time offers need the additional margin as well as full supply.
+    deal.frequency = TradeFrequency::OneTime;
+    assert!(world.quote_trade(&deal, &inputs).unwrap_err().contains("offered value"));
+    deal.a_gives.resources[0] = 7.1;
+    for stone in [0.0, 5.0, 13.0, 22.5] {
+        deal.a_gives.resources[2] = stone;
+        close(world.quote_trade_execution(&deal, &inputs).unwrap().fulfillment, 1.0);
+    }
+    deal.a_gives.coin = 1.0;
+    close(world.quote_trade_execution(&deal, &inputs).unwrap().fulfillment, 1.0);
+    deal.a_gives.resources[2] = 23.0;
+    let quote = world.quote_trade(&deal, &inputs).unwrap();
+    close(quote.fulfillment, 1.0);
+    assert!(quote.limit_reason.is_none());
+    let before = serde_json::to_value(&world).unwrap();
+    assert!(world.quote_trade(&deal, &inputs).is_ok());
+    assert_eq!(serde_json::to_value(&world).unwrap(), before);
+    deal.a_gives.resources[2] = 30.0;
+    assert!(world.quote_trade(&deal, &inputs).is_ok());
+    world.players[0].resources = [100.0; 3];
+    world.players[0].coin = 100.0;
+    world.propose_trade(deal, &inputs).unwrap();
+    close(world.provinces[1].market.resources[2].imported, 30.0);
+    assert_eq!(world.trades[0].status, TradeStatus::Completed);
+}
+
+#[test]
+fn surplus_import_pricing_requires_more_goods_and_preserves_full_deliveries() {
+    for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
+        let mut world = world(3, 1);
+        world.players[0].resources = [1000.0; 3];
+        let npc = &mut world.provinces[2];
+        npc.relation_by_player[0] = 100.0;
+        npc.market.resources[1].import_demand = 5.0;
+        npc.market.resources[1].internal_need = 0.0;
+        npc.market.resources[1].local_unit_value = 2.5;
+        npc.market.coin_treasury = 1000.0;
+        npc.market.trade_budget = 100.0;
+        let preferred = npc.market.resources[1].available_imports(&world.config.trade, frequency);
+        let inputs = MonthlyInputs::default();
+        let route = world.trade_route(TradeParty::Player(0), TradeParty::Npc(2), &inputs).unwrap();
+        let efficiency = world.route_efficiency(&route);
+        assert!(efficiency < 1.0, "Exercise post-transport valuation");
+        let margin = (if frequency == TradeFrequency::OneTime {
+            world.config.trade.one_time_margin
+        } else {
+            1.0
+        }) * 1.25;
+        let mut deal = TradeAgreement::new(
+            TradeParty::Player(0),
+            TradeParty::Npc(2),
+            TradeBundle {
+                resources: [0.0, (preferred + 1.0) / efficiency, 0.0],
+                ..Default::default()
+            },
+            TradeBundle {
+                coin: (preferred * 2.5 + 2.5) / margin,
+                ..Default::default()
+            },
+            frequency,
+        );
+        let before = serde_json::to_value(&world).unwrap();
+        let reason = world.quote_trade(&deal, &inputs).unwrap_err();
+        assert!(reason.contains("offered value") && reason.contains("25%"));
+        assert!(!reason.contains("can accept at most"));
+        assert_eq!(serde_json::to_value(&world).unwrap(), before);
+        // Four surplus units replace the value of one normal unit.
+        deal.a_gives.resources[1] = (preferred + 4.0) / efficiency;
+        let quote = world.quote_trade_execution(&deal, &inputs).unwrap();
+        close(quote.fulfillment, 1.0);
+        close(quote.b_receives.resources[1], preferred + 4.0);
+        assert!(quote.limit_reason.is_none());
+        if frequency == TradeFrequency::OneTime {
+            let sent = deal.a_gives.resources[1];
+            world.propose_trade(deal, &inputs).unwrap();
+            close(world.provinces[2].market.resources[1].imported, preferred + 4.0);
+            close(world.players[0].resources[1], 1000.0 - sent);
+        }
+    }
+}
+
+#[test]
+fn surplus_import_value_stays_positive_and_split_deliveries_keep_the_discount() {
+    let config = TradeConfig::default();
+    for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
+        let mut market = NpcResourceMarket {
+            import_demand: 5.0,
+            local_unit_value: 2.5,
+            ..Default::default()
+        };
+        let preferred = market.available_imports(&config, frequency);
+        let whole = market.import_value(preferred + 100.0, &config, frequency);
+        let first = market.import_value(preferred, &config, frequency);
+        market.imported += preferred;
+        close(market.available_imports(&config, frequency), 0.0);
+        let second = market.import_value(100.0, &config, frequency);
+        close(second, 100.0 * 2.5 * 0.25);
+        close(first + second, whole);
+        assert!(market.import_value(1_000_000.0, &config, frequency) > second);
+    }
+}
+
+#[test]
+fn provincial_trade_prices_use_the_shared_distance_multiplier_for_both_frequencies() {
+    for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
+        let mut world = world(5, 1);
+        world.config.trade.loss_per_step = 0.0;
+        world.players[0].coin = 100.0;
+        let npc = &mut world.provinces[4];
+        npc.relation_by_player[0] = 100.0;
+        npc.market.resources[2].local_unit_value = 1.0;
+        npc.market.resources[2].export_capacity = 20.0;
+        let margin = if frequency == TradeFrequency::OneTime {
+            1.1
+        } else {
+            1.0
+        };
+        let mut offer = TradeAgreement::new(
+            TradeParty::Player(0),
+            TradeParty::Npc(4),
+            TradeBundle {
+                coin: 4.0 * margin,
+                ..Default::default()
+            },
+            TradeBundle {
+                resources: [0.0, 0.0, 4.0],
+                ..Default::default()
+            },
+            frequency,
+        );
+        let inputs = MonthlyInputs::default();
+        assert_eq!(world.territorial_distance(0, 4), Some(4));
+        let before = serde_json::to_value(&world).unwrap();
+        assert!(world.quote_trade(&offer, &inputs).unwrap_err().contains("×1.5"));
+        assert_eq!(serde_json::to_value(&world).unwrap(), before);
+        offer.a_gives.coin *= 1.5;
+        let quote = world.quote_trade_execution(&offer, &inputs).unwrap();
+        close(quote.required_value_ratio.unwrap(), 1.5 * margin);
+        close(quote.a_receives.resources[2], 4.0);
+        // A nearby vassal or owned province lowers both the displayed and quoted modifier.
+        for vassal in [true, false] {
+            world.provinces[3].overlord = vassal.then_some(0);
+            world.provinces[3].owner = (!vassal).then_some(0);
+            assert_eq!(world.territorial_distance(0, 4), Some(1));
+            offer.a_gives.coin = 4.0 * margin;
+            let quote = world.quote_trade_execution(&offer, &inputs).unwrap();
+            close(quote.required_value_ratio.unwrap(), margin);
+        }
+    }
+}
+
+#[test]
+fn single_time_npc_supply_and_cash_budget_exceed_monthly_limits() {
+    let mut world = world(2, 1);
+    world.players[0].coin = 1000.0;
+    world.provinces[1].market.resources[0].export_capacity = 10.0;
+    world.provinces[1].market.resources[0].local_unit_value = 1.0;
+    world.provinces[1].market.resources[1].import_demand = 10.0;
+    world.provinces[1].market.trade_budget = 10.0;
+    world.provinces[1].market.coin_treasury = 100.0;
+    for (give, receive) in [
+        (
+            TradeBundle {
+                coin: 40.0,
+                ..Default::default()
+            },
+            TradeBundle {
+                resources: [20.0, 0.0, 0.0],
+                ..Default::default()
+            },
+        ),
+        (
+            TradeBundle {
+                resources: [0.0, 20.0, 0.0],
+                ..Default::default()
+            },
+            TradeBundle {
+                coin: 20.0,
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut market = world.clone();
+        let mut proposal = TradeAgreement::new(
+            TradeParty::Player(0),
+            TradeParty::Npc(1),
+            give,
+            receive,
+            TradeFrequency::Monthly,
+        );
+        let before = serde_json::to_value(&market).unwrap();
+        assert!(market.propose_trade(proposal.clone(), &MonthlyInputs::default()).is_err());
+        assert_eq!(serde_json::to_value(&market).unwrap(), before);
+        proposal.frequency = TradeFrequency::OneTime;
+        close(market.quote_trade(&proposal, &MonthlyInputs::default()).unwrap().fulfillment, 1.0);
+        market.propose_trade(proposal, &MonthlyInputs::default()).unwrap();
+        assert_eq!(market.trades[0].status, TradeStatus::Completed);
+        let resource = if give.coin > 0.0 {
+            0
+        } else {
+            1
+        };
+        let state = market.provinces[1].market.resources[resource];
+        let remaining = if give.coin > 0.0 {
+            state.available_exports(&market.config.trade, TradeFrequency::Monthly)
+        } else {
+            state.available_imports(&market.config.trade, TradeFrequency::Monthly)
+        };
+        close(remaining, 0.0);
+    }
+}
+
+#[test]
+fn single_time_trade_cooldown_survives_saving_and_expires_after_three_months() {
+    let mut world = world(3, 1);
+    world.players[0].coin = 1000.0;
+    let mut proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            coin: 10.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        TradeFrequency::OneTime,
+    );
+    world.propose_trade(proposal.clone(), &MonthlyInputs::default()).unwrap();
+    let mut restored: EconomyWorld =
+        serde_json::from_str(&serde_json::to_string(&world).unwrap()).unwrap();
+    close(f64::from(restored.one_time_trade_cooldown(proposal.party_a, proposal.party_b)), 3.0);
+    for expected in [3, 2, 1] {
+        assert_eq!(restored.one_time_trade_cooldown(proposal.party_a, proposal.party_b), expected);
+        let before = serde_json::to_value(&restored).unwrap();
+        assert!(restored
+            .propose_trade(proposal.clone(), &MonthlyInputs::default())
+            .unwrap_err()
+            .contains(&format!("{expected} month")));
+        assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+        restored.advance_month(&MonthlyInputs::default());
+    }
+    restored.propose_trade(proposal.clone(), &MonthlyInputs::default()).unwrap();
+    proposal.frequency = TradeFrequency::Monthly;
+    restored.propose_trade(proposal.clone(), &MonthlyInputs::default()).unwrap();
+    proposal.frequency = TradeFrequency::OneTime;
+    proposal.party_b = TradeParty::Npc(2);
+    restored.propose_trade(proposal, &MonthlyInputs::default()).unwrap();
+}
+
+#[test]
+fn pending_human_offers_cannot_bypass_cooldown_by_reversing_the_parties() {
+    let mut world = world(2, 2);
+    world.provinces[1].owner = Some(1);
+    let proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Player(1),
+        TradeBundle {
+            coin: 10.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        TradeFrequency::OneTime,
+    );
+    let reverse = TradeAgreement::new(
+        proposal.party_b,
+        proposal.party_a,
+        proposal.b_gives,
+        proposal.a_gives,
+        proposal.frequency,
+    );
+    let id = world.propose_trade(proposal, &MonthlyInputs::default()).unwrap().0;
+    let pending = world.propose_trade(reverse.clone(), &MonthlyInputs::default()).unwrap().0;
+    assert_eq!(world.one_time_trade_cooldown(reverse.party_a, reverse.party_b), 0);
+    world.accept_trade(id, 1, &MonthlyInputs::default()).unwrap();
+    let before = serde_json::to_value(&world).unwrap();
+    assert!(world.accept_trade(pending, 0, &MonthlyInputs::default()).is_err());
+    assert!(world.propose_trade(reverse, &MonthlyInputs::default()).is_err());
+    assert_eq!(serde_json::to_value(&world).unwrap(), before);
+    for _ in 0..3 {
+        world.advance_month(&MonthlyInputs::default());
+    }
+    world.accept_trade(pending, 0, &MonthlyInputs::default()).unwrap();
+    assert_eq!(world.trades[1].status, TradeStatus::Completed);
+}
+
+#[test]
+fn failed_single_time_trade_does_not_start_a_cooldown() {
+    let mut world = world(2, 1);
+    let proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            coin: 10.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            resources: [0.0, 0.0, 1.0],
+            ..Default::default()
+        },
+        TradeFrequency::OneTime,
+    );
+    world.players[0].coin = 0.0;
+    let before = serde_json::to_value(&world).unwrap();
+    assert!(world.propose_trade(proposal.clone(), &MonthlyInputs::default()).is_err());
+    assert_eq!(serde_json::to_value(&world).unwrap(), before);
+    assert_eq!(world.one_time_trade_cooldown(proposal.party_a, proposal.party_b), 0);
+    world.players[0].coin = 10.0;
+    world.propose_trade(proposal, &MonthlyInputs::default()).unwrap();
+}
+
+#[test]
+fn older_trade_configs_and_markets_get_reserve_demand_and_cooldown_defaults() {
+    let world = world(2, 1);
+    let mut legacy = serde_json::to_value(&world).unwrap();
+    let config = legacy["config"]["trade"].as_object_mut().unwrap();
+    for field in [
+        "npc_minimum_import_demand",
+        "npc_reserve_demand_share",
+        "one_time_cooldown_months",
+        "surplus_import_value_share",
+    ] {
+        config.remove(field);
+    }
+    for market in legacy["provinces"][1]["market"]["resources"].as_array_mut().unwrap() {
+        market["import_demand"] = serde_json::json!(0.0);
+    }
+    let restored: EconomyWorld = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.config.trade.one_time_cooldown_months, 3);
+    close(restored.config.trade.surplus_import_value_share, 0.25);
+    for market in restored.provinces[1].market.resources {
+        assert!(market.available_imports(&restored.config.trade, TradeFrequency::Monthly) >= 5.0);
+    }
+}
+
+#[test]
 fn npc_trade_reserves_supply_and_one_time_deals_never_generate_control() {
     let mut world = world(2, 1);
     world.refresh_npc_markets(&MonthlyInputs::default());
@@ -1568,15 +2319,17 @@ fn splitting_one_time_deals_cannot_farm_recurring_relation_rewards() {
         request,
         TradeFrequency::OneTime,
     );
-    let mut relation = 0.0;
+    let relation = world
+        .propose_trade(proposal.clone(), &MonthlyInputs::default())
+        .unwrap()
+        .1
+        .unwrap()
+        .relation_gain;
+    let before = serde_json::to_value(&world).unwrap();
     for _ in 0..20 {
-        relation += world
-            .propose_trade(proposal.clone(), &MonthlyInputs::default())
-            .unwrap()
-            .1
-            .unwrap()
-            .relation_gain;
+        assert!(world.propose_trade(proposal.clone(), &MonthlyInputs::default()).is_err());
     }
+    assert_eq!(serde_json::to_value(&world).unwrap(), before);
     close(relation, 0.1);
 }
 

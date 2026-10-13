@@ -1,6 +1,7 @@
 //! Route-validated bilateral exchange and bounded NPC markets.
 
 use super::{BuildingType, EconomyEvent, EconomyWorld, MonthlyInputs, ResourceFocus, TradeConfig};
+use crate::game::politics::diplomacy::{distance_multiplier, political_distance};
 use std::collections::{BTreeMap, VecDeque};
 
 /// A bundle is a gross commitment; the recipient receives it after route losses.
@@ -186,6 +187,52 @@ pub struct NpcResourceMarket {
     pub exported: f64,
 }
 
+impl NpcResourceMarket {
+    /// Keep a bounded reserve demand even in provinces without a production deficit.
+    /// Applying this to stored markets also supports saves made before reserve demand existed.
+    pub fn desired_imports(&self, config: &TradeConfig) -> f64 {
+        self.import_demand
+            .max(self.internal_need * config.npc_reserve_demand_share)
+            .max(config.npc_minimum_import_demand)
+    }
+
+    /// Gross goods left to send for the selected frequency, after this month's deliveries.
+    pub fn available_exports(&self, config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        (self.export_capacity * Self::capacity_multiplier(config, frequency) - self.exported)
+            .max(0.0)
+    }
+
+    /// Additional delivered goods valued in full for the selected frequency.
+    pub fn available_imports(&self, config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        (self.desired_imports(config)
+            * config.maximum_import_multiple
+            * Self::capacity_multiplier(config, frequency)
+            - self.imported)
+            .max(0.0)
+    }
+
+    /// Surplus remains useful at a reduced price after this month's preferred imports.
+    pub fn import_value(
+        &self,
+        amount: f64,
+        config: &TradeConfig,
+        frequency: TradeFrequency,
+    ) -> f64 {
+        let preferred = amount.min(self.available_imports(config, frequency));
+        let surplus = (amount - preferred).max(0.0);
+        (preferred + surplus * config.surplus_import_value_share.clamp(0.01, 1.0))
+            * self.local_unit_value
+    }
+
+    fn capacity_multiplier(config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        if frequency == TradeFrequency::OneTime {
+            config.one_time_export_multiplier
+        } else {
+            1.0
+        }
+    }
+}
+
 /// NPC cash persists while physical resources remain a monthly flow abstraction.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NpcTradeEconomy {
@@ -216,6 +263,17 @@ impl Default for NpcTradeEconomy {
             monthly_coin_expenses: 0.0,
             trade_budget: 0.0,
             coin_spent: 0.0,
+        }
+    }
+}
+
+impl NpcTradeEconomy {
+    /// Coin this province can still pay for the selected trade frequency.
+    pub fn available_coin(&self, config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        if frequency == TradeFrequency::OneTime {
+            self.coin_treasury * config.one_time_treasury_share
+        } else {
+            (self.trade_budget - self.coin_spent).max(0.0).min(self.coin_treasury)
         }
     }
 }
@@ -261,6 +319,9 @@ pub struct TradeQuote {
     pub required_value_ratio: Option<f64>,
     /// Largest common fulfillment fraction supported by current NPC supply/budget/demand.
     pub fulfillment: f64,
+    /// The specific market limit preventing full delivery, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_reason: Option<String>,
 }
 
 impl EconomyWorld {
@@ -329,7 +390,9 @@ impl EconomyWorld {
                     production_potential: output[resource],
                     internal_need: needs[resource],
                     export_capacity: net.max(0.0) * trade.export_share,
-                    import_demand: (-net).max(0.0) * trade.import_share,
+                    import_demand: ((-net).max(0.0) * trade.import_share)
+                        .max(needs[resource] * trade.npc_reserve_demand_share)
+                        .max(trade.npc_minimum_import_demand),
                     local_unit_value: trade.base_value[resource]
                         * trade.scarcity_multipliers[band as usize],
                     band,
@@ -415,6 +478,44 @@ impl EconomyWorld {
             .clamp(self.config.trade.minimum_efficiency, 1.0)
     }
 
+    /// Shared price distance from the nearest owned province or vassal, including sea edges.
+    pub fn territorial_distance(&self, player: usize, target: usize) -> Option<usize> {
+        if target >= self.provinces.len() {
+            return None;
+        }
+        let sources: Vec<_> = self
+            .provinces
+            .iter()
+            .enumerate()
+            .filter_map(|(id, province)| {
+                (province.owner == Some(player) || province.overlord == Some(player)).then_some(id)
+            })
+            .collect();
+        // Disconnected provinces use the farthest price tier for political actions.
+        Some(political_distance(&self.adjacency, &sources, target).unwrap_or(16))
+    }
+
+    /// Successful single-time deliveries start a shared cooldown in either trade direction.
+    /// The agreement ledger persists this rule across saves and online replay.
+    pub fn one_time_trade_cooldown(&self, a: TradeParty, b: TradeParty) -> u32 {
+        self.trades
+            .iter()
+            .filter(|trade| {
+                trade.frequency == TradeFrequency::OneTime
+                    && trade.status == TradeStatus::Completed
+                    && ((trade.party_a == a && trade.party_b == b)
+                        || (trade.party_a == b && trade.party_b == a))
+            })
+            .filter_map(|trade| trade.last_executed_month)
+            .map(|month| {
+                month
+                    .saturating_add(self.config.trade.one_time_cooldown_months)
+                    .saturating_sub(self.month)
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Validate and quote a proposal; this read-only method never reserves or transfers anything.
     pub fn quote_trade(
         &self,
@@ -426,6 +527,15 @@ impl EconomyWorld {
         }
         if agreement.party_a == agreement.party_b {
             return Err("A party cannot trade with itself".into());
+        }
+        if agreement.frequency == TradeFrequency::OneTime {
+            let months = self.one_time_trade_cooldown(agreement.party_a, agreement.party_b);
+            if months > 0 {
+                return Err(format!(
+                    "Single-time trade available in {months} {} with this partner. Monthly routes remain available.",
+                    if months == 1 { "month" } else { "months" }
+                ));
+            }
         }
         if !agreement.a_gives.valid(&self.config.trade)
             || !agreement.b_gives.valid(&self.config.trade)
@@ -450,6 +560,7 @@ impl EconomyWorld {
             b_receives: agreement.a_gives.scaled(efficiency),
             required_value_ratio: None,
             fulfillment: 1.0,
+            limit_reason: None,
         };
         if let TradeParty::Npc(npc) = agreement.party_b {
             let TradeParty::Player(player) = agreement.party_a else {
@@ -461,6 +572,8 @@ impl EconomyWorld {
                 return Err("The NPC's relation is too hostile for trade".into());
             }
             let band = ((relation.clamp(0.0, 100.0) / 20.0).floor() as usize).min(4);
+            let distance_cost =
+                distance_multiplier(self.territorial_distance(player, npc)).unwrap_or(3.0);
             let required = self.config.trade.required_value_ratios[band]
                 * if agreement.frequency == TradeFrequency::OneTime {
                     self.config.trade.one_time_margin
@@ -472,22 +585,53 @@ impl EconomyWorld {
                     .get(player)
                     .copied()
                     .unwrap_or(1.0)
-                    .clamp(0.1, 10.0);
+                    .clamp(0.1, 10.0)
+                * distance_cost;
             let values = province.market.resources.map(|market| market.local_unit_value);
-            let received = quote.b_receives.value(values, self.config.trade.influence_value);
+            let received = province
+                .market
+                .resources
+                .iter()
+                .zip(quote.b_receives.resources)
+                .map(|(market, amount)| {
+                    market.import_value(amount, &self.config.trade, agreement.frequency)
+                })
+                .sum::<f64>()
+                + quote.b_receives.coin
+                + quote.b_receives.influence * self.config.trade.influence_value;
             // Cost is the NPC's gross export, not what survives at the other end.
             // This prevents transport loss cancelling out of the acceptance test.
             let given = agreement.b_gives.value(values, self.config.trade.influence_value);
             if received + 1e-9 < given * required {
-                return Err(format!("NPC needs {required:.2}× offered value after transport ({received:.1} received / {given:.1} given)."));
+                let surplus = province.market.resources.iter().zip(quote.b_receives.resources).any(
+                    |(market, amount)| {
+                        amount > market.available_imports(&self.config.trade, agreement.frequency)
+                    },
+                );
+                let explanation = if surplus {
+                    format!(
+                        " Surplus resources beyond Wants count at {:.0}% of their listed value.",
+                        self.config.trade.surplus_import_value_share.clamp(0.01, 1.0) * 100.0
+                    )
+                } else {
+                    String::new()
+                };
+                let distance_tip = if distance_cost > 1.0 {
+                    format!(" Distance modifier: ×{distance_cost}.")
+                } else {
+                    String::new()
+                };
+                return Err(format!("{} needs more offered value after transport. Increase what you send or reduce what it sends.{explanation}{distance_tip}", province.name));
             }
             quote.required_value_ratio = Some(required);
-            quote.fulfillment = self.npc_fulfillment(npc, agreement, efficiency);
+            (quote.fulfillment, quote.limit_reason) = self.npc_fulfillment(npc, agreement);
             if quote.fulfillment + 1e-9 < self.config.trade.minimum_fulfillment {
-                return Err(format!(
-                    "NPC supply, import demand, or sestertii budget supports only {:.0}% of this deal",
-                    quote.fulfillment * 100.0
-                ));
+                return Err(quote.limit_reason.unwrap_or_else(|| {
+                    format!(
+                        "NPC supply or sestertii budget supports only {:.0}% of this deal",
+                        quote.fulfillment * 100.0
+                    )
+                }));
             }
         }
         Ok(quote)
@@ -515,7 +659,7 @@ impl EconomyWorld {
     ) -> Result<(u64, Option<TradePoliticalEffect>), String> {
         let quote = self.quote_trade(&agreement, inputs)?;
         if quote.fulfillment + 1e-9 < 1.0 {
-            return Err("Reduce the offer; the NPC cannot supply it in full. New routes require 100% supply.".into());
+            return Err(quote.limit_reason.unwrap_or_else(|| "Reduce the offer; the NPC cannot supply it in full. New routes require 100% supply.".into()));
         }
         agreement.id = self.next_trade_id;
         agreement.accepted = [true, matches!(agreement.party_b, TradeParty::Npc(_))];
@@ -627,7 +771,11 @@ impl EconomyWorld {
     }
 
     /// Block closed routes immediately, before another monthly transfer can occur.
-    pub(crate) fn suspend_blocked_trade_routes(&mut self, inputs: &MonthlyInputs) {
+    pub(crate) fn suspend_blocked_trade_routes(
+        &mut self,
+        inputs: &MonthlyInputs,
+    ) -> Vec<EconomyEvent> {
+        let mut events = Vec::new();
         for index in 0..self.trades.len() {
             let trade = &self.trades[index];
             if trade.frequency != TradeFrequency::Monthly || trade.status != TradeStatus::Active {
@@ -636,11 +784,16 @@ impl EconomyWorld {
             if let Err(reason) = self.trade_route(trade.party_a, trade.party_b, inputs) {
                 let trade = &mut self.trades[index];
                 trade.status = TradeStatus::Suspended;
-                trade.last_failure = Some(reason);
+                trade.last_failure = Some(reason.clone());
                 trade.last_delivered_value = 0.0;
                 trade.last_fulfillment = 0.0;
+                events.push(EconomyEvent::TradeSuspended {
+                    agreement: trade.id,
+                    reason,
+                });
             }
         }
+        events
     }
 
     /// Recurring agreements execute in stable creation order; reservations prevent overcommitment.
@@ -660,6 +813,9 @@ impl EconomyWorld {
             let next_month = self.month.saturating_add(1);
             if trade.cancellation_month.is_some_and(|due| next_month > due) {
                 self.trades[index].status = TradeStatus::Cancelled;
+                events.push(EconomyEvent::TradeNoticeCompleted {
+                    agreement: trade.id,
+                });
                 continue;
             }
             match self.execute_trade(&mut trade, inputs) {
@@ -858,42 +1014,55 @@ impl EconomyWorld {
         })
     }
 
-    /// Combine export, import, and cash limitations into one bilateral scaling fraction.
-    fn npc_fulfillment(&self, npc: usize, agreement: &TradeAgreement, efficiency: f64) -> f64 {
+    /// Combine export and cash limitations into one bilateral scaling fraction.
+    fn npc_fulfillment(&self, npc: usize, agreement: &TradeAgreement) -> (f64, Option<String>) {
         let market = &self.provinces[npc].market;
+        let name = &self.provinces[npc].name;
         let config = &self.config.trade;
-        let one_time = agreement.frequency == TradeFrequency::OneTime;
         let mut fraction: f64 = 1.0;
+        let mut reason = None;
+        let mut consider = |allowance: f64, amount: f64, message: String| {
+            let supported = allowance / amount;
+            if supported < fraction {
+                fraction = supported;
+                reason = Some(message);
+            }
+        };
         for resource in 0..3 {
             let state = market.resources[resource];
+            let resource_name = ["Food", "Metal", "Stone"][resource];
             let sent = agreement.b_gives.resources[resource];
             if sent > 0.0 {
-                let allowance = state.export_capacity
-                    * if one_time {
-                        config.one_time_export_multiplier
-                    } else {
-                        1.0
-                    };
-                fraction = fraction.min((allowance - state.exported).max(0.0) / sent);
-            }
-            let received = agreement.a_gives.resources[resource] * efficiency;
-            if received > 0.0 {
-                let allowance = state.import_demand * config.maximum_import_multiple;
-                fraction = fraction.min((allowance - state.imported).max(0.0) / received);
+                let allowance = state.available_exports(config, agreement.frequency);
+                consider(
+                    allowance,
+                    sent,
+                    format!(
+                        "{name} can send at most {:.0} {resource_name} in this exchange.",
+                        allowance.floor()
+                    ),
+                );
             }
         }
         if agreement.b_gives.coin > 0.0 {
-            let allowance = if one_time {
-                market.coin_treasury * config.one_time_treasury_share
-            } else {
-                (market.trade_budget - market.coin_spent).max(0.0).min(market.coin_treasury)
-            };
-            fraction = fraction.min(allowance / agreement.b_gives.coin);
+            let allowance = market.available_coin(config, agreement.frequency);
+            consider(
+                allowance,
+                agreement.b_gives.coin,
+                format!(
+                    "{name} can pay at most {:.0} Sestertius in this exchange.",
+                    allowance.floor()
+                ),
+            );
         }
         if agreement.b_gives.influence > 0.0 {
-            fraction = fraction.min(market.influence_treasury / agreement.b_gives.influence);
+            consider(
+                market.influence_treasury,
+                agreement.b_gives.influence,
+                format!("{name} does not have enough Influence for this exchange."),
+            );
         }
-        fraction.clamp(0.0, 1.0)
+        (fraction.clamp(0.0, 1.0), reason)
     }
 
     /// Neither side may fund its gross obligation with goods only received later in the same deal.

@@ -7,6 +7,7 @@ fn overview_filters_history_by_type_and_recipient() {
         (0, NoticeKind::FoodShortage, "Food"),
         (0, NoticeKind::TreasuryExhausted, "Treasury"),
         (0, NoticeKind::TradeInterrupted, "Trade"),
+        (0, NoticeKind::TradeUpdated, "Trade completed"),
         (0, NoticeKind::BuildingCompleted, "Building"),
         (0, NoticeKind::BattleResolved, "Battle"),
         (0, NoticeKind::SpyDetected, "Spy"),
@@ -57,6 +58,7 @@ fn overview_filters_history_by_type_and_recipient() {
         "Spy",
         "Battle",
         "Building",
+        "Trade completed",
         "Trade",
         "Treasury",
         "Food",
@@ -72,13 +74,14 @@ fn overview_filters_history_by_type_and_recipient() {
             "Withdrawn spy",
             "Spy",
             "Building",
+            "Trade completed",
             "Trade",
             "Treasury",
             "Food",
         ]
     );
     for (index, expected) in [
-        vec!["Trade", "Treasury", "Food"],
+        vec!["Trade completed", "Trade", "Treasury", "Food"],
         vec!["Building"],
         vec!["Battle"],
         vec!["Senate", "Unrest", "Withdrawn spy", "Spy"],

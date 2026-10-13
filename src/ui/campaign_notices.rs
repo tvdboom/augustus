@@ -3,11 +3,12 @@
 use super::campaign::Campaign;
 #[cfg(test)]
 use super::campaign_notifications::NoticeSeverity;
-use super::campaign_notifications::{CampaignNotice, NoticeKind};
+use super::campaign_notifications::{CampaignNotice, NoticeAction, NoticeKind};
 use super::campaign_widgets::{
     paint_directory_row, paint_icon, portrait, texture, Icon, ProvinceLandscape,
 };
 use super::province_panel::{INK, NEUTRAL};
+use crate::game::economy::TradeParty;
 use crate::game::politics::espionage::ScandalTarget;
 use bevy_egui::egui;
 
@@ -36,7 +37,8 @@ impl Default for NoticeFilters {
 fn category(kind: NoticeKind) -> usize {
     use NoticeKind::*;
     match kind {
-        FoodShortage | TreasuryExhausted | TradeInterrupted | PopulationUnhappy(_) => 0,
+        FoodShortage | TreasuryExhausted | TradeInterrupted | TradeUpdated
+        | PopulationUnhappy(_) => 0,
         BuildingCompleted | WonderStarted | WonderCompleted => 1,
         RecruitmentCompleted
         | ArmyDisbanded
@@ -168,6 +170,31 @@ pub(super) fn allows(filters: &NoticeFilters, notice: &CampaignNotice) -> bool {
     filters.enabled[category(notice.kind)]
 }
 
+/// National agreements affect both participants' provinces as well as the NPC endpoint.
+pub(in crate::app) fn belongs_to_province(
+    campaign: &Campaign,
+    notice: &CampaignNotice,
+    province: usize,
+) -> bool {
+    if notice.province == Some(province) {
+        return true;
+    }
+    let Some(state) = campaign.economy.provinces.get(province) else {
+        return false;
+    };
+    match notice.action {
+        NoticeAction::OpenTrade(id) => campaign.economy.trades.iter().any(|trade| {
+            trade.id == id
+                && [trade.party_a, trade.party_b].into_iter().any(|party| match party {
+                    TradeParty::Npc(endpoint) => endpoint == province,
+                    TradeParty::Player(player) => state.owner == Some(player),
+                })
+        }),
+        NoticeAction::OpenMarket => state.owner == Some(notice.recipient),
+        _ => false,
+    }
+}
+
 /// Show all notices received by this player, most recent first, using province history cards.
 pub(in crate::app) fn overview(
     ui: &mut egui::Ui,
@@ -206,7 +233,7 @@ pub(in crate::app) fn symbol(kind: NoticeKind) -> Icon {
         TreasuryExhausted => Icon::Coin,
         PopulationUnhappy(_) => Icon::Happiness,
         BuildingCompleted | WonderStarted | WonderCompleted => Icon::Construction,
-        TradeInterrupted => Icon::Trade,
+        TradeInterrupted | TradeUpdated => Icon::Trade,
         RecruitmentCompleted
         | UnitsDestroyed
         | ArmyDisbanded

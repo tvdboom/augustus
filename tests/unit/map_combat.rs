@@ -95,7 +95,7 @@ fn battle_animation_faces_both_ways_and_has_projectiles_without_a_label() {
         let hits = context
             .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
             .unwrap();
-        assert_eq!(hits.len(), 8, "six fighters and two owner banners remain clickable");
+        assert_eq!(hits.len(), 6, "four fighters and two owner banners remain clickable");
         let field = &anchors.battles[&world.battles[0].id];
         assert!(camera_gain(5., 2.3, projection.point(field.center), viewport) > 0.);
         assert_eq!(audible_battles(&context).len(), 1);

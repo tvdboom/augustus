@@ -97,6 +97,14 @@ fn interaction_trail() -> Value {
         c.economy.exchange_open_market(1, 1, MarketSide::Buy, 5.).unwrap();
         c.pull_wallets();
     });
+    step("open market sell multiple resources", 1, &mut |c| {
+        c.economy.exchange_open_market_order(1, MarketSide::Sell, [5., 3., 4.]).unwrap();
+        c.pull_wallets();
+    });
+    step("open market buy multiple resources", 1, &mut |c| {
+        c.economy.exchange_open_market_order(1, MarketSide::Buy, [5., 3., 4.]).unwrap();
+        c.pull_wallets();
+    });
     for (name, action) in [
         ("recruit", campaign_military::MilitaryUiAction::Recruit(UnitType::LightInfantry)),
         ("queued recruit", campaign_military::MilitaryUiAction::Recruit(UnitType::LightInfantry)),

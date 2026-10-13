@@ -5,6 +5,9 @@ use super::*;
 const POPULATION_HUD_ICON_SIZE: f32 = 26.0;
 const RESOURCE_HUD_ICON_SIZE: f32 = 38.0;
 
+/// Surplus that cannot enter a full physical stockpile.
+pub(in crate::app) const HUD_OVERFLOW_COLOR: egui::Color32 = egui::Color32::from_rgb(163, 87, 15);
+
 pub(in crate::app) fn load_hud_resource_icon(
     ctx: &egui::Context,
     index: usize,
@@ -160,12 +163,7 @@ pub(in crate::app) fn paint_hud_resources(
                 format!("{} / {}", format_hud_number(resource.amount), format_hud_number(*capacity))
             },
         );
-        // Full storage cannot gain more stock, but consumption can still drain it.
-        let monthly_delta = if at_capacity {
-            resource.monthly_delta.min(0.0)
-        } else {
-            resource.monthly_delta
-        };
+        let monthly_delta = resource.monthly_delta;
         let delta = format_hud_delta(monthly_delta);
         let gap = 4.0 * scale;
         let icon_size = if index == 5 {
@@ -184,11 +182,15 @@ pub(in crate::app) fn paint_hud_resources(
                 section.format.font_id.size *= shrink;
             }
         };
-        let delta_color = hud_delta_color(if index == 5 {
-            monthly_delta.floor()
+        let delta_color = if at_capacity && monthly_delta > 0.0 {
+            HUD_OVERFLOW_COLOR
         } else {
-            monthly_delta
-        });
+            hud_delta_color(if index == 5 {
+                monthly_delta.floor()
+            } else {
+                monthly_delta
+            })
+        };
         let amount_job = egui::text::LayoutJob::simple(
             amount,
             egui::FontId::proportional(19.0 * scale),

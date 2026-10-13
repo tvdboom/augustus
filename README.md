@@ -45,6 +45,12 @@ cities, available space, and migration policy influence where they go. Slaves do
 Plebeians and Slaves produce goods. Geography and Resource Focus determine how workers are
 allocated; Slaves produce more per worker. Owned provinces share stockpiles and storage
 capacity. Excess goods are discarded; Sestertius and Influence have no storage limit.
+Every player starts with capacity for 2,400 each of Food, Metal, and Stone. Granaries and
+Warehouses expand those limits.
+At full storage, surplus stays visible in orange because it is discarded; real net losses
+remain red.
+At Balanced focus, base resource values give the production ratio before bonuses; the Food
+gain shown in the HUD subtracts what civilians and troops eat.
 
 Food shortages affect civilians and troops proportionally, lowering happiness and births,
 causing famine deaths, and reducing army morale. Slave revolts remove the local slave
@@ -67,6 +73,7 @@ Each owned province also sets:
 - Civic Spending: pay for the happiness of free people.
 - Recruitment Effort: balance recruitment speed against expense and local happiness.
 - Manumission: free Slaves into Plebeians at a Noble happiness cost, or enslave Plebeians at a Plebeian happiness cost.
+- Citizenship: grant citizenship to 0.2% of Plebeians each month at a −1 Noble happiness cost, or revoke citizenship from 0.2% of Citizens at a −1 Citizen happiness cost. Normal keeps ordinary class promotion.
 
 Theater improves Citizen happiness, Feasts help Nobles, Games help Plebeians, and Grain
 Doles help Plebeians and Slaves. Patronage exchanges Influence for Sestertius. Event costs
@@ -118,6 +125,21 @@ need both parties' approval. Provincial governments set terms according to needs
 relations, and budget. Transport loses goods along the route; Roads reduce losses, while
 hostile territory can block delivery.
 
+The distance modifier multiplies the value a province asks for in both monthly and
+single-time deals. A ×1.5 partner requires 50% more offered value for the same goods.
+Distance is measured from your nearest owned province or vassal, as for diplomacy and spies.
+
+Provinces import goods to replenish reserves even when local production covers their needs.
+Monthly routes use sustainable export supply; single-time deals can draw up to three times
+the monthly export capacity, with a three-month cooldown between deals with the same partner.
+The partner market shows whole-unit supply and preferred demand for the selected frequency.
+Provinces can accept more than their preferred demand: surplus counts at 25% of its listed
+value, requiring four times as many extra units for the same payment. Previous deliveries
+reduce the remaining full-value demand, so splitting offers does not avoid this discount.
+Use the fill-to-limit icon beside a province's send amount to fill its remaining whole-unit allowance.
+Amounts set to the maximum follow live availability; manually choosing a different amount keeps it fixed.
+Blocked agreements show the reason in red below the trade button.
+
 Recurring provincial trade improves Relation and builds Control up to 40. One-time deals
 grant no Control. Established provincial routes can reduce both sides' deliveries when at
 least 80% can be supplied; new deals need full supply. Failed routes suspend, resume when
@@ -126,7 +148,12 @@ penalties. Breaking an established route immediately costs Relation, Influence, 
 
 The open market buys or sells Food, Metal, and Stone immediately. Prices worsen with your
 cumulative monthly volume, even if you split orders, and reset each month. Purchases require
-Sestertius and storage. Market exchanges grant no Relation or Control.
+Sestertius and storage. Its unlimited buyer pays 1% of base resource values before the
+spread and volume discount, so selling ordinary surplus supplements tax income.
+Select several resources in one order; each quantity is capped by
+its remaining storage when buying or available stock when selling. The table shows each
+resource's cost and the total, with unavailable-order reasons on the action button's hover.
+Market exchanges grant no Relation or Control.
 
 ### Espionage
 
@@ -165,7 +192,8 @@ Successive promotions cost 500, 1,000, 1,500, 2,000, and 3,000 Influence, plus e
 supporters. Promotions are immediate, limited to one per month, and retain supporters.
 Required support scales with player count: 10, 20, 30, 40, and 60 senators in solo or
 two-player campaigns. Augustus always requires at least 51. Consul is a permanent rank.
-Rome begins with 50 defending cohorts; military conquest requires no political rank.
+NPC provinces begin with 6–12 defending cohorts, three times their original rosters.
+Rome begins with 150 defending cohorts; military conquest requires no political rank.
 
 ### Armies and movement
 

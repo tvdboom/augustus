@@ -112,10 +112,9 @@ impl EconomicProvince {
         let allocation = weights.map(|weight| labor * weight / denominator);
         let effects = self.building_effects(config);
         let production = std::array::from_fn(|i| {
-            allocation[i]
-                * self.potential[i]
-                * (1.0 + effects.production[i]).max(0.0)
-                * config.production_scale[i]
+            // Resource potential already sets the workforce share; applying it again
+            // would square the map values instead of preserving their production ratio.
+            allocation[i] * (1.0 + effects.production[i]).max(0.0) * config.production_scale[i]
         });
         (allocation, production)
     }
@@ -130,6 +129,7 @@ impl EconomicProvince {
                 + food.happiness
                 + buildings.happiness[class]
                 + config.manumission_happiness[self.policies.manumission as usize][class]
+                + config.citizenship_happiness[self.policies.citizenship as usize][class]
                 + self.happiness_modifiers[class]
                 + self.temporary_happiness[class]
                 + if class == 0 {
@@ -181,7 +181,7 @@ impl EconomicProvince {
             * config.civic_coin_per_free_resident[self.policies.civic_spending as usize].max(0.0)
     }
 
-    /// Births/deaths are independent flows; class upgrades preserve the remaining total.
+    /// Births/deaths are independent flows; class conversions preserve the remaining total.
     pub(super) fn advance_demographics(
         &mut self,
         report: &mut ProvinceMonth,
@@ -235,22 +235,32 @@ impl EconomicProvince {
                 .max(0.0);
         }
         let before = self.population;
-        // Rates use one immutable pre-conversion snapshot: no same-month cascading promotion.
+        // Rates use one immutable pre-conversion snapshot: no same-month cascading conversion.
         let rate = config.manumission_rates[self.policies.manumission as usize].clamp(-1.0, 1.0);
         let manumission = if rate >= 0.0 {
             before[3] * rate
         } else {
             before[2] * rate
         };
-        // Enslaved plebeians cannot also gain citizenship; newly freed slaves wait a month.
-        let citizenship = (before[2] + manumission.min(0.0)).max(0.0)
-            * config.class_change_rates[0].clamp(0.0, 1.0)
-            * if self.has_city {
-                1.0
-            } else {
-                0.5
-            };
-        let nobility = before[1]
+        // Enslaved plebeians cannot gain citizenship; newly freed slaves wait a month.
+        let plebeians = (before[2] + manumission.min(0.0)).max(0.0);
+        let rate = config.citizenship_rates[self.policies.citizenship as usize].clamp(-1.0, 1.0);
+        let policy_citizenship = if rate >= 0.0 {
+            plebeians * rate
+        } else {
+            before[1] * rate
+        };
+        // Ordinary promotion uses plebeians who have not already been granted citizenship.
+        let citizenship = policy_citizenship
+            + (plebeians - policy_citizenship.max(0.0)).max(0.0)
+                * config.class_change_rates[0].clamp(0.0, 1.0)
+                * if self.has_city {
+                    1.0
+                } else {
+                    0.5
+                };
+        // Demoted citizens cannot become nobles; newly promoted plebeians wait a month.
+        let nobility = (before[1] + policy_citizenship.min(0.0)).max(0.0)
             * config.class_change_rates[1].clamp(0.0, 1.0)
             * if self.has_city {
                 1.0

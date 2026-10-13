@@ -375,8 +375,8 @@ pub(in crate::app) fn draw_governance_panel(
         }
     }
     if let Some(notice) = requested_notice {
-        if notice.kind == super::campaign_notifications::NoticeKind::TradeInterrupted {
-            campaign_trade::open_routes(context, player);
+        if notice.kind.is_trade() {
+            campaign_trade::open_notice(context, &notice);
         }
         campaign_panel::open_notification(
             view,

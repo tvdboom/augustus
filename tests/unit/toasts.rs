@@ -3,6 +3,33 @@ use super::*;
 use crate::egui_capture as revolt_capture;
 
 #[test]
+fn trade_toasts_use_retained_history_details_and_open_the_trade_panel() {
+    use super::super::campaign_notifications::{CampaignNotice, NoticeAction};
+    let mut campaign = super::super::campaign::Campaign::default();
+    campaign.notifications.push(CampaignNotice {
+        id: 0,
+        recipient: 0,
+        severity: NoticeSeverity::Warning,
+        title: "Trade interrupted".into(),
+        body: "Achaia: Route #42 suspended: Player cannot supply the promised bundle.".into(),
+        kind: NoticeKind::TradeInterrupted,
+        province: Some(3),
+        building: None,
+        wonder: None,
+        scandal: None,
+        month: 7,
+        action: NoticeAction::OpenTrade(42),
+    });
+    let toast = Toast::from_notice(campaign.notifications.drain_for(0).pop().unwrap());
+    let history = campaign.notifications.history_for(0).next().unwrap();
+    assert_eq!(toast.action, Some(ToastAction::OpenTrade));
+    assert_eq!(toast.level, ToastLevel::Warning);
+    assert!(toast.text.contains(&history.body));
+    assert_eq!(toast.notice.as_ref().unwrap().id, history.id);
+    assert!(campaign.notifications.drain_for(0).is_empty());
+}
+
+#[test]
 fn slave_revolt_toasts_are_critical_illustrated_and_navigate_to_the_province() {
     let mut campaign = super::super::campaign::Campaign::default();
     campaign.notifications.province_notice(

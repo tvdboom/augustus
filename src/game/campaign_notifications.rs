@@ -71,6 +71,8 @@ pub(crate) enum NoticeKind {
     SlaveRevolt,
     /// One or more recurring agreements failed or were cancelled.
     TradeInterrupted,
+    /// A trade offer, acceptance, delivery, or voluntary closure changed an agreement.
+    TradeUpdated,
     /// A foreign wonder construction project began.
     WonderStarted,
     /// A foreign wonder finished construction.
@@ -103,6 +105,13 @@ pub(crate) enum NoticeKind {
     VassalRelationDecay,
 }
 
+impl NoticeKind {
+    /// Trade history and popup cards share the trade panel destination.
+    pub fn is_trade(self) -> bool {
+        matches!(self, Self::TradeInterrupted | Self::TradeUpdated)
+    }
+}
+
 /// A reusable navigation intention; the renderer resolves canonical map coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NoticeAction {
@@ -110,6 +119,10 @@ pub(crate) enum NoticeAction {
     OpenSenate,
     /// Open the national military career and its promotion controls.
     OpenMilitary,
+    /// Open the national trade agreements and retain the affected agreement's identity.
+    OpenTrade(u64),
+    /// Open immediate purchases and sales on the national market.
+    OpenMarket,
     /// Select the province and open its existing contextual panel.
     OpenProvince(usize),
     /// Focus and zoom to the canonical WONDERS site index.
@@ -265,19 +278,27 @@ impl CampaignNotifications {
         }
     }
 
-    /// Aggregate monthly events while retaining each military access change.
+    /// Aggregate monthly events while retaining individual trade and military access changes.
     pub fn push(&mut self, mut notice: CampaignNotice) {
         let same = |old: &CampaignNotice| {
-            !matches!(
+            let aggregate = !matches!(
                 notice.kind,
-                NoticeKind::MilitaryAccessGranted
+                NoticeKind::TradeInterrupted
+                    | NoticeKind::TradeUpdated
+                    | NoticeKind::MilitaryAccessGranted
                     | NoticeKind::MilitaryAccessRevoked
                     | NoticeKind::ArmyDisbanded
                     | NoticeKind::MilitaryRankIncreased
                     | NoticeKind::SenateOfficeAppointed
                     | NoticeKind::PoliticalPromotionAvailable
                     | NoticeKind::MilitaryPromotionAvailable
-            ) && old.recipient == notice.recipient
+            );
+            let repeated_interruption = notice.kind == NoticeKind::TradeInterrupted
+                && old.action == notice.action
+                && old.title == notice.title
+                && old.body == notice.body;
+            (aggregate || repeated_interruption)
+                && old.recipient == notice.recipient
                 && old.kind == notice.kind
                 && old.province == notice.province
                 && old.building == notice.building

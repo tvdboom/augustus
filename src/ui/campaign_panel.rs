@@ -561,6 +561,51 @@ fn province_overview_body(
     province_overview(ui, campaign, province, player, scale)
 }
 
+/// Fit the complete provincial trade page below its header without a scroll area.
+pub(super) fn province_trade_body(
+    ui: &mut egui::Ui,
+    inner_bottom: f32,
+    campaign: &mut Campaign,
+    province: usize,
+    player: usize,
+    scale: f32,
+) -> Option<String> {
+    let top = ui.next_widget_position();
+    let remaining = (inner_bottom - top.y).max(1.0);
+    let width = ui.available_width();
+    // Measure the same layout invisibly, so buttons cannot act during measurement.
+    // Remeasure after shrinking: rounded margins and wrapped text do not scale
+    // exactly in proportion to the font and row sizes.
+    let target = (remaining - 2.0).max(1.0);
+    let mut fitted_scale = scale;
+    for pass in 0..4 {
+        let mut measure = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("province-trade-size", pass))
+                .max_rect(egui::Rect::from_min_size(top, egui::vec2(width, remaining)))
+                .invisible(),
+        );
+        panel_style(&mut measure, fitted_scale);
+        campaign_trade::show_province(&mut measure, campaign, province, player, fitted_scale);
+        let needed = measure.min_size().y.max(1.0);
+        if needed <= target {
+            break;
+        }
+        fitted_scale *= target / needed * 0.98;
+    }
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            // Keep amount-box focus stable when the number of measurement passes changes.
+            .id(ui.id().with("province-trade-body"))
+            .max_rect(egui::Rect::from_min_size(top, egui::vec2(width, remaining))),
+        |ui| {
+            panel_style(ui, fitted_scale);
+            campaign_trade::show_province(ui, campaign, province, player, fitted_scale)
+        },
+    )
+    .inner
+}
+
 /// Keep building sections inside the panel, scrolling when needed.
 fn province_buildings_body(
     ui: &mut egui::Ui,
@@ -1124,6 +1169,19 @@ pub(in crate::app) fn draw(
                             }
                             return;
                         }
+                        if tab == CampaignTab::Province && view.section == 1 {
+                            if let Some(message) = province_trade_body(
+                                ui,
+                                rect.bottom() - 12.0 * scale,
+                                campaign,
+                                province,
+                                player,
+                                scale,
+                            ) {
+                                view.notice = message;
+                            }
+                            return;
+                        }
                         if tab == CampaignTab::Province && view.section == 2 {
                             if let Some(message) = province_buildings_body(
                                 ui,
@@ -1203,12 +1261,6 @@ pub(in crate::app) fn draw(
                                     if let Some(message) =
                                         campaign_trade::show(ui, campaign, player, scale)
                                     {
-                                        view.notice = message;
-                                    }
-                                } else if tab == CampaignTab::Province && view.section == 1 {
-                                    if let Some(message) = campaign_trade::show_province(
-                                        ui, campaign, province, player, scale,
-                                    ) {
                                         view.notice = message;
                                     }
                                 } else if tab == CampaignTab::Senate {
@@ -1424,8 +1476,8 @@ pub(in crate::app) fn draw(
         governance_open.0 = false;
     }
     if let Some(notice) = navigation {
-        if notice.kind == super::campaign_notifications::NoticeKind::TradeInterrupted {
-            campaign_trade::open_routes(ctx, player);
+        if notice.kind.is_trade() {
+            campaign_trade::open_notice(ctx, &notice);
         }
         open_notification(&mut view, &notice, campaign, &mut detail, &mut map_view);
         close_click.0 = true;
@@ -2504,7 +2556,7 @@ pub(super) fn diplomacy_action_card_with_title_inset(
     } else {
         campaign_widgets::UNAVAILABLE_PURCHASE_INK
     };
-    let content_left = image_rect.right() + 5.0 * scale;
+    let content_left = image_rect.right() + 10.0 * scale;
     let title_width = (rect.right() - content_left - (5.0 + title_inset) * scale).max(0.0);
     let font_sizes: &[f32] = if title_inset > 0.0 {
         &[16.0, 15.5, 15.0, 14.0, 13.0]
@@ -2545,7 +2597,7 @@ pub(super) fn diplomacy_action_card_with_title_inset(
         );
         let cost = ui.painter().layout_no_wrap(
             value.clone(),
-            egui::FontId::proportional(14.5 * scale),
+            egui::FontId::proportional(15.5 * scale),
             ink,
         );
         let position = egui::pos2(cost_left + 16.0 * scale, center_y - cost.size().y * 0.5);
@@ -3228,7 +3280,7 @@ fn province_notifications(
             for (row, notice) in campaign
                 .notifications
                 .history_for(player)
-                .filter(|notice| notice.province == Some(province))
+                .filter(|notice| campaign_notices::belongs_to_province(campaign, notice, province))
                 .filter(|notice| campaign_notices::allows(filters, notice))
                 .enumerate()
             {
@@ -3243,11 +3295,9 @@ fn province_notifications(
                 ui.add_space(8. * scale);
                 ui.horizontal(|ui| {
                     ui.add_space(12. * scale);
-                    if campaign
-                        .notifications
-                        .history_for(player)
-                        .any(|notice| notice.province == Some(province))
-                    {
+                    if campaign.notifications.history_for(player).any(|notice| {
+                        campaign_notices::belongs_to_province(campaign, notice, province)
+                    }) {
                         ui.label("No notifications match these filters.");
                     } else {
                         ui.label("No notifications from this province yet.");
@@ -3280,14 +3330,20 @@ pub(in crate::app) fn open_notification(
             detail.0 = None;
             view.last_detail = None;
         },
+        NoticeAction::OpenTrade(_) | NoticeAction::OpenMarket => {
+            view.open = Some(CampaignTab::Trade);
+            view.close_province_selector();
+            detail.0 = None;
+            view.last_detail = None;
+        },
+        NoticeAction::OpenProvince(_) if notice.kind.is_trade() => {
+            // Retained saves used a province destination for trade interruptions.
+            view.open = Some(CampaignTab::Trade);
+            view.close_province_selector();
+            detail.0 = None;
+            view.last_detail = None;
+        },
         NoticeAction::OpenProvince(id) => {
-            if notice.kind == super::campaign_notifications::NoticeKind::TradeInterrupted {
-                view.open = Some(CampaignTab::Trade);
-                view.close_province_selector();
-                detail.0 = None;
-                view.last_detail = None;
-                return;
-            }
             view.open_province_section(id, campaign_notices::province_section(notice.kind));
             detail.0 = Some(MapDetail::Province(id));
             map.focus_province(id);

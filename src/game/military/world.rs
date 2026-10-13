@@ -1244,10 +1244,10 @@ fn record_destroyed_cohorts(
     }
 }
 
-/// Explicit initial province defenses, independent of current civilian population.
+/// Initial NPC defenses with three times the original roster, independent of civilians.
 pub fn initial_defenders(name: &str) -> Vec<UnitType> {
     use UnitType::*;
-    match name {
+    let roster = match name {
         "Rome" => {
             let mut guards = vec![HeavyInfantry; 26];
             guards.extend([Archers; 10]);
@@ -1264,7 +1264,8 @@ pub fn initial_defenders(name: &str) -> Vec<UnitType> {
         },
         "Armenia Mesopotamia" | "Dacia" => vec![LightInfantry, HorseArchers],
         _ => vec![LightInfantry, Archers],
-    }
+    };
+    roster.repeat(3)
 }
 
 /// Historical recruitment capabilities are explicit data, never inferred from terrain.

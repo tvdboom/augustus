@@ -17,6 +17,7 @@ impl EconomyWorld {
                 .iter()
                 .map(|player| player.balances().map(|value| -value))
                 .collect(),
+            storage_overflow: vec![[0.0; 3]; self.players.len()],
             food_supply_ratio: vec![1.0; self.players.len()],
             province_reports: vec![ProvinceMonth::default(); self.provinces.len()],
             trade_effects: Vec::new(),
@@ -122,6 +123,13 @@ impl EconomyWorld {
             }
         }
         self.recalculate_storage();
+        report.storage_overflow = self
+            .players
+            .iter()
+            .map(|wallet| {
+                std::array::from_fn(|r| (wallet.resources[r] - wallet.storage[r]).max(0.0))
+            })
+            .collect();
         for (wallet, delta) in self.players.iter_mut().zip(&mut report.player_delta) {
             wallet.clamp_storage();
             for (change, current) in delta.iter_mut().zip(wallet.balances()) {

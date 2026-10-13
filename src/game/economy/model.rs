@@ -124,7 +124,19 @@ pub enum ManumissionPolicy {
     Free,
 }
 
-/// Nationwide rations/labor and six province-local policy values.
+/// Local conversion between plebeians and citizens, with class happiness tradeoffs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CitizenshipPolicy {
+    /// Revoke citizenship from a share of citizens, reducing citizen happiness.
+    Revoke,
+    /// No policy conversion or happiness effect; ordinary promotion continues.
+    #[default]
+    Normal,
+    /// Grant citizenship to a share of plebeians, reducing noble happiness.
+    Grant,
+}
+
+/// Nationwide rations/labor and seven province-local policy values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProvincePolicies {
     /// Civilian food rations.
@@ -143,6 +155,9 @@ pub struct ProvincePolicies {
     pub recruitment: RecruitmentEffort,
     /// Local enslavement or freeing of residents and its happiness tradeoff.
     pub manumission: ManumissionPolicy,
+    /// Local granting or revoking of citizenship and its happiness tradeoff.
+    #[serde(default)]
+    pub citizenship: CitizenshipPolicy,
 }
 
 /// Global player balances. Physical storage is never attached to owned provinces.
@@ -486,6 +501,9 @@ pub struct MonthlyReport {
     pub month: u32,
     /// Player deltas for Food, Metal, Stone, Coin, Influence.
     pub player_delta: Vec<[f64; 5]>,
+    /// Food, Metal, Stone discarded after consumption/trade because storage was full.
+    #[serde(default)]
+    pub storage_overflow: Vec<[f64; 3]>,
     /// Player-wide proportional food allocation; military uses this same fraction.
     pub food_supply_ratio: Vec<f64>,
     /// Province-indexed explanations for the UI.

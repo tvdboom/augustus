@@ -899,10 +899,15 @@ fn cluster_offset(index: usize, count: usize, size: f32) -> egui::Vec2 {
 }
 
 /// Show public army composition without exposing its private deployment plan.
-/// Prefer infantry, ranged, cavalry, and special types, then fill any vacant
-/// places with other surviving types. A fourth figure can show a light flank.
+/// Use two figures, or three for at least ten full-strength cohort equivalents.
+/// Prefer distinct infantry, ranged, cavalry, and special types before repeats.
 fn map_representatives(units: &[Unit]) -> Vec<UnitType> {
     use UnitType::*;
+    let limit = if units.iter().map(Unit::manpower_ratio).sum::<f64>() >= 10. {
+        3
+    } else {
+        2
+    };
     let mut counts = [0_usize; 11];
     for unit in units.iter().filter(|unit| unit.current_manpower > 0.) {
         counts[unit.unit_type as usize] += 1;
@@ -911,8 +916,11 @@ fn map_representatives(units: &[Unit]) -> Vec<UnitType> {
     let ranged = [Archers, HorseArchers];
     let cavalry = [HeavyCavalry, LightCavalry];
     let special = [WarElephants, WarCamels, WarChariots, Catapult, Ballista];
-    let mut selected = Vec::with_capacity(4);
+    let mut selected = Vec::with_capacity(limit);
     for category in [&infantry[..], &ranged[..], &cavalry[..], &special[..]] {
+        if selected.len() == limit {
+            break;
+        }
         if let Some(&kind) = category.iter().find(|&&kind| counts[kind as usize] > 0) {
             selected.push(kind);
         }
@@ -932,15 +940,15 @@ fn map_representatives(units: &[Unit]) -> Vec<UnitType> {
         Catapult,
         Ballista,
     ] {
-        if selected.len() == 4 {
+        if selected.len() == limit {
             break;
         }
         if counts[kind as usize] > 0 && !selected.contains(&kind) {
             selected.push(kind);
         }
     }
-    // When fewer than four distinct types exist, use other live cohorts of
-    // the strongest type rather than leaving an army of many cohorts half empty.
+    // Fill remaining places from other live cohorts when the army has fewer
+    // distinct types than its figure limit.
     for kind in [
         WarElephants,
         HeavyCavalry,
@@ -954,7 +962,7 @@ fn map_representatives(units: &[Unit]) -> Vec<UnitType> {
         Catapult,
         Ballista,
     ] {
-        while selected.len() < 4
+        while selected.len() < limit
             && selected.iter().filter(|&&shown| shown == kind).count() < counts[kind as usize]
         {
             selected.push(kind);
@@ -1009,7 +1017,7 @@ fn troop_rect(
     )
 }
 
-/// Draw up to four meaningful troop types, never one sprite per actual cohort.
+/// Draw up to three representative figures, never one sprite per actual cohort.
 fn draw_cluster(
     painter: &egui::Painter,
     textures: &mut Textures,
