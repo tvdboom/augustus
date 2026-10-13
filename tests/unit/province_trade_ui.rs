@@ -32,6 +32,114 @@ fn human_trade_previews_do_not_probe_foreign_wallets() {
     assert_eq!(poor.fulfillment, rich.fulfillment);
 }
 
+#[test]
+fn active_route_cards_align_send_and_receive_columns_without_route_metadata() {
+    for scale in [0.5, 1.0] {
+        for viewer_is_sender in [true, false] {
+            let ctx = form_context();
+            let mut campaign = fixture();
+            let mut trade = TradeAgreement::new(
+                if viewer_is_sender {
+                    TradeParty::Player(0)
+                } else {
+                    TradeParty::Npc(2)
+                },
+                if viewer_is_sender {
+                    TradeParty::Npc(2)
+                } else {
+                    TradeParty::Player(0)
+                },
+                TradeBundle {
+                    resources: [11.0, 13.0, 17.0],
+                    coin: 19.0,
+                    ..Default::default()
+                },
+                TradeBundle {
+                    resources: [23.0, 29.0, 31.0],
+                    coin: 37.0,
+                    ..Default::default()
+                },
+                TradeFrequency::Monthly,
+            );
+            trade.id = 42;
+            trade.status = TradeStatus::Active;
+            let path = campaign
+                .economy
+                .trade_route(trade.party_a, trade.party_b, &campaign.inputs())
+                .unwrap();
+            let efficiency = campaign.economy.route_efficiency(&path);
+            let (sent, received) = if viewer_is_sender {
+                (trade.a_gives, trade.b_gives.scaled(efficiency))
+            } else {
+                (trade.b_gives, trade.a_gives.scaled(efficiency))
+            };
+            campaign.economy.trades.push(trade);
+            let mut capture = crate::egui_capture::Capture::default();
+            let mut render_card = |time, events| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 900.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |root| {
+                        root.scope_builder(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(546.0, 900.0) * scale,
+                            )),
+                            |ui| {
+                                *ui.style_mut() = super::super::campaign_widgets::map_style(scale);
+                                ui.set_width(546.0 * scale);
+                                routes(ui, &mut campaign, 0, scale, None);
+                            },
+                        );
+                    },
+                );
+                capture.frame(
+                    &ctx,
+                    &output,
+                    &format!("active-route-card-{scale:.2}-{viewer_is_sender}"),
+                );
+                output.textures_delta.clear();
+                output
+            };
+            render_card(0.0, vec![]);
+            let output = render_card(0.1, vec![]);
+            let text = labels(&output);
+            for removed in ["#42", "Active", "monthly", "arrives", "→"] {
+                assert!(!text.contains(removed), "Unexpected {removed}: {text}");
+            }
+            let send_heading = text_position(&output, "You send");
+            let receive_heading = text_position(&output, "You receive");
+            assert!(send_heading.x < receive_heading.x);
+            assert!((send_heading.y - receive_heading.y).abs() < 0.1);
+            let mut previous_y = send_heading.y;
+            for (sent, received) in sent
+                .resources
+                .into_iter()
+                .chain([sent.coin])
+                .zip(received.resources.into_iter().chain([received.coin]))
+            {
+                let sent = text_position(&output, &format!("{sent:.1}"));
+                let received = text_position(&output, &format!("{received:.1}"));
+                assert!(sent.x < received.x);
+                assert!((sent.y - received.y).abs() < 0.1);
+                assert!(sent.y > previous_y, "Resources must precede coin");
+                previous_y = sent.y;
+            }
+            let name_position = text_position(&output, "Achaia");
+            render_card(0.2, vec![egui::Event::PointerMoved(name_position)]);
+            let hovered = render_card(1.0, vec![egui::Event::PointerMoved(name_position)]);
+            assert_eq!(labels(&hovered).matches("Achaia").count(), 1);
+        }
+    }
+}
+
 fn fixture() -> Campaign {
     let mut provinces: Vec<_> = ["Italia", "Africa", "Achaia", "Cappadocia"]
         .into_iter()
@@ -384,7 +492,7 @@ fn province_trade_network_shows_the_form_only_without_a_live_agreement() {
         assert!(!text.contains("No open routes"));
         assert!(!text.contains("NEW AGREEMENT"));
         assert_eq!(
-            text.contains("Stop now"),
+            text.contains("Abort"),
             matches!(status, TradeStatus::Active | TradeStatus::Suspended)
         );
     }
@@ -412,7 +520,7 @@ fn province_trade_stop_gives_notice_then_stop_now_reopens_the_form_and_applies_p
         .unwrap();
     let relation = campaign.politics[2].relation(0);
     render(&ctx, &mut campaign, 2, 0.0, vec![]);
-    assert!(click_action(&ctx, &mut campaign, 2, "Stop", 0.1).is_some());
+    assert!(click_action(&ctx, &mut campaign, 2, "Close", 0.1).is_some());
     let trade = campaign.economy.trades.iter().find(|trade| trade.id == id).unwrap();
     assert_eq!(trade.status, TradeStatus::Active);
     assert_eq!(trade.cancellation_month, Some(6));
@@ -422,7 +530,7 @@ fn province_trade_stop_gives_notice_then_stop_now_reopens_the_form_and_applies_p
     let text = labels(&output);
     assert!(text.contains("6 months"));
     assert!(!text.contains("Trading partner"));
-    assert!(click_action(&ctx, &mut campaign, 2, "Stop now", 0.5).is_some());
+    assert!(click_action(&ctx, &mut campaign, 2, "Abort", 0.5).is_some());
     assert_eq!(campaign.economy.trades[0].status, TradeStatus::Cancelled);
     assert_eq!(
         campaign.politics[2].relation(0),
@@ -622,8 +730,8 @@ fn province_trade_network_follows_the_selected_partner_and_owner_changes() {
         assert!(!labels.contains("Trading with"));
         assert!(!labels.contains("Trade routes"));
         assert!(!labels.contains("PENDING OFFERS"));
-        assert!(labels.contains("Stop now"));
-        assert!(labels.contains("Stop"));
+        assert!(labels.contains("Abort"));
+        assert!(labels.contains("Close"));
         assert!(
             labels.contains(if owned {
                 "#33"

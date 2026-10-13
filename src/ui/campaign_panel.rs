@@ -2258,7 +2258,7 @@ pub(super) fn politics_spies(
                         for action in [SpyDirectoryAction::Flee, SpyDirectoryAction::Recall] {
                             let response = match action {
                                 SpyDirectoryAction::Flee => spy_directory_icon_button(
-                                    ui, Icon::SpyFlee, "Flee", true, scale,
+                                    ui, Icon::Cancel, "Abort", true, scale,
                                 ),
                                 _ => {
                                     if let Some(due) = mission.recall_month {
@@ -2266,7 +2266,7 @@ pub(super) fn politics_spies(
                                         spy_recall_button(ui, scale, Some(months))
                                             .on_disabled_hover_text(format!("Spy recalled · returns in {months} {}. Normal upkeep and detection continue until then.", if months == 1 { "month" } else { "months" }))
                                     } else {
-                                        spy_directory_icon_button(ui, Icon::Cancel, "Recall", true, scale)
+                                        spy_directory_icon_button(ui, Icon::Notice, "Close", true, scale)
                                     }
                                 },
                             };
@@ -2680,7 +2680,7 @@ fn political_maneuvers(
 }
 
 fn spy_flee_button(ui: &mut egui::Ui, scale: f32) -> egui::Response {
-    campaign_widgets::network_action_button(ui, Icon::SpyFlee, "Flee", true, scale)
+    campaign_widgets::network_action_button(ui, Icon::Cancel, "Abort", true, scale)
 }
 
 fn spy_recall_button(
@@ -2689,7 +2689,7 @@ fn spy_recall_button(
     months_remaining: Option<u32>,
 ) -> egui::Response {
     let label = months_remaining.map_or_else(
-        || "Recall".to_owned(),
+        || "Close".to_owned(),
         |months| {
             format!(
                 "{months} {}",
@@ -2703,7 +2703,7 @@ fn spy_recall_button(
     );
     campaign_widgets::network_action_button(
         ui,
-        Icon::Cancel,
+        Icon::Notice,
         &label,
         months_remaining.is_none(),
         scale,

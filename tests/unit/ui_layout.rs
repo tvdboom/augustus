@@ -837,7 +837,7 @@ fn spy_buttons_deploy_disable_explain_and_recall_without_switching() {
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.job.text == "Improve relations")));
         assert_eq!(campaign.espionage.missions[0].assignment, SpyAssignment::GainControl);
-        let recall = spy_text_position(&output, "Recall");
+        let recall = spy_text_position(&output, "Close");
         output.textures_delta.clear();
         for (time, pressed) in [(1.9, true), (2.0, false)] {
             output = render_spy_network(
@@ -875,11 +875,11 @@ fn spy_buttons_deploy_disable_explain_and_recall_without_switching() {
                 }
             );
             let countdown = spy_text_position(&output, &label);
-            let flee = spy_text_position(&output, "Flee");
+            let flee = spy_text_position(&output, "Abort");
             assert!((countdown.y - flee.y).abs() < 5.0);
             assert!(countdown.x < flee.x);
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if text.galley.job.text == "Recall"
+                egui::Shape::Text(text) if text.galley.job.text == "Close"
                     || text.galley.job.text.contains("Mission and upkeep continue"))));
             output.textures_delta.clear();
         }
@@ -931,8 +931,8 @@ fn spy_network_shows_cumulative_results_detection_and_adjacent_exit_choices() {
         output = render_spy_network(&ctx, &mut campaign, province, 380.0, 0.05, vec![]);
         spy_text_position(&output, "2%/mo");
         campaign.economy.provinces[province].happiness[0] = 100.0;
-        let recall = spy_text_position(&output, "Recall");
-        let flee = spy_text_position(&output, "Flee");
+        let recall = spy_text_position(&output, "Close");
+        let flee = spy_text_position(&output, "Abort");
         assert!((recall.y - flee.y).abs() < 5.0);
         assert!(recall.x < flee.x);
         output.textures_delta.clear();
@@ -1056,6 +1056,7 @@ fn unavailable_spy_mission_explains_its_restriction_below_the_effect() {
 #[test]
 fn recall_and_flee_buttons_have_matching_dimensions() {
     let ctx = layout_context();
+    let mut capture = capture::Capture::default();
     for remaining in [None, Some(6), Some(1)] {
         let mut buttons = None;
         let mut output = ctx.run_ui(
@@ -1077,6 +1078,13 @@ fn recall_and_flee_buttons_have_matching_dimensions() {
             },
         );
         let (recall, flee) = buttons.unwrap();
+        capture.frame(&ctx, &output, &format!("network-exit-buttons-{remaining:?}"));
+        let primitives = ctx.tessellate(output.shapes.clone(), output.pixels_per_point);
+        for symbol in [Icon::Notice, Icon::Cancel] {
+            assert!(primitives.iter().any(|primitive| matches!(&primitive.primitive,
+                egui::epaint::Primitive::Mesh(mesh)
+                    if mesh.texture_id == campaign_widgets::texture(&ctx, symbol))));
+        }
         let label = |name: &str| {
             output
                 .shapes
@@ -1090,7 +1098,7 @@ fn recall_and_flee_buttons_have_matching_dimensions() {
                 .unwrap()
         };
         let recall_label = remaining.map_or_else(
-            || "Recall".to_owned(),
+            || "Close".to_owned(),
             |months| {
                 format!(
                     "{months} {}",
@@ -1103,7 +1111,7 @@ fn recall_and_flee_buttons_have_matching_dimensions() {
             },
         );
         assert!(
-            ((label(&recall_label) - recall.center().x) - (label("Flee") - flee.center().x)).abs()
+            ((label(&recall_label) - recall.center().x) - (label("Abort") - flee.center().x)).abs()
                 < 0.6,
             "Both labels must use the same centered icon-and-text layout"
         );

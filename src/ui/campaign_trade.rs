@@ -104,10 +104,16 @@ fn card_title(ui: &mut egui::Ui, title: &str, scale: f32) {
 }
 
 fn route_title(ui: &mut egui::Ui, name: &str, width: f32, scale: f32) {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, 30.0 * scale), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 30.0 * scale), egui::Sense::hover());
     campaign_economy::ledger_text(ui, rect, name, 14.5 * scale, INK, egui::Align::Min);
-    response.on_hover_text(name);
+}
+
+fn stop_immediately_tip(campaign: &Campaign) -> String {
+    format!(
+        "Stop immediately\n• Relation with this partner: −{:.0}\n• Influence: −{:.0}\n• Merchant Senate confidence decreases.",
+        campaign.economy.config.trade.cancellation_relation_penalty,
+        campaign.economy.config.trade.cancellation_influence_penalty,
+    )
 }
 
 /// Use the same radio chips as Governance and province policies.
@@ -414,6 +420,65 @@ fn quote(
     }
 }
 
+fn exchange_columns(ui: &mut egui::Ui, outgoing: TradeBundle, incoming: TradeBundle, scale: f32) {
+    let amounts = |bundle: TradeBundle| {
+        [
+            bundle.resources[0],
+            bundle.resources[1],
+            bundle.resources[2],
+            bundle.coin,
+            bundle.influence,
+        ]
+    };
+    let sent = amounts(outgoing);
+    let received = amounts(incoming);
+    let shown: Vec<_> = (0..SYMBOLS.len())
+        .filter(|&resource| sent[resource] > 0.0 || received[resource] > 0.0)
+        .collect();
+    ui.columns(2, |columns| {
+        for (column, (label, values)) in
+            columns.iter_mut().zip([("You send", sent), ("You receive", received)])
+        {
+            column.label(egui::RichText::new(label).size(12.0 * scale).color(MUTED));
+            if shown.is_empty() {
+                column.label("—");
+            }
+            for &resource in &shown {
+                let (cell, response) = column.allocate_exact_size(
+                    egui::vec2(column.available_width(), 28.0 * scale),
+                    egui::Sense::hover(),
+                );
+                column.painter().rect_filled(cell, 3.0 * scale, TABLE_STRIPE);
+                paint_icon(
+                    column,
+                    SYMBOLS[resource],
+                    egui::Rect::from_center_size(
+                        cell.left_center() + egui::vec2(14.0 * scale, 0.0),
+                        egui::Vec2::splat(20.0 * scale),
+                    ),
+                );
+                let text = if values[resource] > 0.0 {
+                    format!("{:.1}", values[resource])
+                } else {
+                    "—".to_owned()
+                };
+                campaign_economy::ledger_text(
+                    column,
+                    egui::Rect::from_min_max(
+                        cell.min + egui::vec2(28.0 * scale, 0.0),
+                        cell.max - egui::vec2(7.0 * scale, 0.0),
+                    ),
+                    &text,
+                    12.0 * scale,
+                    INK,
+                    egui::Align::Max,
+                );
+                response.on_hover_text(NAMES[resource]);
+            }
+        }
+    });
+}
+
 /// This panel is scoped to the viewing nation, independently of selected map provinces.
 pub(in crate::app) fn show(
     ui: &mut egui::Ui,
@@ -554,15 +619,15 @@ fn network_trade(
                     message = Some(campaign.accept_national_trade(player, trade.id).unwrap_or_else(|error| error));
                 }
             } else {
-                let tip = format!("Stop now. Relation with this partner −{:.0}, Influence −up to {:.0}, and Merchant Senate confidence drops immediately.", campaign.economy.config.trade.cancellation_relation_penalty, campaign.economy.config.trade.cancellation_influence_penalty);
-                if network_action_button(ui, Icon::Cancel, "Stop now", true, scale)
+                let tip = stop_immediately_tip(campaign);
+                if network_action_button(ui, Icon::Cancel, "Abort", true, scale)
                     .on_hover_text(tip)
                     .clicked()
                 {
                     message = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|error| error));
                 }
                 let (label, tip) = trade.cancellation_month.map_or_else(
-                    || ("Stop".to_owned(), format!("Give {} months' notice. Trading continues during notice, then ends without penalties.", campaign.economy.config.trade.cancellation_notice_months)),
+                    || ("Close".to_owned(), format!("Give {} months' notice. Trading continues during notice, then ends without penalties.", campaign.economy.config.trade.cancellation_notice_months)),
                     |due| {
                         let months = due.saturating_sub(campaign.economy.month);
                         (format!("{months} {}", if months == 1 { "month" } else { "months" }), format!("Notice already given. This trade ends after {months} more months without penalties."))
@@ -751,23 +816,16 @@ fn routes(
                     icon(ui, Icon::Trade, 25.0 * scale);
                     let label_width = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
                     route_title(ui, &party_name(&campaign.economy, partner), label_width, scale);
-                    let tip = format!("Stop now. Relation with this partner −{:.0}, Influence −up to {:.0}, and Merchant Senate confidence drops immediately.", campaign.economy.config.trade.cancellation_relation_penalty, campaign.economy.config.trade.cancellation_influence_penalty);
-                    if action(ui, Icon::Cancel, "Cancel immediately", &tip, true, scale) { result = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|e| e)); }
+                    let tip = stop_immediately_tip(campaign);
+                    if action(ui, Icon::Cancel, "Abort trade immediately", &tip, true, scale) { result = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|e| e)); }
                     let tip = if let Some(due) = trade.cancellation_month { format!("Notice already given. This route ends after {} more months without a relation penalty.", due.saturating_sub(campaign.economy.month)) }
                         else { "Give six months' notice. Trading continues during notice, then ends without penalties.".into() };
-                    if action(ui, Icon::Notice, "Give six months notice", &tip, trade.cancellation_month.is_none(), scale) { result = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|e| e)); }
+                    if action(ui, Icon::Notice, "Close trade with notice", &tip, trade.cancellation_month.is_none(), scale) { result = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|e| e)); }
                 });
-                let status = if let Some(due) = trade.cancellation_month { format!("#{} · {:?} · ends in {} months", trade.id, trade.status, due.saturating_sub(campaign.economy.month)) }
-                    else { format!("#{} · {:?} · monthly", trade.id, trade.status) };
-                let status_color = if trade.status == TradeStatus::Suspended { super::resource_hud::hud_delta_color(-1.0) } else { MUTED };
-                ui.label(egui::RichText::new(status).size(12.0 * scale).color(status_color)).on_hover_text(trade.last_failure.as_deref().unwrap_or("Both parties send the displayed amounts each month. Route losses reduce receipts."));
                 let inputs = campaign.inputs();
                 let path = campaign.economy.trade_route(trade.party_a, trade.party_b, &inputs);
                 let efficiency = path.as_ref().map_or(0.0, |route| campaign.economy.route_efficiency(route));
-                bundle_line(ui, "Send", outgoing, scale);
-                bundle_line(ui, "Receive", incoming.scaled(efficiency), scale);
-                let text = path.map(|route| format!("{:.0}% arrives · {}", efficiency * 100.0, route.iter().map(|&id| campaign.economy.provinces[id].name.as_str()).collect::<Vec<_>>().join(" → "))).unwrap_or_else(|reason| format!("Route blocked: {reason}"));
-                ui.add(egui::Label::new(egui::RichText::new(&text).small()).truncate()).on_hover_text(text);
+                exchange_columns(ui, outgoing, incoming.scaled(efficiency), scale);
             });
             ui.add_space(7.0 * scale);
         });
