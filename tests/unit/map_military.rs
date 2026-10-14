@@ -993,10 +993,10 @@ fn figure_count_tracks_surviving_army_size_even_with_one_unit_type() {
 }
 
 #[test]
-fn rome_has_150_cohorts_including_all_four_guard_types() {
+fn rome_has_450_cohorts_including_all_four_guard_types() {
     let defenders = crate::game::military::initial_defenders("Rome");
-    assert_eq!(defenders.len(), 150);
-    assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 18);
+    assert_eq!(defenders.len(), 450);
+    assert_eq!(defenders.iter().filter(|&&kind| kind == UnitType::LightCavalry).count(), 54);
     assert_eq!(
         defenders.iter().copied().collect::<std::collections::BTreeSet<_>>(),
         [
@@ -1058,14 +1058,14 @@ fn romes_garrison_is_hidden_while_latium_shows_its_normal_defenders() {
         );
         assert_eq!(
             markers.len(),
-            3,
-            "Only Latium's two troop figures and badge should be visible at zoom {zoom}"
+            types.len() + 1,
+            "Only Latium's troop figures and badge should be visible at zoom {zoom}"
         );
         let hits = context
             .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
             .unwrap();
         assert!(hits.iter().all(|hit| hit.province == province));
-        assert_eq!(world.provinces[rome].forces[&ForceOwner::Local(rome)].len(), 150);
+        assert_eq!(world.provinces[rome].forces[&ForceOwner::Local(rome)].len(), 450);
         for (&kind, sprite) in types.iter().zip(&markers[..types.len()]) {
             let expected = troop_size(zoom) * troop_scale(kind) * 2.;
             assert!(

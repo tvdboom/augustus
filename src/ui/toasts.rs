@@ -156,6 +156,7 @@ impl Toast {
             icon,
             title,
             body: &self.text,
+            single_line_body: false,
             month,
             owner: None,
             row: 0,

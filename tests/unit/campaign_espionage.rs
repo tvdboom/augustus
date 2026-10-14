@@ -185,7 +185,9 @@ fn npc_trade_leverage_remains_temporary_and_player_evidence_cannot_force_trade_t
     assert_eq!(campaign.espionage.trade_ratio(0, 0, 0), 0.75);
     assert_eq!(campaign.economy.provinces[0].trade_ratio_by_player[0], 0.75);
     assert_eq!(campaign.espionage.trade_ratio(1, 0, 0), 1.0);
-    assert_eq!(campaign.espionage.trade_ratio(0, 0, 6), 1.0);
+    assert_eq!(campaign.espionage.trade_ratio(0, 0, 6), 0.75);
+    assert_eq!(campaign.espionage.trade_ratio(0, 0, 23), 0.75);
+    assert_eq!(campaign.espionage.trade_ratio(0, 0, 24), 1.0);
     let mut campaign =
         scandal_campaign(ScandalTarget::Player(1), ScandalKind::Smuggling, Severity::Medium);
     assert_eq!(campaign.use_scandal(0, 1, 1, ScandalUse::Trade), Err(PoliticalError::Ineligible));

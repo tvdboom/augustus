@@ -87,7 +87,7 @@ impl EconomyWorld {
                 // mountain province before a player can reach it.
                 1.0
             };
-            province.advance_demographics(summary, &self.config);
+            province.advance_demographics(summary, &self.config, report.month);
         }
         self.migrate(inputs, &mut report.province_reports);
         // Completing a wonder cannot retroactively restore this month's diverted slave production.

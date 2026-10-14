@@ -149,6 +149,12 @@ pub struct MilitaryConfig {
     pub pressure_monthly_control: f64,
     /// Local defenders attack visiting armies below this relation, without a declaration.
     pub npc_hostility_relation: f64,
+    /// NPC armies may invade adjacent owned provinces below this Relation.
+    #[serde(default = "default_npc_invasion_relation")]
+    pub npc_invasion_relation: f64,
+    /// Monthly invasion probability per eligible NPC province and player.
+    #[serde(default = "default_npc_invasion_monthly_chance")]
+    pub npc_invasion_monthly_chance: f64,
     /// Fraction of a revolting slave population that becomes fighting infantry.
     pub slave_revolt_mobilization_fraction: f64,
     /// Monthly Control lost per surviving rebel cohort when the owner has no local troops.
@@ -366,6 +372,8 @@ impl Default for MilitaryConfig {
             pressure_control_ceiling: 40.,
             pressure_monthly_control: 2.,
             npc_hostility_relation: 50.,
+            npc_invasion_relation: default_npc_invasion_relation(),
+            npc_invasion_monthly_chance: default_npc_invasion_monthly_chance(),
             slave_revolt_mobilization_fraction: 0.75,
             rebellion_control_loss_per_cohort: 0.25,
             maximum_rebellion_control_loss: 5.,
@@ -378,4 +386,12 @@ impl Default for MilitaryConfig {
             maximum_representatives: 3,
         }
     }
+}
+
+fn default_npc_invasion_relation() -> f64 {
+    20.
+}
+
+fn default_npc_invasion_monthly_chance() -> f64 {
+    0.10
 }

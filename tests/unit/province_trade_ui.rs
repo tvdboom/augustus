@@ -33,7 +33,7 @@ fn human_trade_previews_do_not_probe_foreign_wallets() {
 }
 
 #[test]
-fn active_route_cards_align_send_and_receive_columns_without_route_metadata() {
+fn active_route_cards_align_four_resource_columns_without_route_metadata() {
     for scale in [0.5, 1.0] {
         for viewer_is_sender in [true, false] {
             let ctx = form_context();
@@ -115,10 +115,10 @@ fn active_route_cards_align_send_and_receive_columns_without_route_metadata() {
                 assert!(!text.contains(removed), "Unexpected {removed}: {text}");
             }
             let send_heading = text_position(&output, "You send");
-            let receive_heading = text_position(&output, "You receive");
+            let receive_heading = text_position(&output, "Achaia sends");
             assert!(send_heading.x < receive_heading.x);
             assert!((send_heading.y - receive_heading.y).abs() < 0.1);
-            let mut previous_y = send_heading.y;
+            let mut positions = Vec::new();
             for (sent, received) in sent
                 .resources
                 .into_iter()
@@ -129,13 +129,20 @@ fn active_route_cards_align_send_and_receive_columns_without_route_metadata() {
                 let received = text_position(&output, &format_statistic(received));
                 assert!(sent.x < received.x);
                 assert!((sent.y - received.y).abs() < 0.1);
-                assert!(sent.y > previous_y, "Resources must precede coin");
-                previous_y = sent.y;
+                assert!(sent.y > send_heading.y);
+                positions.push(sent);
             }
+            assert!((positions[0].y - positions[1].y).abs() < 0.1);
+            assert!((positions[2].y - positions[3].y).abs() < 0.1);
+            assert!(positions[0].x < positions[1].x);
+            assert!(positions[2].x < positions[3].x);
+            assert!(positions[2].y > positions[0].y);
+            assert!(text_position(&output, "Close").x < text_position(&output, "Abort").x);
+            assert!(!text.contains("You receive"));
             let name_position = text_position(&output, "Achaia");
             render_card(0.2, vec![egui::Event::PointerMoved(name_position)]);
             let hovered = render_card(1.0, vec![egui::Event::PointerMoved(name_position)]);
-            assert_eq!(labels(&hovered).matches("Achaia").count(), 1);
+            assert_eq!(labels(&hovered).lines().filter(|line| *line == "Achaia").count(), 1);
         }
     }
 }
@@ -174,7 +181,7 @@ fn province_trade_aligns_whole_amount_badges_without_metadata_or_amount_tooltips
         render_network(0.0, vec![]);
         let (output, _) = render_network(0.1, vec![]);
         let send = text_position(&output, "You send");
-        let receive = text_position(&output, "You receive");
+        let receive = text_position(&output, "Achaia sends");
         assert!(send.x < receive.x);
         assert!((send.y - receive.y).abs() < 0.1);
         let text = labels(&output);
@@ -182,6 +189,9 @@ fn province_trade_aligns_whole_amount_badges_without_metadata_or_amount_tooltips
             assert!(!text.contains(removed), "Unexpected {removed}: {text}");
         }
         assert!(!text.contains(".0"), "Trade summary amounts use whole numbers");
+        assert!(!text.contains("You receive"));
+        assert!(text_position(&output, "Close").x < text_position(&output, "Abort").x);
+        assert!((text_position(&output, "7").y - text_position(&output, "5").y).abs() < 0.1);
         assert!((text_position(&output, "7").y - text_position(&output, "15").y).abs() < 0.1);
         assert!((text_position(&output, "11").y - text_position(&output, "23").y).abs() < 0.1);
         for amount in ["7", "5", "11", "15", "23"] {
@@ -193,15 +203,15 @@ fn province_trade_aligns_whole_amount_badges_without_metadata_or_amount_tooltips
                     egui::Shape::Rect(rect)
                         if rect.fill == TABLE_STRIPE
                             && rect.rect.contains(position)
-                            && (rect.rect.height() - 36.0 * scale).abs() < 0.1 =>
+                            && (rect.rect.height() - 24.0 * scale).abs() < 0.1 =>
                     {
                         Some(rect.rect)
                     },
                     _ => None,
                 })
                 .expect("Amount must sit in a compact resource badge");
-            assert!(badge.width() <= 153.0 * scale && badge.width() >= 145.0 * scale);
-            assert!(position.x - badge.left() < 56.0 * scale, "Keep the number close to its icon");
+            assert!(badge.width() <= width / 4.0 && badge.width() >= 80.0 * scale);
+            assert!(position.x - badge.left() < 45.0 * scale, "Keep the number close to its icon");
         }
         for (index, amount) in ["7", "5", "15"].into_iter().enumerate() {
             let pointer = text_position(&output, amount);
@@ -338,6 +348,186 @@ fn form_context() -> egui::Context {
         }],
     ));
     ctx
+}
+
+fn routes_frame(
+    ctx: &egui::Context,
+    campaign: &mut Campaign,
+    time: f64,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, Option<String>) {
+    let mut message = None;
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(546.0, 900.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            *ui.style_mut() = super::super::campaign_widgets::map_style(1.0);
+            message = routes(ui, campaign, 0, 1.0, None);
+        },
+    );
+    output.textures_delta.clear();
+    (output, message)
+}
+
+#[test]
+fn route_cards_open_the_partner_from_the_title_badges_and_padding() {
+    for (party_a, party_b, status, province, name) in [
+        (TradeParty::Player(0), TradeParty::Npc(2), TradeStatus::Active, 2, "Achaia"),
+        (TradeParty::Npc(2), TradeParty::Player(0), TradeStatus::Suspended, 2, "Achaia"),
+        (TradeParty::Player(0), TradeParty::Player(1), TradeStatus::Proposed, 1, "Player 2"),
+        (TradeParty::Player(1), TradeParty::Player(0), TradeStatus::Active, 1, "Player 2"),
+    ] {
+        let ctx = form_context();
+        let mut campaign = fixture();
+        let mut trade = TradeAgreement::new(
+            party_a,
+            party_b,
+            TradeBundle {
+                coin: 41.0,
+                ..Default::default()
+            },
+            TradeBundle {
+                resources: [10.0, 0.0, 0.0],
+                ..Default::default()
+            },
+            TradeFrequency::Monthly,
+        );
+        trade.id = 1;
+        trade.status = status;
+        campaign.economy.trades.push(trade);
+        routes_frame(&ctx, &mut campaign, 0.0, vec![]);
+        let (output, _) = routes_frame(&ctx, &mut campaign, 0.1, vec![]);
+        let card = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == egui::Color32::from_rgb(247, 243, 232)
+                        && rect.rect.contains(text_position(&output, name)) =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+            .expect("Route frame");
+        for (index, position) in [
+            text_position(&output, name),
+            text_position(&output, "You send"),
+            text_position(&output, "41"),
+            card.left_bottom() + egui::vec2(3.0, -3.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (offset, pressed) in [(0.0, true), (0.1, false)] {
+                routes_frame(
+                    &ctx,
+                    &mut campaign,
+                    0.2 + index as f64 * 0.3 + offset,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert_eq!(
+                take_province_click(&ctx),
+                Some(province),
+                "{party_a:?}/{party_b:?}/{status:?}, position {position:?}"
+            );
+            assert_eq!(take_province_click(&ctx), None, "Navigation is consumed once");
+        }
+    }
+}
+
+#[test]
+fn route_action_buttons_close_or_abort_without_opening_the_province() {
+    for label in ["Close", "Abort"] {
+        let ctx = form_context();
+        let mut campaign = fixture();
+        campaign.economy.players[0].influence = 1000.0;
+        campaign
+            .propose_national_trade(TradeAgreement::new(
+                TradeParty::Player(0),
+                TradeParty::Npc(2),
+                TradeBundle {
+                    coin: 10.0,
+                    ..Default::default()
+                },
+                TradeBundle {
+                    resources: [2.0, 0.0, 0.0],
+                    ..Default::default()
+                },
+                TradeFrequency::Monthly,
+            ))
+            .unwrap();
+        routes_frame(&ctx, &mut campaign, 0.0, vec![]);
+        let (output, _) = routes_frame(&ctx, &mut campaign, 0.1, vec![]);
+        let position = text_position(&output, label);
+        let mut message = None;
+        for (time, pressed) in [(0.2, true), (0.3, false)] {
+            message = routes_frame(
+                &ctx,
+                &mut campaign,
+                time,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .1;
+        }
+        assert!(message.is_some(), "{label} must perform its action");
+        assert_eq!(take_province_click(&ctx), None);
+        assert_eq!(
+            campaign.economy.trades[0].status,
+            if label == "Close" {
+                TradeStatus::Active
+            } else {
+                TradeStatus::Cancelled
+            }
+        );
+        assert_eq!(campaign.economy.trades[0].cancellation_month, (label == "Close").then_some(6));
+        if label == "Close" {
+            let (output, _) = routes_frame(&ctx, &mut campaign, 0.4, vec![]);
+            let position = text_position(&output, "6 months");
+            for (time, pressed) in [(0.5, true), (0.6, false)] {
+                let (_, message) = routes_frame(
+                    &ctx,
+                    &mut campaign,
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                assert!(message.is_none());
+            }
+            assert_eq!(take_province_click(&ctx), None, "Disabled Close keeps its click");
+        }
+    }
 }
 
 fn form_frame(
@@ -642,7 +832,7 @@ fn open_market_clamps_each_quantity_to_remaining_capacity_and_buys_other_resourc
     let message = message.unwrap();
     assert!(message.contains("Bought"));
     let notice = campaign.notifications.history_for(0).next().unwrap();
-    assert_eq!(notice.body, message);
+    assert_eq!(notice.body, "Goods purchased.");
     assert_eq!(notice.kind, super::super::campaign_notifications::NoticeKind::TradeUpdated);
     assert_eq!(notice.action, super::super::campaign_notifications::NoticeAction::OpenMarket);
     assert_eq!(campaign.notifications.history_for(1).count(), 0);
@@ -781,6 +971,141 @@ fn open_market_selectors_and_enabled_buy_button_have_no_tooltips() {
 }
 
 #[test]
+fn partner_market_displays_shortages_and_reserves_in_separate_columns() {
+    for (width, scale) in [(546.0, 1.0), (380.0, 1.0), (380.0, 0.85)] {
+        for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
+            let ctx = form_context();
+            let mut campaign = fixture();
+            campaign.economy.provinces[2].market.resources = [
+                NpcResourceMarket {
+                    production_potential: 40.0,
+                    internal_need: 20.0,
+                    export_capacity: 20.0,
+                    import_demand: 5.0,
+                    local_unit_value: 0.85,
+                    ..Default::default()
+                },
+                NpcResourceMarket {
+                    production_potential: 5.0,
+                    internal_need: 10.0,
+                    import_demand: 5.0,
+                    local_unit_value: 4.375,
+                    ..Default::default()
+                },
+                NpcResourceMarket {
+                    production_potential: 54.0,
+                    internal_need: 7.0,
+                    export_capacity: 47.0,
+                    import_demand: 5.0,
+                    local_unit_value: 1.05,
+                    ..Default::default()
+                },
+            ];
+            let key = egui::Id::new(("province-trade-view", 0_usize, 2_usize));
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    key,
+                    TradeView {
+                        monthly: frequency == TradeFrequency::Monthly,
+                        give: [0.0, 3.0, 0.0, 0.0, 0.0],
+                        receive: [13.0, 0.0, 0.0, 0.0, 0.0],
+                        ..Default::default()
+                    },
+                );
+            });
+            let mut capture = crate::egui_capture::Capture::default();
+            for frame in 0..2 {
+                let (mut output, used) =
+                    form_frame(&ctx, &mut campaign, width, scale, frame as f64 * 0.1, vec![]);
+                capture.frame(
+                    &ctx,
+                    &output,
+                    &format!("trade-values-{width:.0}-{scale:.2}-{frequency:?}"),
+                );
+                output.textures_delta.clear();
+                assert!(used.width() <= width + 1.0);
+                let headings = ["Can send", "Wants", "Reserves", "Coins per unit"]
+                    .map(|label| text_position(&output, label));
+                assert!(headings.windows(2).all(|pair| pair[0].x < pair[1].x));
+                let price_y = text_position(&output, "4.38").y;
+                let row_text: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        let egui::Shape::Text(text) = &shape.shape else {
+                            return None;
+                        };
+                        let rect = text.galley.rect.translate(text.pos.to_vec2());
+                        ((rect.center().y - price_y).abs() < 0.1)
+                            .then_some((rect.center().x, text.galley.job.text.as_str()))
+                    })
+                    .collect();
+                let expected = if frequency == TradeFrequency::Monthly {
+                    ["0", "5", "2", "4.38"]
+                } else {
+                    ["0", "15", "7", "4.38"]
+                };
+                assert_eq!(row_text.iter().map(|(_, text)| *text).collect::<Vec<_>>(), expected);
+                // Exporting provinces must show zero shortage despite reserve purchases.
+                for price in ["0.85", "1.05"] {
+                    let row_y = text_position(&output, price).y;
+                    assert!(output.shapes.iter().any(|shape| {
+                        let egui::Shape::Text(text) = &shape.shape else {
+                            return false;
+                        };
+                        let rect = text.galley.rect.translate(text.pos.to_vec2());
+                        text.galley.job.text == "0"
+                            && (rect.center().y - row_y).abs() < 0.1
+                            && rect.center().x > headings[0].x
+                            && rect.center().x < headings[2].x
+                    }));
+                }
+                assert!(labels(&output).contains("Total: 13.12 coins"));
+                assert!(labels(&output).contains("Total: 11.05 coins"));
+            }
+        }
+    }
+}
+
+#[test]
+fn exchange_totals_follow_live_prices_and_include_coin_and_enabled_influence() {
+    let ctx = form_context();
+    let mut campaign = fixture();
+    campaign.economy.config.trade.allow_influence = true;
+    campaign.economy.provinces[2].market.resources[1].local_unit_value = 4.375;
+    campaign.economy.provinces[2].market.resources[0].local_unit_value = 0.85;
+    let key = egui::Id::new(("province-trade-view", 0_usize, 2_usize));
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            key,
+            TradeView {
+                give: [0.0, 3.0, 0.0, 2.0, 1.0],
+                receive: [13.0, 0.0, 0.0, 3.0, 2.0],
+                ..Default::default()
+            },
+        );
+    });
+    for (frame, metal_price, outgoing) in [(0, 4.375, "23.12"), (1, 2.5, "17.5")] {
+        campaign.economy.provinces[2].market.resources[1].local_unit_value = metal_price;
+        let (mut output, _) =
+            form_frame(&ctx, &mut campaign, 380.0, 1.0, frame as f64 * 0.1, vec![]);
+        output.textures_delta.clear();
+        assert!(labels(&output).contains(&format!("Total: {outgoing} coins")));
+        assert!(labels(&output).contains("Total: 30.05 coins"));
+        assert!(
+            text_position(&output, &format!("Total: {outgoing} coins")).x
+                < text_position(&output, "Total: 30.05 coins").x
+        );
+    }
+    campaign.economy.provinces[2].owner = Some(1);
+    let (mut output, _) = form_frame(&ctx, &mut campaign, 380.0, 1.0, 0.2, vec![]);
+    output.textures_delta.clear();
+    assert!(!labels(&output).contains("Partner market"));
+    assert!(labels(&output).contains("Total: 17.5 coins"));
+    assert!(labels(&output).contains("Total: 32 coins"));
+}
+
+#[test]
 fn partner_market_shows_whole_unit_limits_for_the_selected_frequency() {
     for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
         let ctx = form_context();
@@ -825,6 +1150,340 @@ fn partner_market_shows_whole_unit_limits_for_the_selected_frequency() {
                 );
             }
             assert!(text.contains("0.85"), "Unit prices must retain their precision");
+        }
+    }
+}
+
+#[test]
+fn required_offers_are_minimal_whole_units_under_live_npc_rules() {
+    for frequency in [TradeFrequency::Monthly, TradeFrequency::OneTime] {
+        for favorable in [1.0, 0.75] {
+            let mut campaign = fixture();
+            campaign.economy.config.trade.allow_influence = true;
+            campaign.economy.config.trade.loss_per_step = 0.2;
+            campaign.economy.adjacency = vec![vec![1], vec![0, 3], vec![3], vec![1, 2]];
+            campaign.economy.players[0].influence = 1000.0;
+            let province = &mut campaign.economy.provinces[2];
+            province.trade_ratio_by_player[0] = favorable;
+            province.relation_by_player[0] = 30.0;
+            for (resource, price) in province.market.resources.iter_mut().zip([1.0, 2.5, 1.5]) {
+                resource.local_unit_value = price;
+                resource.export_capacity = 1000.0;
+                resource.import_demand = 10.0;
+                resource.internal_need = 2.0;
+            }
+            province.market.coin_treasury = 5000.0;
+            province.market.trade_budget = 5000.0;
+            let receive = [78.0, 11.0, 0.0, 27.0, 0.0];
+            let before = serde_json::to_value(&campaign.economy).unwrap();
+            for resource in 0..5 {
+                let mut give = [0.0; 5];
+                give[if resource == 3 {
+                    0
+                } else {
+                    3
+                }] = 5.0;
+                give[resource] = 999.0;
+                let amount = required_offer_amount(
+                    &campaign,
+                    0,
+                    TradeParty::Npc(2),
+                    give,
+                    receive,
+                    frequency,
+                    resource,
+                )
+                .unwrap();
+                assert_eq!(amount, amount.floor());
+                assert!(amount > 0.0);
+                give[resource] = amount;
+                let mut agreement = TradeAgreement::new(
+                    TradeParty::Player(0),
+                    TradeParty::Npc(2),
+                    bundle(give),
+                    bundle(receive),
+                    frequency,
+                );
+                assert!(quote(&campaign.economy, &agreement, &campaign.inputs())
+                    .is_ok_and(|quote| quote.fulfillment >= 1.0 - 1e-9));
+                give[resource] -= 1.0;
+                agreement.a_gives = bundle(give);
+                assert!(
+                    quote(&campaign.economy, &agreement, &campaign.inputs()).is_err(),
+                    "One fewer unit must fail: {frequency:?}, {favorable}, {resource}, {amount}"
+                );
+            }
+            assert_eq!(serde_json::to_value(&campaign.economy).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn required_offers_allow_zero_and_reject_unfunded_immediate_or_unsupplied_deals() {
+    let mut campaign = fixture();
+    let partner = TradeParty::Npc(2);
+    let receive = [1.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+        required_offer_amount(
+            &campaign,
+            0,
+            partner,
+            [99.0, 0.0, 0.0, 100.0, 0.0],
+            receive,
+            TradeFrequency::Monthly,
+            0
+        ),
+        Ok(0.0)
+    );
+    campaign.economy.players[0].resources[0] = 0.0;
+    assert!(required_offer_amount(
+        &campaign,
+        0,
+        partner,
+        [0.0; 5],
+        receive,
+        TradeFrequency::Monthly,
+        0
+    )
+    .is_ok());
+    assert!(required_offer_amount(
+        &campaign,
+        0,
+        partner,
+        [0.0; 5],
+        receive,
+        TradeFrequency::OneTime,
+        0
+    )
+    .is_err());
+    campaign.economy.provinces[2].market.resources[0].export_capacity = 0.0;
+    assert!(required_offer_amount(
+        &campaign,
+        0,
+        partner,
+        [0.0; 5],
+        receive,
+        TradeFrequency::Monthly,
+        3
+    )
+    .is_err());
+    assert!(required_offer_amount(
+        &campaign,
+        0,
+        TradeParty::Player(1),
+        [0.0; 5],
+        receive,
+        TradeFrequency::Monthly,
+        3
+    )
+    .is_err());
+}
+
+fn terms_maximum_buttons(output: &egui::FullOutput, scale: f32) -> Vec<egui::Rect> {
+    fn collect(shape: &egui::Shape, scale: f32, buttons: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(rect)
+                if (28.0..=42.0).contains(&(rect.rect.width() / scale))
+                    && (18.0..=30.0).contains(&(rect.rect.height() / scale)) =>
+            {
+                buttons.push(rect.rect)
+            },
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, scale, buttons);
+                }
+            },
+            _ => {},
+        }
+    }
+    let mut buttons = Vec::new();
+    for shape in &output.shapes {
+        collect(&shape.shape, scale, &mut buttons);
+    }
+    buttons.sort_by(|a, b| {
+        a.center().y.total_cmp(&b.center().y).then(a.center().x.total_cmp(&b.center().x))
+    });
+    buttons.dedup_by(|a, b| a.center().distance(b.center()) < 2.0);
+    buttons
+}
+
+#[test]
+fn send_buttons_fill_only_the_selected_offer_without_hover_tooltips_on_either_side() {
+    for (width, scale) in [(546.0, 1.0), (380.0, 1.0), (380.0, 0.85)] {
+        let ctx = form_context();
+        let mut campaign = fixture();
+        let market = &mut campaign.economy.provinces[2].market;
+        market.resources[0].export_capacity = 1000.0;
+        market.resources[1].export_capacity = 1000.0;
+        market.resources[2].export_capacity = 0.0;
+        market.coin_treasury = 5000.0;
+        market.trade_budget = 5000.0;
+        let receive = [78.0, 11.0, 0.0, 27.0, 0.0];
+        let key = egui::Id::new(("province-trade-view", 0_usize, 2_usize));
+        let mut time = 0.0;
+        let mut capture = crate::egui_capture::Capture::default();
+        for resource in 0..4 {
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    key,
+                    TradeView {
+                        receive,
+                        ..Default::default()
+                    },
+                )
+            });
+            let expected = required_offer_amount(
+                &campaign,
+                0,
+                TradeParty::Npc(2),
+                [0.0; 5],
+                receive,
+                TradeFrequency::Monthly,
+                resource,
+            )
+            .unwrap();
+            let (mut output, used) = form_frame(&ctx, &mut campaign, width, scale, time, vec![]);
+            capture.frame(&ctx, &output, &format!("trade-offer-buttons-{width:.0}-{scale:.2}"));
+            output.textures_delta.clear();
+            assert!(used.width() <= width + 1.0);
+            let buttons = terms_maximum_buttons(&output, scale);
+            assert_eq!(buttons.len(), 8, "Both sides need a button on every resource row");
+            let pointer = buttons[resource * 2].center();
+            for pressed in [true, false] {
+                time += 0.1;
+                let (mut output, _) = form_frame(
+                    &ctx,
+                    &mut campaign,
+                    width,
+                    scale,
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pointer),
+                        egui::Event::PointerButton {
+                            pos: pointer,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                capture.frame(&ctx, &output, &format!("trade-offer-buttons-{width:.0}-{scale:.2}"));
+                output.textures_delta.clear();
+            }
+            let view = ctx.data(|data| data.get_temp::<TradeView>(key)).unwrap();
+            let mut give = [0.0; 5];
+            give[resource] = expected;
+            assert_eq!(view.give, give);
+            assert_eq!(view.receive, receive);
+            time += 0.1;
+        }
+        let (mut output, _) = form_frame(&ctx, &mut campaign, width, scale, time, vec![]);
+        output.textures_delta.clear();
+        let baseline = labels(&output);
+        for button in terms_maximum_buttons(&output, scale) {
+            time += 2.0;
+            let (mut output, _) = form_frame(
+                &ctx,
+                &mut campaign,
+                width,
+                scale,
+                time,
+                vec![egui::Event::PointerMoved(button.center())],
+            );
+            output.textures_delta.clear();
+            time += 1.0;
+            let (mut output, _) = form_frame(&ctx, &mut campaign, width, scale, time, vec![]);
+            output.textures_delta.clear();
+            assert_eq!(
+                labels(&output),
+                baseline,
+                "Amount buttons must not show hover tooltips, including disabled ones"
+            );
+        }
+    }
+}
+
+#[test]
+fn right_clicking_max_buttons_clears_only_its_amount_including_disabled_controls() {
+    for (width, scale) in [(546.0, 1.0), (380.0, 0.85)] {
+        for (side, receive) in
+            [(0, [8.0, 4.0, 3.0, 2.0, 1.0]), (0, [0.0; 5]), (1, [8.0, 4.0, 3.0, 2.0, 1.0])]
+        {
+            for resource in 0..5 {
+                let ctx = form_context();
+                let mut campaign = fixture();
+                campaign.economy.config.trade.allow_influence = true;
+                let market = &mut campaign.economy.provinces[2].market;
+                for (resource, maximum) in market.resources.iter_mut().zip([8.9, 12.7, 0.0]) {
+                    resource.export_capacity = maximum;
+                }
+                market.coin_treasury = 0.0;
+                market.influence_treasury = 0.0;
+                let give = [5.0, 6.0, 7.0, 8.0, 9.0];
+                let key = egui::Id::new(("province-trade-view", 0_usize, 2_usize));
+                ctx.data_mut(|data| {
+                    data.insert_temp(
+                        key,
+                        TradeView {
+                            give,
+                            receive,
+                            receive_at_maximum: [receive[0] == 8.0, false, false, false, false],
+                            receive_maximum_partner: Some(TradeParty::Npc(2)),
+                            ..Default::default()
+                        },
+                    )
+                });
+                let (mut output, _) = form_frame(&ctx, &mut campaign, width, scale, 0.0, vec![]);
+                output.textures_delta.clear();
+                let (mut output, _) = form_frame(&ctx, &mut campaign, width, scale, 0.1, vec![]);
+                output.textures_delta.clear();
+                let buttons = terms_maximum_buttons(&output, scale);
+                assert_eq!(buttons.len(), 10);
+                let pointer = buttons[resource * 2 + side].center();
+                for (time, pressed) in [(0.2, true), (0.3, false)] {
+                    let (mut output, _) = form_frame(
+                        &ctx,
+                        &mut campaign,
+                        width,
+                        scale,
+                        time,
+                        vec![
+                            egui::Event::PointerMoved(pointer),
+                            egui::Event::PointerButton {
+                                pos: pointer,
+                                button: egui::PointerButton::Secondary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                    output.textures_delta.clear();
+                }
+                let mut expected_give = give;
+                let mut expected_receive = receive;
+                if side == 0 {
+                    expected_give[resource] = 0.0;
+                } else {
+                    expected_receive[resource] = 0.0;
+                }
+                let view = ctx.data(|data| data.get_temp::<TradeView>(key)).unwrap();
+                assert_eq!(view.give, expected_give);
+                assert_eq!(view.receive, expected_receive);
+                if side == 1 {
+                    assert!(!view.receive_at_maximum[resource]);
+                    if resource == 0 {
+                        campaign.economy.provinces[2].market.resources[0].export_capacity = 20.9;
+                    }
+                }
+                let (mut output, _) = form_frame(&ctx, &mut campaign, width, scale, 0.4, vec![]);
+                output.textures_delta.clear();
+                let view = ctx.data(|data| data.get_temp::<TradeView>(key)).unwrap();
+                assert_eq!(view.give, expected_give);
+                assert_eq!(
+                    view.receive, expected_receive,
+                    "Clearing must stop automatic max tracking"
+                );
+            }
         }
     }
 }
@@ -909,6 +1568,7 @@ fn province_max_buttons_fill_only_the_selected_receipt_for_the_current_frequency
                 for shape in &output.shapes {
                     maximum_buttons(&shape.shape, &mut buttons);
                 }
+                buttons.retain(|position| position.x > 190.0);
                 buttons.sort_by(|a, b| a.y.total_cmp(&b.y));
                 buttons.dedup_by(|a, b| a.distance(*b) < 2.0);
                 assert_eq!(
@@ -1313,6 +1973,9 @@ fn province_trade_form_fits_without_scrolling_and_uses_icon_resource_rows() {
                 assert!(text.contains("Single-time"));
                 assert!(text.contains("Can send"));
                 assert!(text.contains("Wants"));
+                assert!(text.contains("Reserves"));
+                assert!(text.contains("Coins per unit"));
+                assert_eq!(text.lines().filter(|line| line.starts_with("Total:")).count(), 2);
             }
         }
     }

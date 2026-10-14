@@ -1,4 +1,4 @@
-//! Trade popups must be retained, private, actionable, and explain failed deliveries.
+//! Trade popups must be retained, private, actionable, and concise.
 
 use super::super::campaign_notifications::{NoticeAction, NoticeKind, NoticeSeverity};
 use super::*;
@@ -90,12 +90,9 @@ fn trade_offer_acceptance_and_closure_remain_in_both_participants_history() {
             popups.iter().map(|n| n.title.as_str()).collect::<Vec<_>>(),
             ["Trade offer sent", "Trade accepted", "Trade closure scheduled", "Trade stopped",]
         );
-        assert!(
-            popups
-                .iter()
-                .all(|n| n.action == NoticeAction::OpenTrade(id)
-                    && n.body.contains(&format!("#{id}")))
-        );
+        assert!(popups
+            .iter()
+            .all(|n| n.action == NoticeAction::OpenTrade(id) && !n.body.contains('#')));
         assert!(popups[3].body.contains(&stopped));
         assert_eq!(campaign.notifications.history_for(player).count(), 4);
         assert!(campaign.notifications.drain_for(player).is_empty());
@@ -120,7 +117,7 @@ fn withdrawing_an_offer_and_completing_one_time_trades_are_retained_without_fail
     for player in 0..2 {
         let notice = campaign.notifications.history_for(player).next().unwrap();
         assert_eq!(notice.title, "Trade offer cancelled");
-        assert!(notice.body.contains(&format!("Agreement #{id} cancelled.")));
+        assert!(notice.body.ends_with("Trade offer cancelled."));
     }
     let id = campaign
         .propose_national_trade(offer(TradeParty::Player(1), TradeFrequency::OneTime))
@@ -129,7 +126,7 @@ fn withdrawing_an_offer_and_completing_one_time_trades_are_retained_without_fail
     for player in 0..2 {
         let notice = campaign.notifications.history_for(player).next().unwrap();
         assert_eq!(notice.title, "Trade completed");
-        assert!(notice.body.contains("exchange completed"));
+        assert!(notice.body.ends_with("Exchange completed."));
     }
     let id = campaign
         .propose_national_trade(offer(TradeParty::Npc(3), TradeFrequency::OneTime))
@@ -137,12 +134,13 @@ fn withdrawing_an_offer_and_completing_one_time_trades_are_retained_without_fail
     let notice = campaign.notifications.history_for(0).next().unwrap();
     assert_eq!(notice.title, "Trade completed");
     assert_eq!(notice.province, Some(3));
-    assert!(notice.body.contains(&format!("Achaia: Agreement #{id} completed.")));
+    assert_eq!(notice.body, "Achaia: Exchange completed.");
+    assert_eq!(notice.action, NoticeAction::OpenTrade(id));
     assert_eq!(campaign.notifications.history_for(2).count(), 0);
 }
 
 #[test]
-fn blocked_routes_immediately_record_the_reason_once_without_waiting_for_a_month() {
+fn blocked_routes_immediately_record_a_brief_outcome_once_without_waiting_for_a_month() {
     let mut campaign = campaign();
     let id = campaign
         .propose_national_trade(offer(TradeParty::Npc(3), TradeFrequency::Monthly))
@@ -152,14 +150,13 @@ fn blocked_routes_immediately_record_the_reason_once_without_waiting_for_a_month
     assert_eq!(campaign.economy.month, 0);
     let trade = campaign.economy.trades.iter().find(|t| t.id == id).unwrap();
     assert_eq!(trade.status, TradeStatus::Suspended);
-    let reason = trade.last_failure.clone().unwrap();
+    assert!(trade.last_failure.is_some());
     let notice = campaign.notifications.history_for(0).next().unwrap();
     assert_eq!(notice.kind, NoticeKind::TradeInterrupted);
     assert_eq!(notice.severity, NoticeSeverity::Warning);
     assert_eq!(notice.province, Some(3));
     assert_eq!(notice.action, NoticeAction::OpenTrade(id));
-    assert!(notice.body.contains(&reason));
-    assert!(notice.body.contains(&format!("Route #{id}")));
+    assert_eq!(notice.body, "Achaia: Trade route suspended.");
     let total = campaign.notifications.history_for(0).count();
     campaign.reconcile_provinces();
     assert_eq!(campaign.notifications.history_for(0).count(), total);
@@ -167,7 +164,33 @@ fn blocked_routes_immediately_record_the_reason_once_without_waiting_for_a_month
 }
 
 #[test]
-fn monthly_failures_keep_each_agreement_and_reason_then_explain_automatic_cancellation() {
+fn npc_resource_changes_do_not_interrupt_accepted_routes_or_create_warnings() {
+    let mut campaign = campaign();
+    let id = campaign
+        .propose_national_trade(offer(TradeParty::Npc(3), TradeFrequency::Monthly))
+        .unwrap();
+    campaign.economy.provinces[3].potential[1] = 0.0;
+    for month in 1..=6 {
+        let report = campaign.economy.advance_month(&campaign.inputs());
+        campaign.record_economic_events(&report);
+        let trade = campaign.economy.trades.iter().find(|trade| trade.id == id).unwrap();
+        assert_eq!(trade.status, TradeStatus::Active);
+        assert_eq!(trade.last_executed_month, Some(month));
+        assert_eq!(trade.last_fulfillment, 1.0);
+        assert_eq!(campaign.economy.provinces[3].market.resources[1].export_capacity, 0.0);
+        assert_eq!(
+            campaign
+                .notifications
+                .history_for(0)
+                .filter(|notice| notice.kind == NoticeKind::TradeInterrupted)
+                .count(),
+            0
+        );
+    }
+}
+
+#[test]
+fn monthly_failures_keep_each_agreement_and_brief_cancellation_outcome() {
     let mut campaign = campaign();
     let mut ids = Vec::new();
     for _ in 0..2 {
@@ -201,9 +224,19 @@ fn monthly_failures_keep_each_agreement_and_reason_then_explain_automatic_cancel
                     _ => None,
                 })
                 .unwrap();
-            assert!(notices
-                .iter()
-                .any(|n| n.body.contains(&format!("#{id}")) && n.body.contains(reason)));
+            assert_eq!(
+                campaign
+                    .economy
+                    .trades
+                    .iter()
+                    .find(|trade| trade.id == *id)
+                    .unwrap()
+                    .last_failure
+                    .as_ref(),
+                Some(reason)
+            );
+            assert!(notices.iter().any(|n| n.action == NoticeAction::OpenTrade(*id)
+                && n.body.ends_with("Trade route suspended.")));
         }
     }
     let limit = campaign.economy.config.trade.failure_limit;
@@ -215,8 +248,7 @@ fn monthly_failures_keep_each_agreement_and_reason_then_explain_automatic_cancel
     for player in 0..2 {
         let notice = campaign.notifications.history_for(player).next().unwrap();
         assert_eq!(notice.title, "Trade cancelled");
-        assert!(notice.body.contains(&format!("{limit} consecutive failed months")));
-        assert!(notice.body.contains(campaign.economy.trades[1].last_failure.as_deref().unwrap()));
+        assert!(notice.body.ends_with("Trade route cancelled."));
     }
     assert_eq!(campaign.notifications.history_for(2).count(), 0);
 }
@@ -252,7 +284,7 @@ fn completed_cancellation_notice_reaches_both_human_participants_and_npc_history
                 assert_eq!(notice.title, "Trade route ended");
                 assert_eq!(notice.severity, NoticeSeverity::Info);
                 assert_eq!(notice.month, report.month);
-                assert!(notice.body.contains("without a relation penalty"));
+                assert!(notice.body.ends_with("Trade route closed."));
                 assert_eq!(notice.action, NoticeAction::OpenTrade(id));
             }
             assert_eq!(campaign.notifications.history_for(2).count(), 0);
@@ -271,7 +303,7 @@ fn trade_notifications_appear_on_affected_provinces_without_leaking_to_other_pla
         .propose_national_trade(offer(TradeParty::Player(1), TradeFrequency::Monthly))
         .unwrap();
     campaign.accept_national_trade(1, human).unwrap();
-    campaign.notify_market_trade(0, "Bought 10 Food for 20 Sestertii.");
+    campaign.notify_market_trade(0, MarketSide::Buy);
     let on_province = |player, province| {
         campaign
             .notifications

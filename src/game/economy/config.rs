@@ -58,6 +58,31 @@ pub struct LaborModifiers {
     pub deaths: f64,
 }
 
+/// Slow local demographic changes for independent and vassal provinces.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct NpcDemographyConfig {
+    /// Birth multipliers at the low and high points of a local cycle.
+    pub birth_multipliers: [f64; 2],
+    /// Typical cycle length; provinces vary in phase and duration by up to 20%.
+    pub cycle_months: u32,
+    /// Occupancy above which free residents feel pressure to leave.
+    pub crowding_threshold: f64,
+    /// Local opportunity's contribution to migration attractiveness.
+    pub opportunity_weight: f64,
+}
+
+impl Default for NpcDemographyConfig {
+    fn default() -> Self {
+        Self {
+            birth_multipliers: [0.25, 1.25],
+            cycle_months: 180,
+            crowding_threshold: 0.8,
+            opportunity_weight: 0.5,
+        }
+    }
+}
+
 /// Centralized population, resource, building, and trade tuning.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EconomyConfig {
@@ -104,6 +129,9 @@ pub struct EconomyConfig {
     pub migration_happiness: [f64; 4],
     /// Capacity/happiness/city contributions to destination attractiveness.
     pub migration_weights: [f64; 3],
+    /// Local NPC birth cycles and settlement pressure; defaults support older saves.
+    #[serde(default)]
+    pub npc_demography: NpcDemographyConfig,
     /// Plebeian to citizen and citizen to noble monthly promotion rates.
     pub class_change_rates: [f64; 2],
     /// Free workers and slaves' baseline productivity.
@@ -236,9 +264,9 @@ pub struct TradeConfig {
     pub npc_city_income: f64,
     /// NPC routine expenses as a fraction of income.
     pub npc_expense_share: f64,
-    /// Fraction of promised NPC supply below which a month is suspended.
+    /// Minimum live NPC supply fraction for proposal quotes; accepted routes deliver in full.
     pub minimum_fulfillment: f64,
-    /// Consecutive failures needed for automatic cancellation.
+    /// Consecutive failures before cancellation; NPC routes retain player payment suspensions.
     pub failure_limit: u8,
     /// Delivered value needed for one relation point.
     pub value_per_relation: f64,
@@ -315,6 +343,7 @@ impl Default for EconomyConfig {
             migration_out: [1.0, 1.0, 0.7, 0.1],
             migration_happiness: [0.0, 0.0, -1.0, -2.0],
             migration_weights: [2.0, 1.0, 0.25],
+            npc_demography: NpcDemographyConfig::default(),
             class_change_rates: [0.0008, 0.00025],
             productivity: [1.0, 1.5],
             // Potential allocates labor once. A shared yield makes Balanced output

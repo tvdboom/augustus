@@ -5,6 +5,22 @@ use super::*;
 const PANEL_ID: &str = "campaign-battle-inspection";
 const PANEL_WIDTH: f32 = 900.;
 const PANEL_HEIGHT: f32 = 328.;
+const SIDE_HEIGHT: f32 = 56.;
+const ACTION_SPACING: f32 = 46.;
+
+fn side_rect(panel: egui::Rect, index: usize, scale: f32) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(
+            panel.left() + 10. * scale,
+            if index == 0 {
+                panel.top() + 48. * scale
+            } else {
+                panel.bottom() - (SIDE_HEIGHT + 6.) * scale
+            },
+        ),
+        egui::vec2(panel.width() - 20. * scale, SIDE_HEIGHT * scale),
+    )
+}
 
 pub(in crate::app) fn selected_battle(ctx: &egui::Context) -> Option<(u64, usize)> {
     ctx.data(|data| data.get_temp(egui::Id::new(PANEL_ID)))
@@ -106,30 +122,12 @@ pub(in crate::app) fn draw_battle_panel(
             );
             defense_icons(ui, header, terrain, fortification, attackers, world, scale);
             let field = egui::Rect::from_min_size(
-                panel.min + egui::vec2(12., 92.) * scale,
+                panel.min + egui::vec2(12., 108.) * scale,
                 egui::vec2(panel.width() - 24. * scale, 154. * scale),
             );
             battlefield_background(ui, field, terrain, scale);
             for (index, side) in [attackers, defenders].into_iter().enumerate() {
-                let card = egui::Rect::from_min_size(
-                    panel.min
-                        + egui::vec2(
-                            10.,
-                            if index == 0 {
-                                46.
-                            } else {
-                                248.
-                            },
-                        ) * scale,
-                    egui::vec2(
-                        panel.width() - 20. * scale,
-                        if index == 0 {
-                            42.
-                        } else {
-                            50.
-                        } * scale,
-                    ),
-                );
+                let card = side_rect(panel, index, scale);
                 let mut side_ui = ui.new_child(
                     egui::UiBuilder::new().id_salt(("battle-side", index)).max_rect(card),
                 );
@@ -140,8 +138,8 @@ pub(in crate::app) fn draw_battle_panel(
                     let allowed = !inspection
                         && battle.months >= world.config.minimum_retreat_months
                         && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
-                    let retreat =
-                        side_dice_rect(card, scale).translate(egui::vec2(-34. * scale, 0.));
+                    let retreat = side_dice_rect(card, scale)
+                        .translate(egui::vec2(-ACTION_SPACING * scale, 0.));
                     if retreat_icon(&mut side_ui, retreat, allowed, scale) {
                         action = Some((
                             province,
@@ -281,7 +279,7 @@ fn side_card(
     scale: f32,
 ) {
     let inset = rect.shrink2(egui::vec2(8., 2.) * scale);
-    let info_width = inset.width() - 166. * scale;
+    let info_width = inset.width() - 206. * scale;
     let names = side
         .initial_manpower
         .keys()
@@ -295,7 +293,7 @@ fn side_card(
                 if index == 0 {
                     0.
                 } else {
-                    28.
+                    32.
                 },
             ) * scale,
         egui::vec2(info_width, 20. * scale),
@@ -326,7 +324,11 @@ fn side_card(
             },
         );
     }
-    let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(identity));
+    let mut name_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(identity)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
     name_ui.add(egui::Label::new(name_job).truncate().show_tooltip_when_elided(false));
     let dice = side_dice_rect(rect, scale);
     dice_face(
@@ -339,7 +341,7 @@ fn side_card(
     if reveal {
         let owner = side_owner(side);
         if let Some(plan) = side.plans.get(&owner) {
-            let tactic = dice.translate(egui::vec2(34. * scale, 0.));
+            let tactic = dice.translate(egui::vec2(ACTION_SPACING * scale, 0.));
             paint_tactic(ui, plan.tactic, tactic);
             let multiplier =
                 round.and_then(|r| r.tactics[index].get(&owner)).copied().unwrap_or(1.);
@@ -375,19 +377,19 @@ fn side_card(
         format_person_count((manpower.max(0.) * PEOPLE_PER_POPULATION).round() as u64)
     };
     let mut stats = vec![
-        (Icon::Population, people(side.manpower()), "Surviving soldiers"),
-        (Icon::Morale, format!("{:.0}%", army_morale(&side.units)), "Current army morale"),
+        (Icon::Population, people(side.manpower()), "Soldiers"),
+        (Icon::Morale, format!("{:.0}%", army_morale(&side.units)), "Morale"),
         (
             Icon::Cohorts,
             side.units.iter().filter(|unit| unit.current_manpower > 0.).count().to_string(),
-            "Surviving cohorts",
+            "Cohorts",
         ),
-        (Icon::Cancel, people(initial - side.manpower()), "Soldiers lost in this battle"),
+        (Icon::Cancel, people(initial - side.manpower()), "Soldiers died"),
     ];
     if reveal {
         stats.extend([
             (Icon::Cohorts, side.formation.reserves.len().to_string(), "Cohorts in reserve"),
-            (Icon::SpyFlee, side.routed.len().to_string(), "Cohorts routed from this battle"),
+            (Icon::SpyFlee, side.routed.len().to_string(), "Cohorts routed"),
         ]);
     }
     for (i, (kind, value, tooltip)) in stats.into_iter().enumerate() {
@@ -396,7 +398,7 @@ fn side_card(
                 + egui::vec2(
                     i as f32 * 80.,
                     if index == 0 {
-                        20.
+                        30.
                     } else {
                         0.
                     },
@@ -409,7 +411,7 @@ fn side_card(
 
 fn side_dice_rect(rect: egui::Rect, scale: f32) -> egui::Rect {
     egui::Rect::from_min_size(
-        egui::pos2(rect.right() - 132. * scale, rect.center().y - 14. * scale),
+        egui::pos2(rect.right() - 144. * scale, rect.center().y - 14. * scale),
         egui::vec2(28., 28.) * scale,
     )
 }
@@ -455,8 +457,7 @@ fn compact_stat(
         egui::FontId::proportional(13. * scale),
         INK,
     );
-    ui.interact(rect, ui.id().with(tooltip), egui::Sense::hover())
-        .on_hover_text(format!("{tooltip}: {value}"));
+    ui.interact(rect, ui.id().with(tooltip), egui::Sense::hover()).on_hover_text(tooltip);
 }
 
 fn dice_face(
@@ -677,10 +678,28 @@ fn battlefield_rows(
     let gap = 6. * scale;
     let spacing = 2. * scale;
     let wing = formation.flank_size.min(width / 3);
-    let cell = ((rect.width() - width.saturating_sub(1) as f32 * spacing - 2. * gap)
+    let visible_unit = |id: UnitId| {
+        units.iter().any(|unit| {
+            unit.id == id && unit.current_manpower > 0. && (finished || !side.routed.contains(&id))
+        })
+    };
+    let occupied_wing =
+        |slots: &[Option<UnitId>]| slots.iter().flatten().any(|&id| visible_unit(id));
+    let left_gap = if wing > 0 && occupied_wing(&formation.front[..wing]) {
+        gap
+    } else {
+        0.
+    };
+    let right_gap = if wing > 0 && occupied_wing(&formation.front[width - wing..]) {
+        gap
+    } else {
+        0.
+    };
+    let cell = ((rect.width() - width.saturating_sub(1) as f32 * spacing - left_gap - right_gap)
         / width as f32)
         .min(30. * scale);
-    let row_width = width as f32 * cell + width.saturating_sub(1) as f32 * spacing + 2. * gap;
+    let row_width =
+        width as f32 * cell + width.saturating_sub(1) as f32 * spacing + left_gap + right_gap;
     let mut rear = formation.support.clone();
     rear.resize(width, None);
     // Match the deployment preview's rear reserves while keeping support aligned
@@ -714,13 +733,32 @@ fn battlefield_rows(
     };
     for (row_index, row) in rows.into_iter().enumerate() {
         for (slot, id) in row.iter().enumerate() {
-            let flank_gaps = usize::from(slot >= wing) + usize::from(slot >= width - wing);
+            let initial = id.and_then(|id| units.iter().find(|unit| unit.id == id));
+            let current = id.and_then(|id| {
+                side.units.iter().find(|unit| {
+                    unit.id == id
+                        && unit.current_manpower > 0.
+                        && (finished || !side.routed.contains(&id))
+                })
+            });
+            let Some(unit) = current.or(initial.filter(|_| finished)) else {
+                continue;
+            };
+            let flank_gap = if slot >= wing {
+                left_gap
+            } else {
+                0.
+            } + if slot >= width - wing {
+                right_gap
+            } else {
+                0.
+            };
             let tile = egui::Rect::from_min_size(
                 rect.min
                     + egui::vec2(
                         (rect.width() - row_width) / 2.
                             + slot as f32 * (cell + spacing)
-                            + flank_gaps as f32 * gap,
+                            + flank_gap,
                         row_index as f32 * (cell + 8. * scale),
                     ),
                 egui::vec2(cell, cell + 4. * scale),
@@ -732,24 +770,6 @@ fn battlefield_rows(
                 egui::Stroke::new(0.8 * scale, RULE),
                 egui::StrokeKind::Inside,
             );
-            let initial = id.and_then(|id| units.iter().find(|unit| unit.id == id));
-            let current = id.and_then(|id| {
-                side.units.iter().find(|unit| {
-                    unit.id == id
-                        && unit.current_manpower > 0.
-                        && (finished || !side.routed.contains(&id))
-                })
-            });
-            let Some(unit) = current.or(initial.filter(|_| finished)) else {
-                ui.painter().text(
-                    tile.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "·",
-                    egui::FontId::proportional(20. * scale),
-                    RULE,
-                );
-                continue;
-            };
             let response =
                 ui.interact(tile, ui.id().with(("cohort", row_index, slot)), egui::Sense::hover());
             let fallen = current.is_none();

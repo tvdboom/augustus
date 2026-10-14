@@ -85,8 +85,8 @@ fn tenfold_residents_preserve_monthly_economy_and_enlarge_demographic_flows() {
         ..Default::default()
     };
     let mut new_report = old_report.clone();
-    old.advance_demographics(&mut old_report, &old_config);
-    current.advance_demographics(&mut new_report, &config);
+    old.advance_demographics(&mut old_report, &old_config, 1);
+    current.advance_demographics(&mut new_report, &config, 1);
     for class in 0..4 {
         close(new_report.births[class], old_report.births[class] * scale);
         close(new_report.normal_deaths[class], old_report.normal_deaths[class] * scale);
@@ -438,6 +438,7 @@ fn citizenship_keeps_ordinary_promotion_and_bounds_competing_class_conversions()
                 ..Default::default()
             },
             &config,
+            1,
         );
         let promoted = 100.0
             * config.class_change_rates[0]
@@ -505,6 +506,7 @@ fn citizenship_keeps_ordinary_promotion_and_bounds_competing_class_conversions()
                 ..Default::default()
             },
             &config,
+            1,
         );
         assert_eq!(p.population, expected);
         close(p.total_population(), population.iter().sum());
@@ -881,7 +883,7 @@ fn overcrowding_lowers_happiness_each_month_and_recovers_after_relief() {
             food_supply_ratio: 1.0,
             ..Default::default()
         };
-        province.advance_demographics(&mut report, &world.config);
+        province.advance_demographics(&mut report, &world.config, 1);
         close(report.overcrowding_penalty, 3.0);
         close(province.happiness[0], (50.0_f64 - 3.0 * (month + 1) as f64).max(0.0));
     }
@@ -891,7 +893,7 @@ fn overcrowding_lowers_happiness_each_month_and_recovers_after_relief() {
         ..Default::default()
     };
     for _ in 0..5 {
-        province.advance_demographics(&mut report, &world.config);
+        province.advance_demographics(&mut report, &world.config, 1);
         close(report.overcrowding_penalty, 0.0);
     }
     close(province.happiness[0], 5.0);
@@ -910,8 +912,8 @@ fn severe_famine_kills_more_residents_while_mild_shortage_has_small_happiness_lo
         food_supply_ratio: 0.2,
         ..Default::default()
     };
-    mild.advance_demographics(&mut mild_report, &world.config);
-    severe.advance_demographics(&mut severe_report, &world.config);
+    mild.advance_demographics(&mut mild_report, &world.config, 1);
+    severe.advance_demographics(&mut severe_report, &world.config, 1);
     assert!(mild_report.shortage_penalty > 0.0 && mild_report.shortage_penalty < 1.0);
     close(severe_report.shortage_penalty, 2.4);
     assert!(
@@ -924,7 +926,7 @@ fn severe_famine_kills_more_residents_while_mild_shortage_has_small_happiness_lo
     config.max_famine_death_rate = 0.0;
     config.class_change_rates = [0.0; 2];
     for _ in 0..24 {
-        severe.advance_demographics(&mut severe_report, &config);
+        severe.advance_demographics(&mut severe_report, &config, 1);
     }
     close(severe.happiness[0], 0.0);
 }
@@ -1095,8 +1097,8 @@ fn happiness_suppresses_births_without_directly_increasing_natural_deaths() {
         ..Default::default()
     };
     let mut b = a.clone();
-    neutral.advance_demographics(&mut a, &world.config);
-    unhappy.advance_demographics(&mut b, &world.config);
+    neutral.advance_demographics(&mut a, &world.config, 1);
+    unhappy.advance_demographics(&mut b, &world.config, 1);
     assert_eq!(a.normal_deaths, b.normal_deaths);
     assert!(a.births.iter().all(|births| *births > 0.0));
     assert_eq!(b.births, [0.0; 4]);
@@ -1145,14 +1147,14 @@ fn happiness_buildings_cannot_override_soft_population_equilibrium() {
         food_supply_ratio: 1.0,
         ..Default::default()
     };
-    province.advance_demographics(&mut month, &config);
+    province.advance_demographics(&mut month, &config, 1);
     assert_eq!(province.happiness, [100.0; 4]);
     assert_eq!(month.famine_deaths, [0.0; 4]);
     assert!(month.births.iter().zip(month.normal_deaths).all(|(births, deaths)| *births < deaths));
     // Decline is gradual, never a hard clamp to carrying capacity.
     assert!(province.total_population() > capacity * 7.9);
     for _ in 0..6000 {
-        province.advance_demographics(&mut month, &config);
+        province.advance_demographics(&mut month, &config, 1);
     }
     assert!(province.total_population().is_finite());
     assert!(province.total_population() > capacity * 1.5);
@@ -1228,6 +1230,7 @@ fn happy_free_residents_have_small_background_migration() {
 #[test]
 fn market_levels_increase_only_local_migration_attraction() {
     let mut world = world(3, 1);
+    world.config.npc_demography.opportunity_weight = 0.0;
     world.adjacency[0].push(2);
     world.provinces[0].population = [0.0, 0.0, 100.0, 0.0];
     for target in [1, 2] {
@@ -1238,6 +1241,177 @@ fn market_levels_increase_only_local_migration_attraction() {
     let mut reports = vec![ProvinceMonth::default(); 3];
     world.migrate(&MonthlyInputs::default(), &mut reports);
     close(reports[2].migration[2] / reports[1].migration[2], 1.2);
+}
+
+#[test]
+fn npc_crowding_encourages_departures_before_comfort_capacity() {
+    let mut npc = world(2, 1);
+    npc.config.npc_demography.opportunity_weight = 0.0;
+    npc.provinces[0].owner = None;
+    npc.provinces[0].population = [0.0, 0.0, 380.0, 0.0];
+    npc.provinces[1].population = [0.0; 4];
+    let mut owned = npc.clone();
+    owned.provinces[0].owner = Some(0);
+    let mut npc_reports = vec![ProvinceMonth::default(); 2];
+    let mut owned_reports = npc_reports.clone();
+    npc.migrate(&MonthlyInputs::default(), &mut npc_reports);
+    owned.migrate(&MonthlyInputs::default(), &mut owned_reports);
+    assert!(npc_reports[0].migration[2] < 10.0 * owned_reports[0].migration[2]);
+    assert!(npc.provinces[0].total_population() < npc.provinces[0].capacity(&npc.config));
+    close(npc_reports[0].migration[2], -npc_reports[1].migration[2]);
+}
+
+#[test]
+fn migration_prefers_relief_and_stays_put_without_a_better_destination() {
+    let mut world = world(2, 1);
+    world.config.npc_demography.opportunity_weight = 0.0;
+    world.provinces[0].population = [20.0; 4];
+    world.provinces[0].happiness = [70.0; 4];
+    world.provinces[1].population = [120.0; 4];
+    world.provinces[1].happiness = [30.0; 4];
+    let mut reports = vec![ProvinceMonth::default(); 2];
+    world.migrate(&MonthlyInputs::default(), &mut reports);
+    for class in 0..3 {
+        assert!(reports[0].migration[class] > 0.0);
+        close(reports[0].migration[class], -reports[1].migration[class]);
+    }
+    assert_eq!(reports[0].migration[3], 0.0);
+
+    world.provinces[1] = world.provinces[0].clone();
+    world.migrate(&MonthlyInputs::default(), &mut reports);
+    assert!(reports.iter().all(|report| report.migration == [0.0; 4]));
+}
+
+#[test]
+fn npc_birth_cycles_allow_natural_decline_and_recovery_in_every_class() {
+    let mut world = world(2, 1);
+    world.provinces[1].name = "Mauretania Caesariensis".into();
+    world.provinces[1].overlord = Some(0);
+    let mut low = [f64::MAX; 4];
+    let mut high = [0.0_f64; 4];
+    let mut owned_births = None;
+    for month in 1..=240 {
+        for province in &world.provinces {
+            let mut province = province.clone();
+            let mut report = ProvinceMonth {
+                food_supply_ratio: 1.0,
+                ..Default::default()
+            };
+            province.advance_demographics(&mut report, &world.config, month);
+            if province.owner.is_some() {
+                if let Some(births) = owned_births {
+                    assert_eq!(report.births, births);
+                }
+                owned_births = Some(report.births);
+            } else {
+                for class in 0..4 {
+                    low[class] = low[class].min(report.births[class] - report.normal_deaths[class]);
+                    high[class] =
+                        high[class].max(report.births[class] - report.normal_deaths[class]);
+                }
+                assert_eq!(report.famine_deaths, [0.0; 4]);
+            }
+        }
+    }
+    assert!(low.iter().all(|growth| *growth < 0.0));
+    assert!(high.iter().all(|growth| *growth > 0.0));
+}
+
+#[test]
+fn npc_demography_forecasts_and_save_reload_preserve_the_same_future() {
+    let mut world = world(3, 1);
+    world.provinces[1].name = "Mauretania Caesariensis".into();
+    world.provinces[2].name = "Numidia".into();
+    world.month = 157;
+    let mut legacy = serde_json::to_value(&world).unwrap();
+    legacy["config"].as_object_mut().unwrap().remove("npc_demography");
+    let mut restored: EconomyWorld = serde_json::from_value(legacy).unwrap();
+    for _ in 0..240 {
+        let before = serde_json::to_value(&world).unwrap();
+        let forecast = world.forecast_month(&MonthlyInputs::default());
+        assert_eq!(serde_json::to_value(&world).unwrap(), before);
+        let actual = world.advance_month(&MonthlyInputs::default());
+        let replayed = restored.advance_month(&MonthlyInputs::default());
+        assert_eq!(
+            serde_json::to_value(&forecast).unwrap(),
+            serde_json::to_value(&actual).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&replayed).unwrap()
+        );
+    }
+    assert_eq!(serde_json::to_value(&world).unwrap(), serde_json::to_value(&restored).unwrap());
+}
+
+#[test]
+fn african_npc_populations_keep_shifting_in_a_long_campaign() {
+    let mut ownership = crate::map::ProvinceOwnership::default();
+    ownership.start_game(&[bevy_egui::egui::Color32::RED]);
+    let seeds = ownership.campaign_seeds();
+    let mut campaign = crate::app::campaign::Campaign::default();
+    campaign.start(&ownership, 1);
+    let world = &mut campaign.economy;
+    for (province, seed) in world.provinces.iter_mut().zip(&seeds) {
+        province.owner = None;
+        let total = normalized_capacity_area(seed.area)
+            + if seed.city {
+                220.0
+            } else {
+                0.0
+            };
+        province.population = [0.1, 0.2, 0.4, 0.3].map(|share| share * total);
+    }
+    let tracked: Vec<_> = world
+        .provinces
+        .iter()
+        .enumerate()
+        .filter_map(|(id, province)| {
+            matches!(
+                province.name.as_str(),
+                "Mauretania Caesariensis" | "Mauretania Tingitana" | "Numidia" | "Cyrenaica"
+            )
+            .then_some(id)
+        })
+        .collect();
+    assert_eq!(tracked.len(), 4);
+    let mut lows = vec![f64::MAX; tracked.len()];
+    let mut highs = vec![0.0_f64; tracked.len()];
+    let mut growing = vec![0; tracked.len()];
+    let mut shrinking = vec![0; tracked.len()];
+    let mut departures = vec![0; tracked.len()];
+    for month in 1..=1200 {
+        let report = world.advance_month(&MonthlyInputs::default());
+        for (index, &id) in tracked.iter().enumerate() {
+            let province = &world.provinces[id];
+            assert!(province.population.iter().all(|count| count.is_finite() && *count >= 0.0));
+            assert_eq!(report.province_reports[id].famine_deaths, [0.0; 4]);
+            if month > 600 {
+                let ratio = province.total_population() / province.capacity(&world.config);
+                lows[index] = lows[index].min(ratio);
+                highs[index] = highs[index].max(ratio);
+                growing[index] += usize::from(report.province_reports[id].population_delta > 0.0);
+                shrinking[index] += usize::from(report.province_reports[id].population_delta < 0.0);
+                departures[index] +=
+                    usize::from(report.province_reports[id].migration.iter().sum::<f64>() < 0.0);
+            }
+        }
+    }
+    for (index, &id) in tracked.iter().enumerate() {
+        eprintln!(
+            "NPC {}: occupancy {:.3}..{:.3}, growing {}, shrinking {}, departures {}",
+            world.provinces[id].name,
+            lows[index],
+            highs[index],
+            growing[index],
+            shrinking[index],
+            departures[index]
+        );
+        assert!(lows[index] < 0.95, "{} remains near capacity", world.provinces[id].name);
+        assert!(highs[index] - lows[index] > 0.08, "{} barely changes", world.provinces[id].name);
+        assert!(growing[index] > 60 && shrinking[index] > 60);
+        assert!(departures[index] > 60);
+    }
 }
 
 #[test]
@@ -1283,6 +1457,7 @@ fn class_changes_preserve_population_without_cascading_same_month() {
                 ..Default::default()
             },
             &config,
+            1,
         );
         assert_eq!(p.population, expected);
     }
@@ -1669,6 +1844,37 @@ fn monthly_failure_suspends_then_cancels_without_partial_payment() {
             }
         );
         close(world.players[1].coin, before);
+    }
+}
+
+#[test]
+fn npc_market_shortages_are_separate_from_reserve_purchases_after_deliveries() {
+    let config = TradeConfig::default();
+    let mut market = NpcResourceMarket {
+        production_potential: 40.0,
+        internal_need: 60.0,
+        import_demand: 20.0,
+        ..Default::default()
+    };
+    for (frequency, shortage, reserves) in
+        [(TradeFrequency::Monthly, 20.0, 10.0), (TradeFrequency::OneTime, 60.0, 30.0)]
+    {
+        for imported in [0.0, 3.0, shortage, shortage + reserves, 100.0] {
+            market.imported = imported;
+            let wants = market.remaining_shortage(&config, frequency);
+            let reserve_demand = market.reserve_demand(&config, frequency);
+            close(wants, (shortage - imported).max(0.0));
+            close(reserve_demand, (shortage + reserves - imported).max(0.0) - wants);
+            close(wants + reserve_demand, market.available_imports(&config, frequency));
+        }
+        market.production_potential = 80.0;
+        market.imported = 0.0;
+        close(market.remaining_shortage(&config, frequency), 0.0);
+        close(
+            market.reserve_demand(&config, frequency),
+            market.available_imports(&config, frequency),
+        );
+        market.production_potential = 40.0;
     }
 }
 
@@ -2105,7 +2311,7 @@ fn npc_trade_reserves_supply_and_one_time_deals_never_generate_control() {
 }
 
 #[test]
-fn recurring_trade_reduces_both_sides_equally_and_counts_actual_deliveries() {
+fn accepted_npc_routes_deliver_in_full_despite_supply_changes_and_survive_saving() {
     let mut world = world(2, 1);
     world.refresh_npc_markets(&MonthlyInputs::default());
     let capacity = world.provinces[1].market.resources[2].export_capacity;
@@ -2125,23 +2331,162 @@ fn recurring_trade_reduces_both_sides_equally_and_counts_actual_deliveries() {
         TradeFrequency::Monthly,
     );
     world.propose_trade(proposal.clone(), &MonthlyInputs::default()).unwrap();
-    // A later supply reduction is tolerated; a new oversized deal is never accepted.
-    world.provinces[1].market.resources[2].export_capacity *= 0.85;
-    let quote = world.quote_trade(&proposal, &MonthlyInputs::default()).unwrap();
-    close(quote.fulfillment, 0.85);
-    let before = world.players[0].coin;
-    let effects = world.advance_trade(&MonthlyInputs::default(), &mut Vec::new());
-    close(before - world.players[0].coin, 190.0 * 0.85);
-    close(world.provinces[1].market.resources[2].exported, capacity * 0.85);
-    close(world.trades[0].last_fulfillment, 0.85);
-    assert_eq!(world.trades[0].last_executed_month, Some(1));
-    assert!(world.trades[0].last_delivered_value > 0.0);
+    world.players[0].coin = 10_000.0;
+    // An old save's suspended route resumes under the same accepted terms.
+    world.trades[0].status = TradeStatus::Suspended;
+    world.trades[0].failure_months = world.config.trade.failure_limit - 1;
+    world.trades[0].last_failure = Some("NPC supply changed".into());
+    for (month, share) in [0.85, 0.0, 0.0, 0.0, 0.0].into_iter().enumerate() {
+        world.provinces[1].market.resources[2].export_capacity = capacity * share;
+        world.provinces[1].market.resources[2].exported = 0.0;
+        assert!(world.propose_trade(proposal.clone(), &MonthlyInputs::default()).is_err());
+        world = serde_json::from_str(&serde_json::to_string(&world).unwrap()).unwrap();
+        let before = world.players[0].balances();
+        let mut events = Vec::new();
+        let effects = world.advance_trade(&MonthlyInputs::default(), &mut events);
+        close(before[3] - world.players[0].coin, 190.0);
+        close(world.players[0].resources[2] - before[2], capacity);
+        close(world.provinces[1].market.resources[2].exported, capacity);
+        close(world.trades[0].last_fulfillment, 1.0);
+        assert_eq!(world.trades[0].last_executed_month, Some(month as u32 + 1));
+        assert_eq!(world.trades[0].status, TradeStatus::Active);
+        assert_eq!(world.trades[0].failure_months, 0);
+        assert!(world.trades[0].last_failure.is_none());
+        assert!(world.trades[0].last_delivered_value > 0.0);
+        assert_eq!(effects.len(), 1);
+        assert!(effects[0].control_gain > 0.0 && effects[0].control_gain <= 1.0);
+        assert!(events.is_empty());
+        world.month += 1;
+    }
+}
+
+#[test]
+fn accepted_npc_routes_keep_their_terms_when_demand_prices_or_trade_modifiers_change() {
+    let mut world = world(2, 1);
+    let inputs = MonthlyInputs::default();
+    world.players[0].resources[1] = 100.0;
+    let npc = &mut world.provinces[1];
+    npc.relation_by_player[0] = 100.0;
+    npc.trade_ratio_by_player[0] = 0.75;
+    npc.market.resources[1].import_demand = 100.0;
+    npc.market.resources[1].local_unit_value = 2.5;
+    npc.market.trade_budget = 100.0;
+    npc.market.coin_treasury = 1000.0;
+    let proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            resources: [0.0, 10.0, 0.0],
+            ..Default::default()
+        },
+        TradeBundle {
+            coin: 20.0,
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    world.propose_trade(proposal.clone(), &inputs).unwrap();
+    let npc = &mut world.provinces[1];
+    npc.relation_by_player[0] = world.config.trade.minimum_relation;
+    npc.trade_ratio_by_player[0] = 1.0;
+    npc.market.resources[1].import_demand = 0.0;
+    npc.market.resources[1].internal_need = 0.0;
+    npc.market.resources[1].imported = 100.0;
+    npc.market.resources[1].local_unit_value = 0.01;
+    assert!(world.quote_trade(&proposal, &inputs).unwrap_err().contains("offered value"));
+    let before = world.players[0].balances();
+    let mut events = Vec::new();
+    let effects = world.advance_trade(&inputs, &mut events);
+    close(before[1] - world.players[0].resources[1], 10.0);
+    close(world.players[0].coin - before[3], 20.0);
+    close(world.trades[0].last_fulfillment, 1.0);
+    assert_eq!(world.trades[0].status, TradeStatus::Active);
     assert_eq!(effects.len(), 1);
-    assert!(effects[0].control_gain > 0.0 && effects[0].control_gain <= 1.0);
-    world.provinces[1].market.resources[2].export_capacity = 0.0;
-    assert!(world.advance_trade(&MonthlyInputs::default(), &mut Vec::new()).is_empty());
-    close(world.trades[0].last_fulfillment, 0.0);
-    close(world.trades[0].last_delivered_value, 0.0);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn accepted_npc_payments_continue_with_an_empty_treasury_and_budget() {
+    let mut world = world(2, 1);
+    let inputs = MonthlyInputs::default();
+    world.config.trade.allow_influence = true;
+    world.players[0].coin = 10_000.0;
+    world.provinces[1].market.trade_budget = 100.0;
+    world.provinces[1].market.influence_treasury = 10.0;
+    let proposal = TradeAgreement::new(
+        TradeParty::Player(0),
+        TradeParty::Npc(1),
+        TradeBundle {
+            coin: 100.0,
+            ..Default::default()
+        },
+        TradeBundle {
+            coin: 10.0,
+            influence: 1.0,
+            ..Default::default()
+        },
+        TradeFrequency::Monthly,
+    );
+    world.propose_trade(proposal.clone(), &inputs).unwrap();
+    for month in 1..=5 {
+        let market = &mut world.provinces[1].market;
+        market.coin_treasury = 0.0;
+        market.trade_budget = 0.0;
+        market.coin_spent = 0.0;
+        market.influence_treasury = 0.0;
+        assert!(world.propose_trade(proposal.clone(), &inputs).is_err());
+        let before = world.players[0].balances();
+        let mut events = Vec::new();
+        assert_eq!(world.advance_trade(&inputs, &mut events).len(), 1);
+        close(world.players[0].coin - before[3], -90.0);
+        close(world.players[0].influence - before[4], 1.0);
+        close(world.provinces[1].market.coin_treasury, 100.0);
+        close(world.provinces[1].market.coin_spent, 10.0);
+        close(world.provinces[1].market.influence_treasury, 0.0);
+        close(world.trades[0].last_fulfillment, 1.0);
+        assert_eq!(world.trades[0].last_executed_month, Some(month));
+        assert_eq!(world.trades[0].status, TradeStatus::Active);
+        assert!(events.is_empty());
+        world.month += 1;
+    }
+}
+
+#[test]
+fn accepted_npc_routes_still_require_player_payment_and_nonhostile_relations() {
+    for own_vassal in [false, true] {
+        let mut world = world(2, 1);
+        let id = npc_route(&mut world);
+        let inputs = MonthlyInputs::default();
+        if own_vassal {
+            world.provinces[1].overlord = Some(0);
+        }
+        world.players[0].coin = 0.0;
+        let before = world.players[0].balances();
+        let treasury = world.provinces[1].market.coin_treasury;
+        let mut events = Vec::new();
+        for _ in 0..=world.config.trade.failure_limit {
+            assert!(world.advance_trade(&inputs, &mut events).is_empty());
+            assert_eq!(world.players[0].balances(), before);
+            close(world.provinces[1].market.coin_treasury, treasury);
+            assert_eq!(world.trades[0].status, TradeStatus::Suspended);
+            assert_eq!(world.trades[0].failure_months, 0);
+            assert!(world.trades[0].last_failure.as_deref().unwrap().contains("Player 1"));
+        }
+        world.players[0].coin = 10_000.0;
+        assert_eq!(world.advance_trade(&inputs, &mut Vec::new()).len(), 1);
+        assert_eq!(world.trades[0].status, TradeStatus::Active);
+        world.provinces[1].relation_by_player[0] = world.config.trade.minimum_relation - 1.0;
+        let before = world.players[0].balances();
+        events.clear();
+        for _ in 0..world.config.trade.failure_limit {
+            assert!(world.advance_trade(&inputs, &mut events).is_empty());
+            assert_eq!(world.players[0].balances(), before);
+        }
+        assert_eq!(world.trades[0].status, TradeStatus::Cancelled);
+        assert!(events.contains(&EconomyEvent::TradeCancelled {
+            agreement: id,
+        }));
+    }
 }
 
 #[test]

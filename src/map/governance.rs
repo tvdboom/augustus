@@ -1,4 +1,6 @@
-//! Empire-wide edicts for the local monthly economy.
+//! Empire-wide economic edicts and treatment of vassal governments.
+
+use crate::game::politics::diplomacy::{Tribute, VassalAutonomy};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EdictLevel {
@@ -14,6 +16,10 @@ pub(crate) struct Governance {
     pub slave_labor: EdictLevel,
     pub noble_wages: EdictLevel,
     pub army_wages: EdictLevel,
+    #[serde(default)]
+    pub vassal_tribute: Tribute,
+    #[serde(default)]
+    pub vassal_autonomy: VassalAutonomy,
 }
 
 impl Governance {

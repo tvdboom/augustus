@@ -2,8 +2,13 @@
 
 use super::campaign_widgets::{icon as tab_icon, Icon};
 use super::policy_widgets::{self, section};
+use crate::game::politics::diplomacy::{Tribute, VassalAutonomy};
 use crate::map::{EdictLevel, Governance};
 use bevy_egui::egui;
+
+#[cfg(test)]
+#[path = "../../tests/unit/vassal_policies_ui.rs"]
+mod tests;
 
 const HEADER_HEIGHT: f32 = 61.0;
 
@@ -531,9 +536,79 @@ fn show_impl(
                             [badge(SESTERTIUS, "+25%"), badge(MORALE, "+1"), None, None],
                         ],
                     );
+                    section(list, scale, "POLITICS");
+                    changed |= vassal_policies(list, governance, header_color, scale);
                 });
         });
     (changed, close_clicked, target)
+}
+
+fn vassal_policies(
+    ui: &mut egui::Ui,
+    governance: &mut Governance,
+    accent: egui::Color32,
+    scale: f32,
+) -> bool {
+    use super::campaign_policies::card;
+    use super::policy_widgets::{compact_decimal, signed_decimal};
+
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("campaign-owner-color"), accent);
+    });
+    let tribute = governance.vassal_tribute;
+    let descriptions: Vec<_> = [Tribute::Low, Tribute::Normal, Tribute::High]
+        .into_iter()
+        .map(|policy| {
+            format!(
+                "Tribute: {}% of available monthly vassal coin income; Vassal Relation: {} per month",
+                compact_decimal(policy.income_fraction() * 100.0),
+                signed_decimal(policy.relation_delta()),
+            )
+        })
+        .collect();
+    let mut changed = card(
+        ui,
+        "Vassal Tribute",
+        &mut governance.vassal_tribute,
+        &[(Tribute::Low, "Low"), (Tribute::Normal, "Normal"), (Tribute::High, "High")],
+        &[
+            (Icon::Coin, format!("{}%", compact_decimal(tribute.income_fraction() * 100.0))),
+            (Icon::Relation, format!("{}/mo", signed_decimal(tribute.relation_delta()))),
+        ],
+        &descriptions,
+        scale,
+    );
+    let autonomy = governance.vassal_autonomy;
+    let descriptions: Vec<_> = [VassalAutonomy::Low, VassalAutonomy::Normal, VassalAutonomy::High]
+        .into_iter()
+        .map(|policy| {
+            format!(
+                "Vassal Influence income: {}%; Vassal Relation: {} per month",
+                signed_decimal((policy.influence_multiplier() - 1.0) * 100.0),
+                signed_decimal(policy.relation_delta()),
+            )
+        })
+        .collect();
+    changed |= card(
+        ui,
+        "Vassal Autonomy",
+        &mut governance.vassal_autonomy,
+        &[
+            (VassalAutonomy::Low, "Low"),
+            (VassalAutonomy::Normal, "Normal"),
+            (VassalAutonomy::High, "High"),
+        ],
+        &[
+            (
+                Icon::Influence,
+                format!("{}%", signed_decimal((autonomy.influence_multiplier() - 1.0) * 100.0)),
+            ),
+            (Icon::Relation, format!("{}/mo", signed_decimal(autonomy.relation_delta()))),
+        ],
+        &descriptions,
+        scale,
+    );
+    changed
 }
 
 #[allow(clippy::too_many_arguments)]

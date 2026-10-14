@@ -104,6 +104,7 @@ pub(in crate::app) enum Icon {
     Food,
     Metal,
     Stone,
+    Resources,
     Coin,
     Influence,
     Population,
@@ -196,8 +197,9 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         | Icon::Vassalize
         | Icon::Integrate
         | Icon::SpyFlee
-        | Icon::Maximum => {
-            unreachable!("vector diplomacy symbols are painted directly")
+        | Icon::Maximum
+        | Icon::Resources => {
+            unreachable!("vector and composite symbols are painted directly")
         },
         Icon::Food => prepared!("food"),
         Icon::Metal => prepared!("metal"),
@@ -706,6 +708,18 @@ pub(in crate::app) fn work_queue(
 
 /// Paint within an already allocated badge or ledger cell without advancing layout.
 pub(in crate::app) fn paint_icon(ui: &egui::Ui, kind: Icon, rect: egui::Rect) {
+    if kind == Icon::Resources {
+        for (resource, offset) in [
+            (Icon::Stone, egui::vec2(0.0, 0.38)),
+            (Icon::Metal, egui::vec2(0.38, 0.38)),
+            (Icon::Food, egui::vec2(0.19, 0.0)),
+        ] {
+            let piece =
+                egui::Rect::from_min_size(rect.min + offset * rect.size(), rect.size() * 0.62);
+            paint_raster_icon(ui, resource, piece, egui::Color32::WHITE);
+        }
+        return;
+    }
     if matches!(
         kind,
         Icon::PoliticalDistance | Icon::Vassalize | Icon::Integrate | Icon::SpyFlee | Icon::Maximum
@@ -834,6 +848,7 @@ pub(in crate::app) enum ProvinceLandscape {
     Army,
     Diplomacy,
     Trade,
+    OpenMarket,
     Notifications,
     Scandals,
     Policies,
@@ -868,6 +883,10 @@ pub(in crate::app) fn prepare_portrait(
         ProvinceLandscape::Trade => {
             ("trade", include_bytes!("../../assets/images/cities/trade-panel-banner.png"))
         },
+        ProvinceLandscape::OpenMarket => (
+            "open-market",
+            include_bytes!("../../assets/images/cities/open-market-panel-banner.png"),
+        ),
         ProvinceLandscape::Notifications => (
             "notifications",
             include_bytes!("../../assets/images/cities/notifications-panel-banner.png"),
@@ -1154,15 +1173,7 @@ pub(super) fn paint_directory_row(
     row: usize,
     scale: f32,
 ) {
-    let fill = if response.is_pointer_button_down_on() || response.clicked() {
-        egui::Color32::from_rgb(199, 163, 111)
-    } else if response.hovered() || response.has_focus() {
-        egui::Color32::from_rgb(231, 213, 181)
-    } else if row.is_multiple_of(2) {
-        province_panel::TABLE_STRIPE
-    } else {
-        province_panel::PAPER
-    };
+    let fill = directory_row_fill(response, row);
     ui.painter().rect_filled(rect, 3.0 * scale, fill);
     ui.painter().rect_stroke(
         rect,
@@ -1170,6 +1181,18 @@ pub(super) fn paint_directory_row(
         egui::Stroke::new(scale, province_panel::RULE),
         egui::StrokeKind::Inside,
     );
+}
+
+pub(super) fn directory_row_fill(response: &egui::Response, row: usize) -> egui::Color32 {
+    if response.is_pointer_button_down_on() || response.clicked() {
+        egui::Color32::from_rgb(199, 163, 111)
+    } else if response.hovered() || response.has_focus() {
+        egui::Color32::from_rgb(231, 213, 181)
+    } else if row.is_multiple_of(2) {
+        province_panel::TABLE_STRIPE
+    } else {
+        province_panel::PAPER
+    }
 }
 
 /// Keep province names at the directory body size and truncate long names.

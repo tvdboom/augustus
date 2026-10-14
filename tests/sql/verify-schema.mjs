@@ -15,6 +15,11 @@ const multi=await readFile(new URL('target/sql-verification/multi.json',root),'u
 const interactions=JSON.parse(await readFile(new URL('target/sql-verification/interactions.json',root),'utf8'));
 const battle=JSON.parse(await readFile(new URL('target/sql-verification/battle.json',root),'utf8'));
 try {
+  for (const name of ['single', 'multi']) {
+    const replay=await readFile(new URL(`target/sql-verification/${name}-monthly-replay.json`,root),'utf8');
+    const {bytes}= (await db.query('select octet_length($1::jsonb::text)::int bytes',[replay])).rows[0];
+    assert(bytes<=262144,`${name} monthly replay exceeds the stored SQL byte budget: ${bytes}`);
+  }
   await db.exec(`
     create role anon; create role authenticated; create role service_role bypassrls;
     create schema auth; create table auth.users(id uuid primary key);

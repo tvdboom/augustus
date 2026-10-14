@@ -747,6 +747,40 @@ fn supply_restores_manpower_by_rank_and_shortages_reduce_morale() {
 }
 
 #[test]
+fn every_initial_npc_roster_has_three_times_its_previous_soldiers() {
+    for (name, cohorts) in [
+        ("Rome", 450),
+        ("Achaia", 36),
+        ("Asia", 36),
+        ("Africa Proconsularis", 36),
+        ("Aegyptus", 36),
+        ("Syria", 36),
+        ("Britannia", 27),
+        ("Belgica", 27),
+        ("Arabia", 27),
+        ("Numidia", 27),
+        ("Mauretania Caesariensis", 27),
+        ("Mauretania Tingitana", 27),
+        ("Armenia Mesopotamia", 18),
+        ("Dacia", 18),
+        ("Creta", 18),
+        ("Latium", 18),
+    ] {
+        let mut world = MilitaryWorld::new(1);
+        world.seed_local_defenders(0, name).unwrap();
+        assert_eq!(world.all_units().count(), cohorts, "{name}");
+        assert_eq!(
+            world.all_units().map(Unit::people).sum::<u64>(),
+            cohorts as u64 * 1_000,
+            "{name}"
+        );
+        assert!(world
+            .all_units()
+            .all(|unit| unit.owner == ForceOwner::Local(0) && unit.manpower_ratio() == 1.));
+    }
+}
+
+#[test]
 fn recruitment_ownership_change_cancels_and_npc_defenders_do_not_regenerate() {
     let mut world = MilitaryWorld::new(1);
     let mut pop = [0., 10., 20., 0.];
@@ -757,7 +791,7 @@ fn recruitment_ownership_change_cancels_and_npc_defenders_do_not_regenerate() {
     assert_eq!(pop[2], 10.);
     assert_eq!(metal, 88.);
     world.seed_local_defenders(0, "Achaia").unwrap();
-    assert_eq!(world.all_units().count(), 12);
+    assert_eq!(world.all_units().count(), 36);
     world.provinces[0].forces.clear();
     for _ in 0..12 {
         world.advance_recruitment(|_| None);
@@ -899,6 +933,109 @@ fn reserves_replace_routed_troops_and_never_return_them() {
     refill_formation(&mut formation, &units, &plans, &BTreeSet::from([lost]), &config);
     assert!(!formation.front.contains(&Some(lost)));
     assert!(formation.front.iter().all(Option::is_some));
+}
+
+#[test]
+fn support_advances_into_empty_front_slots_without_shifting_survivors() {
+    let owner = ForceOwner::Player(0);
+    let config = MilitaryConfig::default();
+    let mut units = vec![
+        unit(0, owner, UnitType::HeavyInfantry),
+        unit(1, owner, UnitType::HeavyInfantry),
+        unit(2, owner, UnitType::HeavyInfantry),
+        unit(3, owner, UnitType::Archers),
+        unit(4, owner, UnitType::Ballista),
+        unit(5, owner, UnitType::Catapult),
+    ];
+    units[1].current_manpower = 0.;
+    let routed = BTreeSet::from([2]);
+    let plans = BTreeMap::from([(owner, BattlePlan::default())]);
+    let mut formation = Formation {
+        front: vec![Some(0), Some(1), Some(2), None],
+        support: vec![Some(3), Some(4), Some(5), None],
+        reserves: vec![],
+        flank_size: 1,
+    };
+
+    refill_formation(&mut formation, &units, &plans, &routed, &config);
+
+    assert_eq!(formation.front, vec![Some(0), Some(4), Some(5), None]);
+    assert_eq!(formation.support, vec![Some(3), None, None, None]);
+    assert!(formation.reserves.is_empty());
+    let deployed: Vec<_> =
+        formation.front.iter().chain(&formation.support).flatten().copied().collect();
+    assert_eq!(deployed.len(), 4);
+    assert_eq!(deployed.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([0, 3, 4, 5]));
+}
+
+#[test]
+fn casualties_refill_front_slots_before_the_round_returns() {
+    let config = MilitaryConfig {
+        random_range: [1., 1.],
+        ..Default::default()
+    };
+    for destroyed in [false, true] {
+        for replacement_type in [UnitType::LightInfantry, UnitType::Archers] {
+            let make_side = |owner: ForceOwner, base: u64, lost_slot: usize| {
+                let mut units: Vec<_> =
+                    (0..4).map(|id| unit(base + id, owner, UnitType::HeavyInfantry)).collect();
+                units.push(unit(base + 4, owner, replacement_type));
+                if destroyed {
+                    units[lost_slot].current_manpower = 0.001;
+                } else {
+                    units[lost_slot].morale = 20.001;
+                }
+                let mut side = side(units, 4, &config);
+                side.formation.front = (0..4).map(|id| Some(base + id)).collect();
+                side.formation.support.fill(None);
+                side.formation.reserves.clear();
+                if replacement_type.is_support() {
+                    side.formation.support[lost_slot] = Some(base + 4);
+                } else {
+                    side.formation.reserves.push(base + 4);
+                }
+                side
+            };
+            let mut battle = Battle::new(
+                1,
+                0,
+                None,
+                None,
+                MilitaryTerrain::Plains,
+                0,
+                make_side(ForceOwner::Player(0), 0, 1),
+                make_side(ForceOwner::Player(1), 10, 2),
+                177,
+            );
+
+            battle.advance_round(&config);
+
+            assert_eq!(battle.round, 1);
+            assert!(battle.result.is_none());
+            for (side, base, lost_slot) in [(&battle.attackers, 0, 1), (&battle.defenders, 10, 2)] {
+                let lost = base + lost_slot as u64;
+                if destroyed {
+                    assert!(!side.units.iter().any(|unit| unit.id == lost));
+                } else {
+                    assert!(side.routed.contains(&lost));
+                }
+                assert_eq!(side.formation.front[lost_slot], Some(base + 4));
+                assert!(side.formation.support[lost_slot].is_none());
+                assert!(side.formation.reserves.is_empty());
+                for slot in (0..4).filter(|&slot| slot != lost_slot) {
+                    assert_eq!(side.formation.front[slot], Some(base + slot as u64));
+                }
+                let replacement = side.units.iter().find(|unit| unit.id == base + 4).unwrap();
+                assert_eq!(replacement.people(), 1_000, "Advancing cannot add same-round damage");
+                assert_eq!(replacement.morale, 50.);
+                assert_eq!(
+                    side.participated.contains(&replacement.id),
+                    replacement_type.is_support(),
+                    "Reserves must fight a later round before earning participation"
+                );
+            }
+        }
+    }
 }
 
 #[test]

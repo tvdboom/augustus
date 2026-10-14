@@ -14,6 +14,50 @@ fn atlas_campaign() -> Campaign {
 }
 
 #[test]
+fn vassalization_notice_waits_until_the_province_can_be_vassalized() {
+    use super::super::campaign_notifications::NoticeKind;
+
+    let mut campaign = atlas_campaign();
+    let province = campaign
+        .politics
+        .iter()
+        .position(|politics| matches!(politics.state, PoliticalState::Independent { .. }))
+        .unwrap();
+    campaign.politics[province].state = PoliticalState::Independent {
+        local: 51.0,
+        shares: vec![49.0, 0.0],
+    };
+    campaign.initialize_notification_snapshot();
+    for control in [50.0, 52.0, 53.0] {
+        let before = campaign.notification_snapshot();
+        campaign.politics[province].state = PoliticalState::Independent {
+            local: 100.0 - control,
+            shares: vec![control, 0.0],
+        };
+        campaign.record_monthly_notifications(before);
+        let notices: Vec<_> = campaign
+            .notifications
+            .drain_for(0)
+            .into_iter()
+            .filter(|notice| notice.kind == NoticeKind::ControlFifty)
+            .collect();
+        if control == 52.0 {
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].title, "Vassalization available");
+            assert_eq!(
+                notices[0].body,
+                format!("You can now vassalize {}.", campaign.economy.provinces[province].name)
+            );
+            assert_eq!(notices[0].province, Some(province));
+            assert!(campaign.politics[province].clone().vassalize(0).is_ok());
+        } else {
+            assert!(notices.is_empty());
+        }
+        campaign.economy.month += 1;
+    }
+}
+
+#[test]
 fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
     let mut starts = std::collections::BTreeSet::new();
     for player_count in 1..=4 {
@@ -34,6 +78,10 @@ fn starting_provinces_feed_themselves_and_support_an_idle_opening_year() {
                     .position(|p| p.owner == Some(player))
                     .unwrap();
                 let p = &campaign.economy.provinces[province];
+                assert_eq!(p.happiness, [50.0; 4], "{} must start with neutral happiness", p.name);
+                assert_eq!(p.happiness_modifiers, [0.0; 4]);
+                assert_eq!(p.temporary_happiness, [0.0; 4]);
+                assert_eq!(campaign.military.provinces[province].draft_penalties, [0.0; 4]);
                 let production = p.production(&campaign.economy.config).1;
                 let food_need = p.food_request(&campaign.economy.config)
                     + campaign.military.food_demand(ForceOwner::Player(player));
@@ -309,13 +357,13 @@ fn surviving_spy_control_resolves_in_the_same_campaign_month() {
 }
 
 #[test]
-fn rome_starts_protected_with_150_supplied_cohorts_and_rejects_provincial_actions() {
+fn rome_starts_protected_with_450_supplied_cohorts_and_rejects_provincial_actions() {
     let mut c = atlas_campaign();
     let rome = c.rome_location().unwrap();
     assert_eq!(c.politics[rome].state, PoliticalState::Rome);
     assert_eq!(c.economy.provinces[rome].owner, None);
     assert_eq!(c.access_snapshot()[0][rome], MilitaryAccess::Blocked);
-    assert_eq!(c.military.all_units().filter(|u| u.owner == ForceOwner::Local(rome)).count(), 150);
+    assert_eq!(c.military.all_units().filter(|u| u.owner == ForceOwner::Local(rome)).count(), 450);
     assert_eq!(c.inputs().npc_army_food[rome], 0.0);
     let influence = c.actors[0].influence;
     assert!(c.espionage.deploy(0, rome, &mut c.actors, &c.politics, &c.espionage_config).is_err());
@@ -395,7 +443,7 @@ fn unguarded_rome_requires_hostility_and_presence_then_wins_immediately() {
 }
 
 #[test]
-fn latium_is_a_normal_rural_province_with_trade_and_six_local_cohorts() {
+fn latium_is_a_normal_rural_province_with_trade_and_eighteen_local_cohorts() {
     let mut c = atlas_campaign();
     let latium = c.economy.provinces.iter().position(|p| p.name == "Latium").unwrap();
     let etruria = c.economy.provinces.iter().position(|p| p.name == "Etruria").unwrap();
@@ -406,7 +454,7 @@ fn latium_is_a_normal_rural_province_with_trade_and_six_local_cohorts() {
     let defenders = &c.military.provinces[latium].forces[&ForceOwner::Local(latium)];
     assert_eq!(
         defenders.iter().map(|u| u.unit_type).collect::<Vec<_>>(),
-        [UnitType::LightInfantry, UnitType::Archers].repeat(3)
+        [UnitType::LightInfantry, UnitType::Archers].repeat(9)
     );
     assert!(c.inputs().npc_army_food[latium] > 0.0);
     assert_eq!(c.economy.provinces[rome].population, [0.0; 4]);
@@ -482,7 +530,7 @@ fn rome_can_be_attacked_only_from_its_three_approaches_and_fights_on_arrival() {
         }
         let battle = c.military.battles.iter().find(|b| b.province == rome).unwrap();
         assert_eq!(battle.attackers.units[0].id, unit);
-        assert_eq!(battle.defenders.units.len(), 150);
+        assert_eq!(battle.defenders.units.len(), 450);
         assert!(battle.defenders.units.iter().all(|u| u.owner == ForceOwner::Local(rome)));
         assert_eq!(c.senate.winner, None);
     }
@@ -601,6 +649,127 @@ fn nationwide_edicts_follow_ownership_and_leave_local_focus_and_migration_intact
     campaign.reconcile_provinces();
     assert_eq!(campaign.economy.provinces[owned].policies.food, FoodPolicy::Normal);
     assert_eq!(campaign.economy.provinces[owned].policies.slave_labor, SlaveLabor::Normal);
+}
+
+#[test]
+fn vassal_edicts_follow_the_overlord_and_cover_future_vassals() {
+    let mut campaign = atlas_campaign();
+    let npcs: Vec<_> = campaign
+        .politics
+        .iter()
+        .enumerate()
+        .filter(|(_, province)| matches!(province.state, PoliticalState::Independent { .. }))
+        .take(3)
+        .map(|(id, _)| id)
+        .collect();
+    campaign.politics[npcs[0]].state = PoliticalState::Vassal {
+        overlord: 0,
+        control: 60.0,
+        tribute: Tribute::Normal,
+    };
+    campaign.politics[npcs[1]].state = PoliticalState::Vassal {
+        overlord: 1,
+        control: 60.0,
+        tribute: Tribute::Normal,
+    };
+    let relations_before = campaign.politics[npcs[0]].relations.clone();
+    campaign.set_governance(
+        0,
+        Governance {
+            vassal_tribute: Tribute::Low,
+            vassal_autonomy: VassalAutonomy::High,
+            ..Default::default()
+        },
+    );
+    assert_eq!(campaign.politics[npcs[0]].relations, relations_before);
+    assert_eq!(campaign.politics[npcs[0]].tribute_due(100.0), Some((0, 10.0)));
+    assert_eq!(
+        campaign.politics[npcs[0]].vassal_income(&campaign.diplomacy_config),
+        Some((0, 2.25))
+    );
+    assert_eq!(campaign.politics[npcs[1]].tribute_due(100.0), Some((1, 20.0)));
+    assert_eq!(campaign.politics[npcs[1]].vassal_autonomy, VassalAutonomy::Normal);
+    assert_eq!(campaign.politics[npcs[2]].tribute_due(100.0), None);
+
+    campaign.politics[npcs[2]].gain_control_now(0, 80.0).unwrap();
+    campaign.politics[npcs[2]].vassalize(0).unwrap();
+    campaign.reconcile_provinces();
+    assert_eq!(campaign.politics[npcs[2]].tribute_due(100.0), Some((0, 10.0)));
+    assert_eq!(campaign.politics[npcs[2]].vassal_autonomy, VassalAutonomy::High);
+    campaign.politics[npcs[0]].state = PoliticalState::Vassal {
+        overlord: 1,
+        control: 60.0,
+        tribute: Tribute::Low,
+    };
+    campaign.reconcile_provinces();
+    assert_eq!(campaign.politics[npcs[0]].tribute_due(100.0), Some((1, 20.0)));
+    assert_eq!(campaign.politics[npcs[0]].vassal_autonomy, VassalAutonomy::Normal);
+}
+
+#[test]
+fn monthly_campaign_pays_vassal_rates_and_debits_the_local_treasury() {
+    let mut baseline = atlas_campaign();
+    let id = baseline
+        .politics
+        .iter()
+        .position(|province| matches!(province.state, PoliticalState::Independent { .. }))
+        .unwrap();
+    baseline.politics[id].state = PoliticalState::Vassal {
+        overlord: 0,
+        control: 60.0,
+        tribute: Tribute::Normal,
+    };
+    baseline.politics[id].relations[0] = 70.0;
+    baseline.economy.provinces[id].market.coin_treasury = 10000.0;
+    baseline.reconcile_provinces();
+    let mut gentle = baseline.clone();
+    gentle.set_governance(
+        0,
+        Governance {
+            vassal_tribute: Tribute::Low,
+            vassal_autonomy: VassalAutonomy::High,
+            ..Default::default()
+        },
+    );
+    let mut harsh = baseline.clone();
+    harsh.set_governance(
+        0,
+        Governance {
+            vassal_tribute: Tribute::High,
+            vassal_autonomy: VassalAutonomy::Low,
+            ..Default::default()
+        },
+    );
+    baseline.advance_month();
+    gentle.advance_month();
+    harsh.advance_month();
+    let income = baseline.economy.provinces[id].market.monthly_coin_income;
+    assert!(income > 0.0);
+    for (campaign, coin_delta, influence_delta, relation) in
+        [(&gentle, -income * 0.1, -0.75, 71.0), (&harsh, income * 0.1, 0.75, 68.5)]
+    {
+        assert!(
+            (campaign.economy.players[0].coin - baseline.economy.players[0].coin - coin_delta)
+                .abs()
+                < 1e-8
+        );
+        assert!(
+            (campaign.economy.provinces[id].market.coin_treasury
+                - baseline.economy.provinces[id].market.coin_treasury
+                + coin_delta)
+                .abs()
+                < 1e-8
+        );
+        assert!(
+            (campaign.economy.players[0].influence
+                - baseline.economy.players[0].influence
+                - influence_delta)
+                .abs()
+                < 1e-8
+        );
+        assert_eq!(campaign.politics[id].relation(0), relation);
+        assert_eq!(campaign.economy.provinces[id].market.monthly_coin_income, income);
+    }
 }
 
 #[test]

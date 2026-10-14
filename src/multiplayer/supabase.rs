@@ -6,8 +6,16 @@ use crate::platform::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
+
+/// Sanitized failure for interrupted requests or their response bodies.
+pub(crate) const CONNECTION_ERROR: &str = "The cloud connection was interrupted.";
+const SERVICE_ERROR: &str = "The cloud service is temporarily unavailable.";
+
+/// Failures that may have happened after an RPC committed and need an identical retry.
+pub(crate) fn retryable(error: &str) -> bool {
+    let error = error.strip_suffix(" Retrying automatically.").unwrap_or(error);
+    matches!(error, CONNECTION_ERROR | SERVICE_ERROR)
+}
 
 /// Transport response including a potentially refreshed session.
 pub struct Response {
@@ -23,7 +31,7 @@ pub struct SupabaseLobbyAdapter {
     pub config: SupabaseConfig,
     client: reqwest::Client,
     #[cfg(not(target_arch = "wasm32"))]
-    runtime: Arc<tokio::runtime::Runtime>,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl SupabaseLobbyAdapter {
@@ -32,17 +40,21 @@ impl SupabaseLobbyAdapter {
         let config = SupabaseConfig::load().map_err(|e| e.to_string())?;
         let builder = reqwest::Client::builder();
         #[cfg(not(target_arch = "wasm32"))]
-        let builder = builder.timeout(std::time::Duration::from_secs(15)).pool_max_idle_per_host(1);
+        let builder = builder
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .pool_max_idle_per_host(1);
         let client = builder
             .build()
             .map_err(|_| "Could not initialize the online connection.".to_string())?;
         #[cfg(not(target_arch = "wasm32"))]
-        let runtime = Arc::new(
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|_| "Could not initialize online tasks.".to_string())?,
-        );
+        // Keep pooled connection tasks and timers alive between RPCs as well as during them.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("augustus-online")
+            .enable_all()
+            .build()
+            .map_err(|_| "Could not initialize online tasks.".to_string())?;
         Ok(Self {
             config,
             client,
@@ -91,8 +103,7 @@ impl SupabaseLobbyAdapter {
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let runtime = self.runtime.clone();
-            std::thread::spawn(move || runtime.block_on(future));
+            self.runtime.spawn(future);
         }
         #[cfg(target_arch = "wasm32")]
         wasm_bindgen_futures::spawn_local(future);
@@ -155,14 +166,14 @@ async fn post(
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| "Connection failed. Check your internet and retry.".to_string())?;
+    let response = request.send().await.map_err(|_| CONNECTION_ERROR.to_string())?;
     let status = response.status();
-    let value: Value = response
-        .json()
-        .await
+    // Gateway failures often contain HTML rather than JSON. They are still retryable.
+    if matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504) {
+        return Err(SERVICE_ERROR.into());
+    }
+    let body = response.bytes().await.map_err(|_| CONNECTION_ERROR.to_string())?;
+    let value: Value = serde_json::from_slice(&body)
         .map_err(|_| "The online service returned an unreadable response.".to_string())?;
     if status.is_success() {
         return Ok(value);
@@ -209,3 +220,7 @@ pub fn request_id() -> String {
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../tests/unit/supabase_transport.rs"]
+mod tests;

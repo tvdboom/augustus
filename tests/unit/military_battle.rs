@@ -203,6 +203,38 @@ fn battle_card_fits_bottom_center_and_matches_both_army_colors() {
             names[1].y > panel.top() + 246. * scale,
             "Defender name mirrors the attacker below the battlefield"
         );
+        let name_bounds = ["Player 1", "Player 2"].map(|role| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == role => {
+                        Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                    },
+                    _ => None,
+                })
+                .unwrap()
+        });
+        assert!(
+            (name_bounds[0].top()
+                - (panel.top() + 42. * scale)
+                - (panel.bottom() - name_bounds[1].bottom()))
+            .abs()
+                < 2.
+        );
+        let morale_bounds: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "100%" => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(morale_bounds.len(), 2);
+        assert!(morale_bounds[0].top() - name_bounds[0].bottom() >= 9. * scale);
+        assert!(name_bounds[1].top() - morale_bounds[1].bottom() >= 9. * scale);
         for (index, owner) in [ForceOwner::Player(0), ForceOwner::Player(1)].into_iter().enumerate()
         {
             let banner = output
@@ -302,7 +334,7 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
     }
     let attackers = &world.battles[0].attackers;
     let tactic = attackers.plans[&ForceOwner::Player(0)].tactic;
-    let (slot, cohort) = attackers
+    let (_, cohort) = attackers
         .formation
         .front
         .iter()
@@ -324,25 +356,22 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
             _ => None,
         })
         .collect();
+    let front_cell =
+        cells.iter().find(|cell| (cell.top() - panel.top() - 149.).abs() < 0.1).unwrap();
+    let dice = [0, 1].map(|index| side_dice_rect(side_rect(panel, index, 1.), 1.).center());
     let targets = [
-        (egui::pos2(panel.right() - 162., panel.top() + 67.), "Retreat".to_owned()),
+        (dice[0] - egui::vec2(ACTION_SPACING, 0.), "Retreat".to_owned()),
+        (dice[0], format!("Current die: {}", round.dice[0])),
+        (dice[0] + egui::vec2(ACTION_SPACING, 0.), tactic.name().to_owned()),
+        (dice[1], format!("Current die: {}", round.dice[1])),
         (
-            egui::pos2(panel.right() - 128., panel.top() + 67.),
-            format!("Current die: {}", round.dice[0]),
-        ),
-        (egui::pos2(panel.right() - 94., panel.top() + 67.), tactic.name().to_owned()),
-        (
-            egui::pos2(panel.right() - 128., panel.top() + 273.),
-            format!("Current die: {}", round.dice[1]),
-        ),
-        (
-            egui::pos2(panel.right() - 94., panel.top() + 273.),
+            dice[1] + egui::vec2(ACTION_SPACING, 0.),
             world.battles[0].defenders.plans[&ForceOwner::Player(1)].tactic.name().to_owned(),
         ),
         (egui::pos2(panel.right() - 57., panel.top() + 21.), "Forest · Width: 10 cohorts".into()),
         (egui::pos2(panel.right() - 89., panel.top() + 21.), "Fortifications: level 1".into()),
         (
-            cells[attackers.formation.front.len() + slot].center(),
+            front_cell.center(),
             format!(
                 "• Manpower: {}\n• Morale: {:.0}%\n• Training: {:.0}%",
                 format_person_count(cohort.people()),
@@ -401,6 +430,56 @@ fn current_combat_modifiers_are_available_on_icon_hover() {
 }
 
 #[test]
+fn summary_tooltips_use_only_the_stat_name_for_both_armies() {
+    let (world, economy, id) = fixture(ForceOwner::Player(1));
+    let ctx = context();
+    open_battle_panel(&ctx, id, 0);
+    let size = egui::vec2(1600., 900.);
+    render(&ctx, &world, &economy, 0, size, 0.1, vec![]);
+    render(&ctx, &world, &economy, 0, size, 0.4, vec![]);
+    let (panel, _) = panel_rect(ctx.content_rect());
+    let mut time = 1.;
+    for (side, y) in [91., 279.].into_iter().enumerate() {
+        for (index, expected) in [
+            "Soldiers",
+            "Morale",
+            "Cohorts",
+            "Soldiers died",
+            "Cohorts in reserve",
+            "Cohorts routed",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pos = panel.min + egui::vec2(55. + index as f32 * 80., y);
+            let mut labels = Vec::new();
+            for step in 0..4 {
+                let (output, _) = render(
+                    &ctx,
+                    &world,
+                    &economy,
+                    0,
+                    size,
+                    time,
+                    if step == 0 {
+                        vec![egui::Event::PointerMoved(pos)]
+                    } else {
+                        vec![]
+                    },
+                );
+                labels = text(&output);
+                time += 0.7;
+            }
+            assert!(
+                labels.iter().any(|label| label == expected),
+                "Missing {expected} for side {side}: {labels:?}"
+            );
+            assert!(!labels.iter().any(|label| label.starts_with(&format!("{expected}:"))));
+        }
+    }
+}
+
+#[test]
 fn circular_close_dismisses_the_battle_and_retreat_preserves_eligibility() {
     for player in [0, 1] {
         let (mut world, economy, id) = fixture(ForceOwner::Player(1));
@@ -420,7 +499,7 @@ fn circular_close_dismisses_the_battle_and_retreat_preserves_eligibility() {
             })
             .nth(player)
             .unwrap();
-        let retreat = dice.center() - egui::vec2(34., 0.);
+        let retreat = dice.center() - egui::vec2(ACTION_SPACING, 0.);
         assert!(!text(&output).iter().any(|s| s == "Retreat"));
         render(&ctx, &world, &economy, player, size, 0.6, pointer(retreat, true));
         let (_, action) =
@@ -512,11 +591,8 @@ fn opposing_frontlines_keep_deployment_slots_and_show_only_living_units() {
             _ => None,
         })
         .collect();
-    assert_eq!(cells.len(), 40, "Both armies have a front and back row of terrain-width slots");
-    let (panel, _) = panel_rect(ctx.content_rect());
-    for row in cells.chunks(10) {
-        assert!(((row[0].left() + row[9].right()) / 2. - panel.center().x).abs() < 0.1);
-    }
+    assert_eq!(cells.len(), 4, "Only occupied, living deployment slots have boxes");
+    assert!(!text(&output).iter().any(|label| label == "·"));
     let before = cells;
     let battle = &mut world.battles[0];
     for side in [&mut battle.attackers, &mut battle.defenders] {
@@ -532,7 +608,72 @@ fn opposing_frontlines_keep_deployment_slots_and_show_only_living_units() {
             _ => None,
         })
         .collect();
-    assert_eq!(before, after, "Casualties cannot resize or move deployment cells");
+    assert_eq!(after, [before[0], before[2]], "Casualties remove boxes without moving survivors");
+}
+
+#[test]
+fn unoccupied_wings_have_no_extra_gaps_between_center_cohorts() {
+    let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+    let battle = &mut world.battles[0];
+    for side in [&mut battle.attackers, &mut battle.defenders] {
+        side.formation.front = vec![None; 10];
+        side.formation.support = vec![None; 10];
+        side.formation.reserves.clear();
+        side.formation.flank_size = 3;
+        for slot in 2..8 {
+            side.formation.front[slot] = Some(side.units[slot].id);
+        }
+    }
+    let ctx = context();
+    open_battle_panel(&ctx, id, 0);
+    let size = egui::vec2(1600., 900.);
+    render(&ctx, &world, &economy, 0, size, 0.1, vec![]);
+    let (output, _) = render(&ctx, &world, &economy, 0, size, 0.4, vec![]);
+    let cells: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(r) if r.fill == TABLE_STRIPE => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cells.len(), 12);
+    // Slots 2 and 7 are occupied parts of both wings, so their gaps remain.
+    for row in cells.chunks(6) {
+        assert!((row[1].left() - row[0].right() - 8.).abs() < 0.1);
+        assert!((row[5].left() - row[4].right() - 8.).abs() < 0.1);
+    }
+    for (wing, occupied) in [(0, 2..8), (3, 3..7)] {
+        let battle = &mut world.battles[0];
+        for side in [&mut battle.attackers, &mut battle.defenders] {
+            side.formation.flank_size = wing;
+            side.formation.front.fill(None);
+            for slot in occupied.clone() {
+                side.formation.front[slot] = Some(side.units[slot].id);
+            }
+        }
+        let (output, _) = render(&ctx, &world, &economy, 0, size, 0.8, vec![]);
+        let cells: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(r) if r.fill == TABLE_STRIPE => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cells.len(), occupied.len() * 2);
+        for row in cells.chunks(occupied.len()) {
+            for pair in row.windows(2) {
+                assert!((pair[1].left() - pair[0].right() - 2.).abs() < 0.1);
+            }
+            assert!(
+                ((row[0].left() + row[row.len() - 1].right()) / 2.
+                    - panel_rect(ctx.content_rect()).0.center().x)
+                    .abs()
+                    < 0.1
+            );
+        }
+    }
 }
 
 #[test]
@@ -597,7 +738,7 @@ fn every_terrain_has_a_background_and_both_summaries_stay_outside_the_unit_rows(
         let (output, _) = render(&ctx, &world, &economy, 1, egui::vec2(1600., 900.), 0.4, vec![]);
         let (panel, _) = panel_rect(ctx.content_rect());
         let field =
-            egui::Rect::from_min_size(panel.min + egui::vec2(12., 92.), egui::vec2(876., 154.));
+            egui::Rect::from_min_size(panel.min + egui::vec2(12., 108.), egui::vec2(876., 154.));
         let texture = terrain_portrait(&ctx, terrain).id();
         assert!(
             output.shapes.iter().any(|shape| matches!(&shape.shape,

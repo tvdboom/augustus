@@ -5,14 +5,18 @@ use super::campaign_notifications::{CampaignNotice, NoticeAction, NoticeKind, No
 use crate::game::economy::*;
 
 impl Campaign {
-    /// Retain the receipt from a successful open-market purchase or sale.
-    pub(crate) fn notify_market_trade(&mut self, player: usize, body: &str) {
+    /// Retain a brief outcome from a successful open-market purchase or sale.
+    pub(crate) fn notify_market_trade(&mut self, player: usize, side: MarketSide) {
         self.notifications.push(CampaignNotice {
             id: 0,
             recipient: player,
             severity: NoticeSeverity::Info,
             title: "Market exchange completed".into(),
-            body: body.into(),
+            body: match side {
+                MarketSide::Buy => "Goods purchased.",
+                MarketSide::Sell => "Goods sold.",
+            }
+            .into(),
             kind: NoticeKind::TradeUpdated,
             province: None,
             building: None,
@@ -63,38 +67,28 @@ impl Campaign {
         }
     }
 
-    /// Keep the agreement and failure reason in history for immediate and monthly outcomes.
+    /// Retain brief trade outcomes with the agreement as their navigation destination.
     pub(super) fn record_trade_event(&mut self, event: &EconomyEvent, month: u32) {
         let (id, severity, kind, title, body) = match event {
             EconomyEvent::TradeSuspended {
                 agreement,
-                reason,
+                ..
             } => (
                 *agreement,
                 NoticeSeverity::Warning,
                 NoticeKind::TradeInterrupted,
                 "Trade interrupted",
-                format!("Route #{agreement} suspended: {reason}."),
+                "Trade route suspended.",
             ),
             EconomyEvent::TradeCancelled {
                 agreement,
-            } => {
-                let Some(trade) = self.economy.trades.iter().find(|trade| trade.id == *agreement)
-                else {
-                    return;
-                };
-                (
-                    *agreement,
-                    NoticeSeverity::Warning,
-                    NoticeKind::TradeInterrupted,
-                    "Trade cancelled",
-                    format!(
-                        "Route #{agreement} cancelled after {} consecutive failed months: {}.",
-                        trade.failure_months,
-                        trade.last_failure.as_deref().unwrap_or("monthly delivery failed")
-                    ),
-                )
-            },
+            } => (
+                *agreement,
+                NoticeSeverity::Warning,
+                NoticeKind::TradeInterrupted,
+                "Trade cancelled",
+                "Trade route cancelled.",
+            ),
             EconomyEvent::TradeNoticeCompleted {
                 agreement,
             } => (
@@ -102,11 +96,11 @@ impl Campaign {
                 NoticeSeverity::Info,
                 NoticeKind::TradeUpdated,
                 "Trade route ended",
-                format!("Route #{agreement} ended without a relation penalty."),
+                "Trade route closed.",
             ),
             _ => return,
         };
-        self.notify_trade(id, month, severity, kind, title, &body);
+        self.notify_trade(id, month, severity, kind, title, body);
     }
 
     pub(crate) fn end_trade(
@@ -117,17 +111,15 @@ impl Campaign {
     ) -> Result<String, String> {
         if notice {
             let due = self.economy.schedule_trade_cancellation(id, player)?;
-            let message = format!(
-                "Route #{id} ends in {} months without penalties.",
-                due.saturating_sub(self.economy.month)
-            );
+            let message =
+                format!("Trade route closes in {} months.", due.saturating_sub(self.economy.month));
             self.notify_trade(
                 id,
                 self.economy.month,
                 NoticeSeverity::Info,
                 NoticeKind::TradeUpdated,
                 "Trade closure scheduled",
-                &format!("Player {} gave notice. {message}", player + 1),
+                &message,
             );
             Ok(message)
         } else {
@@ -140,11 +132,9 @@ impl Campaign {
                 .clone();
             let active = matches!(trade.status, TradeStatus::Active | TradeStatus::Suspended);
             let effect = self.economy.cancel_trade(id, player)?;
-            let mut consequence = String::new();
             if let Some(effect) = effect {
                 self.politics[effect.province]
                     .change_relation(effect.player, -effect.relation_loss);
-                consequence = format!("Relation −{:.0}, ", effect.relation_loss);
             } else if active {
                 let other = if trade.party_a == TradeParty::Player(player) {
                     trade.party_b
@@ -162,10 +152,6 @@ impl Campaign {
                             );
                         }
                     }
-                    consequence = format!(
-                        "Relation −{:.0}, ",
-                        self.economy.config.trade.cancellation_relation_penalty
-                    );
                 }
             }
             let message = if active {
@@ -174,14 +160,11 @@ impl Campaign {
                     .min(self.economy.config.trade.cancellation_influence_penalty);
                 self.actors[player].influence -= influence_loss;
                 self.senate.record_trade_breach(player);
-                consequence.push_str(&format!(
-                    "Influence −{influence_loss:.0}, Merchant confidence reduced."
-                ));
                 self.push_wallets();
                 self.reconcile_provinces();
-                format!("Route #{id} stopped. {consequence}")
+                "Trade route cancelled.".to_owned()
             } else {
-                format!("Agreement #{id} cancelled.")
+                "Trade offer cancelled.".to_owned()
             };
             self.notify_trade(
                 id,
@@ -197,7 +180,7 @@ impl Campaign {
                 } else {
                     "Trade offer cancelled"
                 },
-                &format!("Player {}: {message}", player + 1),
+                &message,
             );
             Ok(message)
         }
@@ -221,9 +204,9 @@ impl Campaign {
         self.reconcile_provinces();
         let status = self.economy.trades.iter().find(|trade| trade.id == id).unwrap().status;
         let (title, outcome) = match status {
-            TradeStatus::Proposed => ("Trade offer sent", "sent for acceptance"),
-            TradeStatus::Completed => ("Trade completed", "completed"),
-            _ => ("Trade route opened", "opened"),
+            TradeStatus::Proposed => ("Trade offer sent", "Trade offer sent."),
+            TradeStatus::Completed => ("Trade completed", "Exchange completed."),
+            _ => ("Trade route opened", "Trade route opened."),
         };
         self.notify_trade(
             id,
@@ -231,7 +214,7 @@ impl Campaign {
             NoticeSeverity::Info,
             NoticeKind::TradeUpdated,
             title,
-            &format!("Agreement #{id} {outcome}."),
+            outcome,
         );
         Ok(id)
     }
@@ -266,12 +249,16 @@ impl Campaign {
             }
         }
         self.pull_wallets();
-        let message = format!("Agreement #{id} accepted.");
         let completed = self
             .economy
             .trades
             .iter()
             .any(|trade| trade.id == id && trade.status == TradeStatus::Completed);
+        let message = if completed {
+            "Exchange completed."
+        } else {
+            "Trade offer accepted."
+        };
         self.notify_trade(
             id,
             self.economy.month,
@@ -282,16 +269,8 @@ impl Campaign {
             } else {
                 "Trade accepted"
             },
-            &format!(
-                "Player {} accepted agreement #{id}{}.",
-                player + 1,
-                if completed {
-                    " and the exchange completed"
-                } else {
-                    ""
-                }
-            ),
+            message,
         );
-        Ok(message)
+        Ok(message.into())
     }
 }

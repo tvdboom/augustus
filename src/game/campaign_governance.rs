@@ -1,8 +1,9 @@
-//! Nationwide edicts project into owned provinces and paid player troops.
+//! Nationwide edicts project into owned provinces, vassals and paid player troops.
 
 use super::campaign::Campaign;
 use crate::game::economy::{FoodPolicy, SlaveLabor};
 use crate::game::military::ForceOwner;
+use crate::game::politics::diplomacy::PoliticalState;
 use crate::map::{EdictLevel, Governance};
 
 impl Campaign {
@@ -18,8 +19,20 @@ impl Campaign {
         self.sync_governance();
     }
 
-    /// Reapply after conquest/integration so an owner's edicts always cover their nation.
+    /// Reapply after territorial changes so edicts cover owned land and new vassals.
     pub(crate) fn sync_governance(&mut self) {
+        for province in &mut self.politics {
+            if let PoliticalState::Vassal {
+                overlord,
+                tribute,
+                ..
+            } = &mut province.state
+            {
+                let governance = self.governance.get(*overlord).copied().unwrap_or_default();
+                *tribute = governance.vassal_tribute;
+                province.vassal_autonomy = governance.vassal_autonomy;
+            }
+        }
         for province in &mut self.economy.provinces {
             if province.occupied {
                 continue;

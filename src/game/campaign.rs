@@ -459,11 +459,7 @@ impl Campaign {
         let mut army_food = vec![0.; self.actors.len()];
         let mut npc_army_food = vec![0.; self.politics.len()];
         for (province, unit) in self.military.units_with_province() {
-            let payer = province
-                .and_then(|id| self.economy.provinces.get(id))
-                .and_then(|province| province.owner)
-                .map(ForceOwner::Player)
-                .unwrap_or(unit.owner);
+            let payer = self.army_provisioner(province, unit.owner);
             let demand = unit.food_demand(&self.military.config);
             match payer {
                 ForceOwner::Player(player) => {
@@ -513,10 +509,7 @@ impl Campaign {
             let Some(province) = province else {
                 continue;
             };
-            let Some(state) = self.economy.provinces.get(province) else {
-                continue;
-            };
-            if state.owner == Some(player) {
+            if self.army_provisioner(Some(province), unit.owner) == ForceOwner::Player(player) {
                 if let Some((_, _, _, _, military)) =
                     sources.iter_mut().find(|(index, _, _, _, _)| *index == province)
                 {
@@ -967,6 +960,10 @@ impl Campaign {
 
     /// Start a battle only against actually hostile stationed owners.
     fn begin_encounter(&mut self, province: usize, attacker: ForceOwner, origin: Option<usize>) {
+        if let ForceOwner::Local(home) = attacker {
+            self.begin_npc_encounter(province, home, origin);
+            return;
+        }
         let ForceOwner::Player(player) = attacker else {
             return;
         };
@@ -1084,12 +1081,12 @@ impl Campaign {
             }
             return;
         }
-        // A local uprising attacks the province's own garrison. The owner
-        // defends and retains the benefit of its walls.
-        let uprising = p.owner == Some(player)
-            && defenders.len() == 1
-            && defenders[0] == ForceOwner::Local(province);
-        let (attacking, defending) = if uprising || local_response {
+        // Local hostiles attack an unoccupied domestic garrison. Relief forces
+        // attack an established occupier; walls always belong to the defending side.
+        let local_attack = p.owner == Some(player)
+            && self.military.provinces[province].occupation.is_none()
+            && defenders.iter().all(|owner| matches!(owner, ForceOwner::Local(_)));
+        let (attacking, defending) = if local_attack || local_response {
             (defenders.as_slice(), &[attacker][..])
         } else {
             (&[attacker][..], defenders.as_slice())
@@ -1141,6 +1138,24 @@ impl Campaign {
                 _ => (None, None),
             };
             ownership_changed |= self.economy.provinces[id].owner != owner;
+            if let Some(former_owner) = self.economy.provinces[id]
+                .owner
+                .filter(|_| matches!(politics.state, PoliticalState::Independent { .. }))
+            {
+                use super::campaign_notifications::{NoticeKind, NoticeSeverity};
+                if matches!(self.military.provinces[id].occupation, Some(ForceOwner::Local(_))) {
+                    self.military.provinces[id].occupation = None;
+                }
+                self.notifications.province_notice(
+                    former_owner,
+                    id,
+                    self.economy.month,
+                    NoticeSeverity::Warning,
+                    NoticeKind::OwnedControlThreatened,
+                    format!("{} became independent", self.economy.provinces[id].name),
+                    "Your Control fell to zero. This province is now independent.",
+                );
+            }
             self.economy.provinces[id].change_owner(owner, overlord);
             self.economy.provinces[id].relation_by_player.clone_from(&politics.relations);
             self.economy.provinces[id].trade_ratio_by_player = (0..self.actors.len())
@@ -1452,30 +1467,12 @@ impl Campaign {
 
     /// Apply rebellion pressure once at the monthly political boundary, after combat and arrivals.
     fn resolve_rebellion_control(&mut self) {
-        use super::campaign_notifications::{NoticeKind, NoticeSeverity};
         for province in 0..self.politics.len() {
             let loss = self.unopposed_rebellion_control_loss(province);
             if loss <= 0.0 {
                 continue;
             }
-            let PoliticalState::Owned {
-                owner,
-            } = self.politics[province].state
-            else {
-                continue;
-            };
             let _ = self.politics[province].apply_rebellion_control_loss(loss);
-            if matches!(self.politics[province].state, PoliticalState::Independent { .. }) {
-                self.notifications.province_notice(
-                    owner,
-                    province,
-                    self.economy.month,
-                    NoticeSeverity::Warning,
-                    NoticeKind::OwnedControlThreatened,
-                    format!("{} became independent", self.economy.provinces[province].name),
-                    "Rebels reduced your Control to zero.",
-                );
-            }
         }
     }
 
@@ -1495,10 +1492,10 @@ impl Campaign {
             return;
         }
         let access = self.access_snapshot();
+        let local_access = self.npc_access_snapshot();
         let permission = |owner: ForceOwner, id: usize| match owner {
             ForceOwner::Player(p) => access[p][id],
-            ForceOwner::Local(home) if home == id => MilitaryAccess::Peaceful,
-            ForceOwner::Local(_) => MilitaryAccess::Blocked,
+            ForceOwner::Local(home) => local_access[home][id],
         };
         let events = self.military.advance_battle_rounds(&self.graph, permission);
         let battle_ended =
@@ -1581,15 +1578,10 @@ impl Campaign {
                 self.military.provinces[id].draft_penalties.map(|penalty| -penalty);
         }
         let access = self.access_snapshot();
+        let local_access = self.npc_access_snapshot();
         let permission = |owner: ForceOwner, id: usize| match owner {
             ForceOwner::Player(p) => access[p][id],
-            ForceOwner::Local(home) => {
-                if home == id {
-                    MilitaryAccess::Peaceful
-                } else {
-                    MilitaryAccess::Blocked
-                }
-            },
+            ForceOwner::Local(home) => local_access[home][id],
         };
         let arrivals = self.military.advance_movement(&self.graph, permission);
         for event in &arrivals {
@@ -1683,8 +1675,10 @@ impl Campaign {
                 ForceOwner::Local(id),
                 |province| {
                     province
-                        .and_then(|id| self.economy.provinces.get(id))
-                        .and_then(|province| province.owner)
+                        .and_then(|location| {
+                            let host = self.economy.provinces.get(location)?.owner?;
+                            (location == id || !self.npc_wars[host][id]).then_some(host)
+                        })
                         .map_or_else(
                             || {
                                 if self.politics[id].state == PoliticalState::Rome {
@@ -1812,6 +1806,7 @@ impl Campaign {
                 self.actors[p].coin += tribute;
             }
         }
+        self.resolve_npc_occupation_control(&previous_occupations);
         self.resolve_rebellion_control();
         self.push_wallets();
         self.reconcile_provinces();
@@ -1832,6 +1827,8 @@ impl Campaign {
         self.refresh_profiles();
         self.senate.advance_month(&self.actors, &self.profiles, &self.senate_config);
         self.push_wallets();
+        self.advance_npc_aggression();
+        self.reconcile_provinces();
         for victory in &mut self.recent_victories {
             *victory *= 0.95;
         }

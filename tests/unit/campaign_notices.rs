@@ -166,16 +166,53 @@ fn scandal_notification_rows_match_the_filter_icon_and_keep_player_colors_after_
             &output,
             &format!("scandal-notifications-{}", width as u32),
         );
+        output.textures_delta.clear();
         assert!(
             bounds.width() <= width + 1.0,
             "Notification rows overflow at {width}px: {bounds:?}"
         );
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect)
-            if rect.fill == super::super::PLAYER_COLORS[1] && rect.rect.width() == 6.0 && rect.rect.height() == 34.0)));
+        let markers: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::super::PLAYER_COLORS[1] && rect.rect.width() == 6.0 =>
+                {
+                    Some(rect.rect)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), 2, "Both notices must retain the player's color");
+        for marker in markers {
+            let card = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.width() >= width - 1.0
+                            && (rect.rect.center().y - marker.center().y).abs() < 0.001 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .expect("Each color marker must belong to a notification card");
+            assert!(
+                (marker.height() / card.height() - 0.8).abs() < 0.001,
+                "Marker {marker:?} must scale with card {card:?}"
+            );
+            assert!((marker.center().y - card.center().y).abs() < 0.001);
+        }
+        assert!(output.shapes.iter().all(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text.starts_with("Against Player 2") => {
+                text.galley.rows.len() <= 2
+            },
+            _ => true,
+        }));
         assert_eq!(
             notice_symbol(campaign.notifications.history_for(0).next().unwrap()),
             FILTER_CATEGORIES[4].1
         );
-        output.textures_delta.clear();
     }
 }

@@ -496,7 +496,7 @@ fn scandal_actions_show_only_illustrated_icons_and_explain_each_use_on_hover() {
         (
             ScandalTarget::Province(0),
             Icon::Trade,
-            "Spend this scandal to get 25% better trade terms with Achaia for 6 months.",
+            "Spend this scandal to get 25% better trade terms with Achaia for 24 months. Lowers the value required for new offers and active monthly trades; agreed amounts stay fixed.",
         ),
         (
             ScandalTarget::Player(1),
@@ -582,7 +582,7 @@ fn scandal_action_buttons_spend_evidence_without_opening_the_row_for_both_target
             let message = apply_command(&mut campaign, 0, command);
             assert!(campaign.espionage.scandals.is_empty());
             if usage == ScandalUse::Trade {
-                assert!(message.contains("favorable trade with Achaia for 6 months"));
+                assert!(message.contains("favorable trade with Achaia for 24 months"));
                 assert_eq!(campaign.espionage.trade_ratio(0, 0, campaign.economy.month), 0.75);
                 continue;
             }

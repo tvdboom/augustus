@@ -390,28 +390,61 @@ pub(in crate::app) fn draw_orders_menu(
                                 egui::CollapsingHeader::new("Choose individual cohorts").show(
                                     ui,
                                     |ui| {
-                                        for unit in &army {
-                                            let mut send = menu.units.contains(&unit.id);
-                                            if ui
-                                                .checkbox(
-                                                    &mut send,
-                                                    format!(
-                                                        "{} #{} · {} soldiers · {:.0}% morale",
-                                                        unit.unit_type.abbreviation(),
-                                                        unit.id,
-                                                        format_person_count(unit.people()),
-                                                        unit.morale
-                                                    ),
-                                                )
-                                                .changed()
-                                            {
-                                                if send {
-                                                    menu.units.insert(unit.id);
-                                                } else {
-                                                    menu.units.remove(&unit.id);
+                                        egui::Grid::new("individual-cohorts")
+                                            .min_col_width(0.)
+                                            .spacing(egui::vec2(6., 3.) * scale)
+                                            .show(ui, |ui| {
+                                                ui.style_mut().wrap_mode =
+                                                    Some(egui::TextWrapMode::Extend);
+                                                for unit in &army {
+                                                    let mut send = menu.units.contains(&unit.id);
+                                                    if ui
+                                                        .push_id(unit.id, |ui| {
+                                                            ui.checkbox(
+                                                                &mut send,
+                                                                unit.unit_type.name(),
+                                                            )
+                                                        })
+                                                        .inner
+                                                        .changed()
+                                                    {
+                                                        if send {
+                                                            menu.units.insert(unit.id);
+                                                        } else {
+                                                            menu.units.remove(&unit.id);
+                                                        }
+                                                    }
+                                                    for (art, value, label) in [
+                                                        (
+                                                            Icon::Population,
+                                                            format_person_count(unit.people()),
+                                                            "Soldiers",
+                                                        ),
+                                                        (
+                                                            Icon::Morale,
+                                                            format!("{:.0}%", unit.morale),
+                                                            "Morale",
+                                                        ),
+                                                        (
+                                                            Icon::MilitaryPower,
+                                                            format!("{:.0}%", unit.training),
+                                                            "Training",
+                                                        ),
+                                                    ] {
+                                                        ui.horizontal(|ui| {
+                                                            ui.spacing_mut().item_spacing.x =
+                                                                3. * scale;
+                                                            icon(ui, art, 18. * scale)
+                                                                .on_hover_text(label);
+                                                            ui.label(
+                                                                egui::RichText::new(value)
+                                                                    .size(12. * scale),
+                                                            );
+                                                        });
+                                                    }
+                                                    ui.end_row();
                                                 }
-                                            }
-                                        }
+                                            });
                                     },
                                 );
                             });

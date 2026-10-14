@@ -30,6 +30,27 @@ pub fn birth_modifier(happiness: f64) -> f64 {
 }
 
 impl EconomicProvince {
+    /// Smooth local conditions derived solely from saved month and stable province name.
+    /// Different phases and durations avoid synchronized growth across the map.
+    fn npc_demographic_cycle(&self, month: u32, config: &EconomyConfig) -> f64 {
+        let seed = self.name.bytes().fold(2_166_136_261_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(16_777_619)
+        });
+        let period =
+            (u64::from(config.npc_demography.cycle_months) * (80 + seed % 41) / 100).max(2);
+        let phase = ((u64::from(month) + seed % period) % period) as f64 / period as f64;
+        let triangle = 1.0 - (2.0 * phase - 1.0).abs();
+        triangle * triangle * (3.0 - 2.0 * triangle)
+    }
+
+    fn migration_crowding_threshold(&self, config: &EconomyConfig) -> f64 {
+        if self.owner.is_none() {
+            config.npc_demography.crowding_threshold.clamp(0.1, 1.0)
+        } else {
+            1.0
+        }
+    }
+
     /// A soft birth-only space limit preserves ordinary growth through 150%
     /// capacity, then tends toward zero even when buildings maximize happiness.
     /// It never deletes residents or increases natural/famine mortality.
@@ -186,6 +207,7 @@ impl EconomicProvince {
         &mut self,
         report: &mut ProvinceMonth,
         config: &EconomyConfig,
+        month: u32,
     ) {
         let food = config.food_policy[self.policies.food as usize];
         let slave = config.slave_policy[self.policies.slave_labor as usize];
@@ -210,12 +232,19 @@ impl EconomicProvince {
         report.happiness_delta =
             std::array::from_fn(|class| self.happiness[class] - previous_happiness[class]);
         let crowding_births = self.crowding_birth_modifier(config);
+        let local_births = if self.owner.is_none() {
+            let [low, high] = config.npc_demography.birth_multipliers;
+            (low + (high - low) * self.npc_demographic_cycle(month, config)).max(0.0)
+        } else {
+            1.0
+        };
         for class in 0..4 {
             let count = self.population[class];
             report.births[class] = count
                 * config.birth_rates[class]
                 * birth_modifier(self.happiness[class])
                 * crowding_births
+                * local_births
                 * food.births
                 * report.food_supply_ratio;
             // Low happiness never directly increases natural mortality.
@@ -323,15 +352,44 @@ impl EconomyWorld {
     /// Simultaneous migration deltas prevent province iteration order from moving a pop twice.
     pub(super) fn migrate(&mut self, inputs: &MonthlyInputs, reports: &mut [ProvinceMonth]) {
         let mut deltas = vec![[0.0; 4]; self.provinces.len()];
+        let weights = self.config.migration_weights;
+        let attractions: Vec<[f64; 3]> = self
+            .provinces
+            .iter()
+            .map(|province| {
+                // Keep the space term negative beyond capacity so an overcrowded
+                // neighbour cannot look equally spacious as one just at capacity.
+                let space = 1.0 - province.total_population() / province.capacity(&self.config);
+                let opportunity = if province.owner.is_none() {
+                    (2.0 * province
+                        .npc_demographic_cycle(self.month.saturating_add(1), &self.config)
+                        - 1.0)
+                        * self.config.npc_demography.opportunity_weight.max(0.0)
+                } else {
+                    0.0
+                };
+                std::array::from_fn(|class| {
+                    weights[0] * space
+                        + weights[1] * province.happiness[class] / 100.0
+                        + if province.has_city {
+                            weights[2]
+                        } else {
+                            0.0
+                        }
+                        + opportunity
+                })
+            })
+            .collect();
         for (source_id, source) in self.provinces.iter().enumerate() {
             let population_ratio = source.total_population() / source.capacity(&self.config);
+            let crowding_threshold = source.migration_crowding_threshold(&self.config);
             for (class, &population) in source.population.iter().take(3).enumerate() {
                 // Slaves have no free migration regardless of malformed config.
                 let unhappiness = ((50.0 - source.happiness[class]) / 50.0).max(0.0);
                 let rate = self.config.migration_rates[class]
                     * (self.config.baseline_migration_pressure.max(0.0)
                         + unhappiness
-                        + (population_ratio - 1.0).max(0.0)
+                        + (population_ratio - crowding_threshold).max(0.0)
                             * self.config.overpopulation_migration_scale)
                     * self.config.migration_out[source.policies.migration as usize];
                 let emigrants = population * rate.clamp(0.0, 1.0);
@@ -339,6 +397,7 @@ impl EconomyWorld {
                     continue;
                 }
                 let mut destinations = Vec::new();
+                let mut best_improvement = 0.0_f64;
                 if let Some(adjacent) = self.adjacency.get(source_id) {
                     for &target_id in adjacent {
                         if target_id == source_id {
@@ -352,29 +411,30 @@ impl EconomyWorld {
                         if relationship <= 0.0 {
                             continue;
                         }
-                        let free = (1.0
-                            - target.total_population() / target.capacity(&self.config))
-                        .max(0.0);
-                        let weights = self.config.migration_weights;
-                        let score = (weights[0] * free
-                            + weights[1] * target.happiness[class] / 100.0
-                            + if target.has_city {
-                                weights[2]
-                            } else {
-                                0.0
-                            })
+                        // A province must offer better conditions than staying.
+                        // This prevents background movement refilling a crowded
+                        // province from its happier, roomier neighbours.
+                        let improvement = (attractions[target_id][class]
+                            - attractions[source_id][class])
+                            .max(0.0);
+                        let score = improvement
                             * (1.0 + target.building_effects(&self.config).migration).max(0.0)
                             * self.config.migration_in[target.policies.migration as usize]
                             * relationship;
                         if score > 0.0 && !destinations.iter().any(|(id, _)| *id == target_id) {
                             destinations.push((target_id, score));
+                            best_improvement = best_improvement.max(improvement);
                         }
                     }
                 }
                 let total_score: f64 = destinations.iter().map(|(_, score)| score).sum();
+                // No valid destination means no lost population.
                 if total_score <= 0.0 {
                     continue;
-                } // No valid destination means no lost population.
+                }
+                // Almost equivalent destinations attract a trickle, avoiding
+                // abrupt back-and-forth flows as neighbouring populations converge.
+                let emigrants = emigrants * best_improvement.min(1.0);
                 deltas[source_id][class] -= emigrants;
                 for (target, score) in destinations {
                     deltas[target][class] += emigrants * score / total_score;

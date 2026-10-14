@@ -304,7 +304,7 @@ fn date(month: u32) -> String {
     format!("{} {} AD", months[(month % 12) as usize], 60 + month / 12)
 }
 
-/// The entire card is actionable; body text wraps independently of the date and title.
+/// The entire card is actionable; descriptions occupy at most two lines below the title.
 pub(in crate::app) fn card(
     ui: &mut egui::Ui,
     notice: &CampaignNotice,
@@ -328,17 +328,26 @@ pub(in crate::app) fn card(
             campaign.economy.provinces.get(province).and_then(|p| p.owner)
         },
     };
-    let owner_label = owner
-        .map_or_else(|| "Independent province".into(), |player| format!("Player {}", player + 1));
     let owner_color = owner.and_then(|player| colors.get(player).copied()).unwrap_or(NEUTRAL);
+    // Older saves may retain the verbose hostile-relations rules after the event summary.
+    let body =
+        if matches!(notice.kind, NoticeKind::HostileRelation | NoticeKind::VeryHostileRelation) {
+            notice
+                .body
+                .split_once(". ")
+                .map_or(notice.body.as_str(), |(summary, _)| &notice.body[..summary.len() + 1])
+        } else {
+            &notice.body
+        };
     message_card(
         ui,
         Message {
             icon: notice_symbol(notice),
             title: &notice.title,
-            body: &notice.body,
+            body,
+            single_line_body: notice.kind.is_trade(),
             month: notice.month,
-            owner: Some((owner_color, &owner_label)),
+            owner: Some(owner_color),
             row,
             critical: notice.kind == NoticeKind::SlaveRevolt,
             actionable: true,
@@ -352,8 +361,9 @@ pub(in crate::app) struct Message<'a> {
     pub icon: Icon,
     pub title: &'a str,
     pub body: &'a str,
+    pub single_line_body: bool,
     pub month: u32,
-    pub owner: Option<(egui::Color32, &'a str)>,
+    pub owner: Option<egui::Color32>,
     pub row: usize,
     pub critical: bool,
     pub actionable: bool,
@@ -386,12 +396,19 @@ pub(in crate::app) fn message_card(
         title_width,
     );
     let body = (!message.body.is_empty()).then(|| {
-        ui.painter().layout(
+        let mut job = egui::text::LayoutJob::simple(
             message.body.to_owned(),
             egui::FontId::proportional(12.0 * scale),
             INK,
             (width - text_left - padding).max(1.0),
-        )
+        );
+        job.wrap.max_rows = if message.single_line_body {
+            1
+        } else {
+            2
+        };
+        job.wrap.break_anywhere = true;
+        ui.painter().layout_job(job)
     });
     let header_height = title.size().y.max(30.0 * scale);
     let height = 2.0 * padding
@@ -404,13 +421,12 @@ pub(in crate::app) fn message_card(
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), sense);
     paint_directory_row(ui, rect, &response, message.row, scale);
-    if let Some((color, label)) = message.owner {
+    if let Some(color) = message.owner {
         let marker = egui::Rect::from_center_size(
             egui::pos2(rect.left() + 10.0 * scale, rect.center().y),
-            egui::vec2(6.0 * scale, 34.0 * scale),
+            egui::vec2(6.0 * scale, rect.height() * 0.8),
         );
         ui.painter().rect_filled(marker, 2.0 * scale, color);
-        ui.interact(marker, response.id.with("owner"), egui::Sense::hover()).on_hover_text(label);
     }
     let icon_rect = egui::Rect::from_min_size(
         rect.min + egui::vec2(content_left, padding),

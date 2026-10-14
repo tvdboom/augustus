@@ -33,6 +33,8 @@ Births, deaths, and class changes occur monthly. Terrain, area, cities, and buil
 how many people can live comfortably in a province. Overcrowding reduces happiness and births.
 Unhappy free people migrate to neighboring provinces with better conditions; relations,
 cities, available space, and migration policy influence where they go. Slaves do not migrate freely.
+NPC provinces feel crowding pressure before capacity and pass through gradual local cycles
+of growth and decline, so population can recover and move instead of staying at capacity.
 
 | Resource | Use |
 | --- | --- |
@@ -106,7 +108,13 @@ of scandal; insults damage Relation. Each action is available once per year.
 
 More than 50 Control with a unique lead permits vassalization. The vassal's starting Control
 is your previous share minus 50. Vassals provide Influence and adjustable tribute, but no
-ordinary production or wonder income. High tribute damages relations; poor relations erode
+ordinary production or wonder income. In Policies → Politics, Low/Normal/High tribute takes
+10%/20%/30% of available monthly vassal coin income and changes Relation by +0.5/0/−1 per month.
+Vassal Autonomy trades Influence for goodwill: Low gives +25% Influence and −0.5 Relation
+per month; High gives −25% Influence and +0.5 Relation; Normal keeps the baseline.
+Both policies cover all current and future vassals and their Relation effects stack.
+Vassals also bolster Provincial Senate support and diplomatic reach, while retaining their
+own local armies. High tribute damages relations; poor relations erode
 Control, while support and garrisons sustain it. At zero Control, a vassal becomes independent.
 At 100, integrate a province for direct ownership; Relation determines its initial happiness change.
 
@@ -117,6 +125,16 @@ ownership, and occupation blocks the displaced owner's management.
 Pressure enters independent territory without fighting its defenders. It gains up to
 2 Control per month, reduced by resistance, with a ceiling of 40, and costs 3 Relation monthly.
 Leaving ends pressure. If Relation falls below 50, local defenders may attack.
+
+Below 20 Relation (very hostile), independent and vassal provinces with an available army
+have a 10% monthly chance to invade your adjacent owned land. They fight hostile visitors
+at home first. Border attacks use normal travel, combat, walls, retreat, and occupation;
+you receive a warning when the army starts marching. Persistent hostility makes an attack
+about 92% likely within two years and 98% within three, without a guaranteed deadline.
+Unopposed invaders remain in place and reduce your Control each month using the same
+strength-based curve as player occupation. At zero Control, the province becomes
+independent NPC territory. Losing your last owned province ends your campaign.
+See [the hostile-neighbour rules](docs/AUGUSTUS-game-design.md) for details.
 
 ### Trade
 
@@ -130,10 +148,13 @@ single-time deals. A ×1.5 partner requires 50% more offered value for the same 
 Distance is measured from your nearest owned province or vassal, as for diplomacy and spies.
 
 Provinces import goods to replenish reserves even when local production covers their needs.
-Monthly routes use sustainable export supply; single-time deals can draw up to three times
+New monthly routes require sustainable export supply; single-time deals can draw up to three times
 the monthly export capacity, with a three-month cooldown between deals with the same partner.
-The partner market shows whole-unit supply and preferred demand for the selected frequency.
-Provinces can accept more than their preferred demand: surplus counts at 25% of its listed
+The partner market shows whole-unit supply, actual unmet shortages under Wants, and additional
+reserve demand under Reserves for the selected frequency. Coins per unit gives each resource's
+local price; the exchange composer shows both sides' total value at those prices before
+transport losses or excess-import discounts. Player-to-player totals use base coin prices.
+Provinces can accept more than Wants + Reserves: surplus counts at 25% of its listed
 value, requiring four times as many extra units for the same payment. Previous deliveries
 reduce the remaining full-value demand, so splitting offers does not avoid this discount.
 Use the fill-to-limit icon beside a province's send amount to fill its remaining whole-unit allowance.
@@ -141,10 +162,13 @@ Amounts set to the maximum follow live availability; manually choosing a differe
 Blocked agreements show the reason in red below the trade button.
 
 Recurring provincial trade improves Relation and builds Control up to 40. One-time deals
-grant no Control. Established provincial routes can reduce both sides' deliveries when at
-least 80% can be supplied; new deals need full supply. Failed routes suspend, resume when
-viable, and cancel after three consecutive failures. Six months' notice avoids cancellation
-penalties. Breaking an established route immediately costs Relation, Influence, and Merchant support.
+grant no Control. New deals need full NPC supply. Accepted provincial routes keep their agreed
+amounts regardless of changes in NPC supply, demand, prices, or treasury. They continue until
+you close them or relations or route access block delivery. Missing player payments pause
+delivery until affordable without cancelling the NPC's commitment. Blocked routes and failed
+player-to-player agreements cancel after three consecutive failures. Six months' notice avoids
+cancellation penalties. Breaking an established route immediately costs Relation, Influence,
+and Merchant support.
 
 The open market buys or sells Food, Metal, and Stone immediately. Prices worsen with your
 cumulative monthly volume, even if you split orders, and reset each month. Purchases require
@@ -192,8 +216,8 @@ Successive promotions cost 500, 1,000, 1,500, 2,000, and 3,000 Influence, plus e
 supporters. Promotions are immediate, limited to one per month, and retain supporters.
 Required support scales with player count: 10, 20, 30, 40, and 60 senators in solo or
 two-player campaigns. Augustus always requires at least 51. Consul is a permanent rank.
-NPC provinces begin with 6–12 defending cohorts, three times their original rosters.
-Rome begins with 150 defending cohorts; military conquest requires no political rank.
+NPC provinces begin with 18–36 defending cohorts, nine times their original rosters.
+Rome begins with 450 defending cohorts; military conquest requires no political rank.
 
 ### Armies and movement
 
@@ -225,13 +249,15 @@ A Battle Plan sets preferred Frontline, Rear line, and Flank unit types, 1-5 slo
 and a tactic. Plans can change while marching but lock when battle begins. Deployment is
 automatic: preferred units fill the wings and center, while Rear line units are held back
 when possible and favored as replacements. Missing types use alternatives. Stronger cohorts
-of the same type deploy first; surviving deployed units keep their positions.
+of the same type deploy first; surviving deployed units keep their positions unless
+an uncovered support cohort must advance into its empty front slot.
 
 Terrain limits each front and support row to 16 slots in Farmland or Plains, 14 in Desert,
 12 in Hills, 10 in Forest, and 8 in Mountains or Marsh. Each wing is limited to one third
 of the width. Small armies form a centered line; extra cohorts wait in reserve. Reserves
-and reinforcements fill destroyed or routed slots, so a larger army cannot attack with
-every cohort at once.
+and reinforcements fill destroyed or routed slots immediately after each round. If
+no reserve replacement is available, the aligned support cohort steps into the front
+slot. A larger army cannot attack with every cohort at once.
 
 Units attack the nearest enemy front slot within their Maneuver reach, favoring aligned
 targets. Mobile cavalry reaches farther sideways and can exploit uneven lines. A unit

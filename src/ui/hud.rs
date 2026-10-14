@@ -59,6 +59,7 @@ pub(in crate::app) fn draw_map_hud(
                 &mut map_view,
             )
         {
+            campaign_military::dismiss_battle_panel(context);
             panels.close_click.0 = true;
             play_click(&sound, &audio, &assets);
         }
@@ -108,6 +109,7 @@ pub(in crate::app) fn draw_map_hud(
         matches!(*state.get(), AppState::Map | AppState::EmptyScreen),
     );
     if let Some(index) = governance_clicked.filter(|_| *state.get() == AppState::Map) {
+        campaign_military::dismiss_battle_panel(context);
         panels.campaign_ui.close_province_selector();
         if index == 0 {
             panels.governance.0 = !panels.governance.0;

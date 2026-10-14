@@ -57,6 +57,7 @@ pub(super) struct OnlineClient {
     pub notice: Option<String>,
     elapsed: f32,
     failures: u32,
+    retrying: bool,
     since_sync: f32,
     save_requested: bool,
     leave_requested: bool,
@@ -83,6 +84,7 @@ impl Default for OnlineClient {
             notice: None,
             elapsed: 0.,
             failures: 0,
+            retrying: false,
             since_sync: 0.,
             save_requested: false,
             leave_requested: false,
@@ -185,11 +187,30 @@ impl OnlineClient {
         self.record.as_ref().is_none_or(|r| {
             r.status == "active"
                 && r.player == 0
-                && self.connected
-                && self.error.is_none()
                 && !self.reconnect_lobby
-                && !self.busy()
-                && r.members.iter().all(|m| m.connected || self.eliminated(m.player))
+                && !self.leave_requested
+                && if r.single_player {
+                    // Solo simulation is local. Cloud saves retain the sent snapshot so that
+                    // receipts and retries cannot replace newer progress or commands.
+                    (self.connected || self.retrying)
+                        && (self.error.is_none()
+                            || (self.retrying
+                                && self.error.as_deref().is_some_and(supabase::retryable)))
+                        && self.reconcile_from.is_none()
+                        && self
+                            .pending
+                            .as_ref()
+                            .is_none_or(|p| matches!(p.kind, Operation::Save | Operation::Sync))
+                        && self
+                            .queue
+                            .iter()
+                            .all(|(kind, _)| matches!(kind, Operation::Save | Operation::Sync))
+                } else {
+                    self.connected
+                        && self.error.is_none()
+                        && !self.busy()
+                        && r.members.iter().all(|m| m.connected || self.eliminated(m.player))
+                }
         })
     }
     pub fn start(&mut self) -> Result<(), String> {
@@ -352,6 +373,7 @@ fn enter(
     client.elapsed = 0.;
     client.connected = true;
     client.failures = 0;
+    client.retrying = false;
     Ok(())
 }
 
@@ -393,7 +415,12 @@ fn reconcile(
         ));
         return Ok(());
     }
-    if let Some(base) = &client.base {
+    if let Some(base) = client.base.as_ref().filter(|_| {
+        sync.revision != record.revision
+            || sync.state.is_some()
+            || !sync.events.is_empty()
+            || client.reconcile_from.is_some()
+    }) {
         let mut current = snapshot(world)?;
         if record.player != 0 {
             current["clock"] = base["clock"].clone();
@@ -461,7 +488,13 @@ pub(super) fn update(world: &mut World) {
     world.resource_scope(|world,mut client:Mut<OnlineClient>| {
         client.elapsed+=world.resource::<Time>().delta_secs();
         client.since_sync+=world.resource::<Time>().delta_secs();
-        let response=client.pending.as_ref().and_then(|p|p.receiver.lock().ok().and_then(|r|r.try_recv().ok()));
+        let response=client.pending.as_ref().and_then(|p| {
+            match p.receiver.lock().ok().map(|r|r.try_recv()) {
+                Some(Ok(response))=>Some(response),
+                Some(Err(mpsc::TryRecvError::Empty))=>None,
+                _=>Some(Response{session:None,result:Err(supabase::CONNECTION_ERROR.into())}),
+            }
+        });
         if let Some(response)=response {
             let Some(mut pending)=client.pending.take() else {return;};
             if let Some(session)=response.session {client.session=Some(session);}
@@ -504,27 +537,32 @@ pub(super) fn update(world: &mut World) {
             });
             match result {
                 Ok(())=> {
-                    client.connected=true;client.failures=0;
+                    client.connected=true;client.failures=0;client.retrying=false;
+                    if pending.kind==Operation::Sync && client.notice.as_deref().is_some_and(supabase::retryable) {client.notice=None;}
                     // Background presence must not erase a foreground menu failure.
-                    if pending.kind!=Operation::Sync || world.get_resource::<State<AppState>>().is_none_or(|state|
+                    if pending.kind!=Operation::Sync || client.error.as_deref().is_some_and(supabase::retryable) || world.get_resource::<State<AppState>>().is_none_or(|state|
                         matches!(*state.get(),AppState::Map|AppState::GameMenu|AppState::GameSettings|AppState::EndGame)) {
                         client.error=None;
                     }
                 }
                 Err(error)=> {
-                    client.connected=false;client.failures=client.failures.saturating_add(1);client.elapsed=0.;
+                    client.connected=false;client.retrying=false;client.failures=client.failures.saturating_add(1);client.elapsed=0.;
                     if error.contains("State conflict") {
                         client.reconcile_from=pending.sent.take();client.elapsed=30.;client.report_error("Another player changed the game. Please retry your last action after syncing.");
                     } else {
                         // Replay exactly the same UUID/payload after an ambiguous network failure.
-                        if error.starts_with("Connection failed") && matches!(pending.kind,Operation::Create|Operation::Save|Operation::Start|Operation::Resume) {
+                        if supabase::retryable(&error) && matches!(pending.kind,Operation::Create|Operation::Save|Operation::Start|Operation::Resume|Operation::Sync) {
                             client.queue.push_front((pending.kind,pending.payload));
                             client.retry_sent=pending.sent.take();
+                            client.retrying=true;
                         }
-                        if error.contains("unavailable")&&client.record.as_ref().is_some_and(|r|r.status=="lobby") {
+                        if !client.retrying && error.contains("unavailable")&&client.record.as_ref().is_some_and(|r|r.status=="lobby") {
                             client.record=None;client.base=None;world.resource_mut::<NextState<AppState>>().set(AppState::MainMenu);
                         }
-                        client.report_error(error);
+                        let error=if client.retrying {format!("{error} Retrying automatically.")}else{error};
+                        if client.retrying && client.failures<3 {
+                            client.notice=Some(error);
+                        } else {client.report_error(error);}
                     }
                 }
             }
@@ -588,7 +626,12 @@ pub(super) fn draw_status(
     let Some(record) = &client.record else {
         return;
     };
-    let message = if client.error.is_some() {
+    let message = if client.retrying {
+        client
+            .notice
+            .as_deref()
+            .or_else(|| client.error.as_deref().filter(|e| supabase::retryable(e)))
+    } else if client.error.is_some() {
         None
     } else if record.members.iter().any(|m| m.player == 0 && !m.connected) {
         Some("Waiting for the host to reconnect. Game time is paused.")

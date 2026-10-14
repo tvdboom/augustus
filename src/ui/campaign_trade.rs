@@ -2,8 +2,9 @@
 
 use super::campaign::Campaign;
 use super::campaign_widgets::{
-    icon, network_action_button, paint_icon, paint_purchase_background, portrait, sestertius_unit,
-    space_after_portrait, territorial_distance_badge, Icon, ProvinceLandscape,
+    directory_row_fill, icon, network_action_button, paint_icon, paint_purchase_background,
+    portrait, sestertius_unit, space_after_portrait, territorial_distance_badge, Icon,
+    ProvinceLandscape,
 };
 use super::province_panel::{INK, PAPER, RULE, TABLE_STRIPE};
 use super::resource_hud::format_statistic;
@@ -111,9 +112,9 @@ fn route_title(ui: &mut egui::Ui, name: &str, width: f32, scale: f32) {
     campaign_economy::ledger_text(ui, rect, name, 14.5 * scale, INK, egui::Align::Min);
 }
 
-fn stop_immediately_tip(campaign: &Campaign) -> String {
+fn abort_trade_tip(campaign: &Campaign) -> String {
     format!(
-        "Stop immediately\n• Relation with this partner: −{:.0}\n• Influence: −{:.0}\n• Merchant Senate confidence decreases.",
+        "Abort Trade\n• Relation with this partner: −{:.0}\n• Influence: −{:.0}\n• Merchant Senate confidence decreases.",
         campaign.economy.config.trade.cancellation_relation_penalty,
         campaign.economy.config.trade.cancellation_influence_penalty,
     )
@@ -310,39 +311,51 @@ fn action(
     enabled: bool,
     scale: f32,
 ) -> bool {
-    ui.add_enabled_ui(enabled, |ui| {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(30.0, 30.0) * scale, egui::Sense::click());
-        ui.painter().rect_filled(
-            rect,
-            3.0 * scale,
-            if response.is_pointer_button_down_on() {
-                ui.visuals().widgets.active.bg_fill
-            } else if response.hovered() {
-                TABLE_STRIPE
-            } else {
-                PAPER
-            },
-        );
-        ui.painter().rect_stroke(
-            rect,
-            3.0 * scale,
-            egui::Stroke::new(scale, RULE),
-            egui::StrokeKind::Inside,
-        );
-        paint_icon(ui, symbol, rect.shrink(3.0 * scale));
-        if !enabled {
-            ui.painter().rect_filled(rect, 3.0 * scale, PAPER.gamma_multiply(0.55));
-        }
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
-        response
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(30.0, 30.0) * scale, egui::Sense::click());
+            ui.painter().rect_filled(
+                rect,
+                3.0 * scale,
+                if response.is_pointer_button_down_on() {
+                    ui.visuals().widgets.active.bg_fill
+                } else if response.hovered() {
+                    TABLE_STRIPE
+                } else {
+                    PAPER
+                },
+            );
+            ui.painter().rect_stroke(
+                rect,
+                3.0 * scale,
+                egui::Stroke::new(scale, RULE),
+                egui::StrokeKind::Inside,
+            );
+            paint_icon(ui, symbol, rect.shrink(3.0 * scale));
+            if !enabled {
+                ui.painter().rect_filled(rect, 3.0 * scale, PAPER.gamma_multiply(0.55));
+            }
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label)
+            });
+            response
+                .on_hover_text(tip)
+                .on_disabled_hover_text(tip)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+        })
+        .inner;
+    block_disabled_action_click(ui, &response, tip);
+    response.clicked()
+}
+
+/// Disabled controls consume clicks instead of activating the enclosing route card.
+fn block_disabled_action_click(ui: &mut egui::Ui, response: &egui::Response, tip: &str) {
+    if !response.enabled() {
+        ui.interact(response.rect, response.id.with("disabled-action-click"), egui::Sense::CLICK)
             .on_hover_text(tip)
-            .on_disabled_hover_text(tip)
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-    })
-    .inner
+            .on_hover_cursor(egui::CursorIcon::Default);
+    }
 }
 
 fn quote(
@@ -361,7 +374,76 @@ fn quote(
     }
 }
 
-fn exchange_columns(ui: &mut egui::Ui, outgoing: TradeBundle, incoming: TradeBundle, scale: f32) {
+/// Find the smallest whole amount in one offer row that makes the current NPC deal valid.
+/// Ask the real quote path so scarcity, surplus valuation, distance and blackmail stay aligned.
+fn required_offer_amount(
+    campaign: &Campaign,
+    player: usize,
+    partner: TradeParty,
+    give: [f64; 5],
+    receive: [f64; 5],
+    frequency: TradeFrequency,
+    resource: usize,
+) -> Result<f64, String> {
+    if !matches!(partner, TradeParty::Npc(_)) {
+        return Err("Automatic offer amounts require an AI trading partner.".into());
+    }
+    let inputs = campaign.inputs();
+    let accepts = |amount: u32| -> Result<(), String> {
+        let mut offered = give;
+        offered[resource] = f64::from(amount);
+        let agreement = TradeAgreement::new(
+            TradeParty::Player(player),
+            partner,
+            bundle(offered),
+            bundle(receive),
+            frequency,
+        );
+        let quote = quote(&campaign.economy, &agreement, &inputs)?;
+        if quote.fulfillment + 1e-9 < 1.0 {
+            return Err(quote
+                .limit_reason
+                .unwrap_or_else(|| "This trade requires 100% supply.".into()));
+        }
+        Ok(())
+    };
+    if accepts(0).is_ok() {
+        return Ok(0.0);
+    }
+    let mut high = if frequency == TradeFrequency::OneTime {
+        let wallet = &campaign.economy.players[player];
+        [
+            wallet.resources[0],
+            wallet.resources[1],
+            wallet.resources[2],
+            wallet.coin,
+            wallet.influence,
+        ][resource]
+            .floor()
+            .clamp(0.0, 1_000_000.0) as u32
+    } else {
+        1_000_000
+    };
+    accepts(high)?;
+    let mut low = 1;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if accepts(middle).is_ok() {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    Ok(f64::from(low))
+}
+
+fn exchange_columns(
+    ui: &mut egui::Ui,
+    outgoing: TradeBundle,
+    incoming: TradeBundle,
+    partner_name: &str,
+    scale: f32,
+) {
     let amounts = |bundle: TradeBundle| {
         [
             bundle.resources[0],
@@ -373,67 +455,176 @@ fn exchange_columns(ui: &mut egui::Ui, outgoing: TradeBundle, incoming: TradeBun
     };
     let sent = amounts(outgoing);
     let received = amounts(incoming);
-    let shown: Vec<_> = (0..SYMBOLS.len())
-        .filter(|&resource| sent[resource] > 0.0 || received[resource] > 0.0)
-        .collect();
+    let resources = if outgoing.influence > 0.0 || incoming.influence > 0.0 {
+        5
+    } else {
+        4
+    };
+    let partner_sends = format!("{partner_name} sends");
     ui.columns(2, |columns| {
         for (column, (label, values)) in
-            columns.iter_mut().zip([("You send", sent), ("You receive", received)])
+            columns.iter_mut().zip([("You send", sent), (partner_sends.as_str(), received)])
         {
             column.spacing_mut().item_spacing.y = 4.0 * scale;
-            column.label(egui::RichText::new(label).size(13.0 * scale).color(INK));
-            column.add_space(2.0 * scale);
-            if shown.is_empty() {
-                column.label("—");
-            }
-            for &resource in &shown {
-                let amount = values[resource];
-                let (cell, _) = column.allocate_exact_size(
-                    egui::vec2((152.0 * scale).min(column.available_width()), 36.0 * scale),
+            let (heading, _) = column.allocate_exact_size(
+                egui::vec2(column.available_width(), 18.0 * scale),
+                egui::Sense::hover(),
+            );
+            campaign_economy::ledger_text(
+                column,
+                heading,
+                label,
+                12.0 * scale,
+                INK,
+                egui::Align::Min,
+            );
+            let gap = 4.0 * scale;
+            let width = (column.available_width() - gap) * 0.5;
+            for first in (0..resources).step_by(2) {
+                let (row, _) = column.allocate_exact_size(
+                    egui::vec2(column.available_width(), 24.0 * scale),
                     egui::Sense::hover(),
                 );
-                column.painter().rect_filled(cell, 4.0 * scale, TABLE_STRIPE);
-                column.painter().rect_stroke(
-                    cell,
-                    4.0 * scale,
-                    egui::Stroke::new(0.65 * scale, RULE),
-                    egui::StrokeKind::Inside,
-                );
-                super::campaign_widgets::paint_raster_icon(
-                    column,
-                    SYMBOLS[resource],
-                    egui::Rect::from_center_size(
-                        cell.left_center() + egui::vec2(18.0 * scale, 0.0),
-                        egui::Vec2::splat(24.0 * scale),
-                    ),
-                    egui::Color32::from_white_alpha(if amount > 0.0 {
-                        255
-                    } else {
-                        90
-                    }),
-                );
-                campaign_economy::ledger_text(
-                    column,
-                    egui::Rect::from_min_max(
-                        cell.min + egui::vec2(38.0 * scale, 0.0),
-                        cell.max - egui::vec2(8.0 * scale, 0.0),
-                    ),
-                    &if amount > 0.0 {
-                        format_statistic(amount)
-                    } else {
-                        "—".to_owned()
-                    },
-                    14.0 * scale,
-                    if amount > 0.0 {
-                        INK
-                    } else {
-                        MUTED
-                    },
-                    egui::Align::Min,
-                );
+                for resource in first..(first + 2).min(resources) {
+                    let amount = values[resource];
+                    let cell = egui::Rect::from_min_size(
+                        row.min + egui::vec2((resource - first) as f32 * (width + gap), 0.0),
+                        egui::vec2(width, row.height()),
+                    );
+                    column.painter().rect_filled(cell, 3.0 * scale, TABLE_STRIPE);
+                    column.painter().rect_stroke(
+                        cell,
+                        3.0 * scale,
+                        egui::Stroke::new(0.65 * scale, RULE),
+                        egui::StrokeKind::Inside,
+                    );
+                    super::campaign_widgets::paint_raster_icon(
+                        column,
+                        SYMBOLS[resource],
+                        egui::Rect::from_center_size(
+                            cell.left_center() + egui::vec2(13.0 * scale, 0.0),
+                            egui::Vec2::splat(20.0 * scale),
+                        ),
+                        egui::Color32::from_white_alpha(if amount > 0.0 {
+                            255
+                        } else {
+                            90
+                        }),
+                    );
+                    campaign_economy::ledger_text(
+                        column,
+                        egui::Rect::from_min_max(
+                            cell.min + egui::vec2(27.0 * scale, 0.0),
+                            cell.max - egui::vec2(5.0 * scale, 0.0),
+                        ),
+                        &if amount > 0.0 {
+                            format_statistic(amount)
+                        } else {
+                            "—".to_owned()
+                        },
+                        12.0 * scale,
+                        if amount > 0.0 {
+                            INK
+                        } else {
+                            MUTED
+                        },
+                        egui::Align::Min,
+                    );
+                }
             }
         }
     });
+}
+
+/// Right-to-left placement keeps Close on the left and Abort on the right.
+fn trade_end_actions(
+    ui: &mut egui::Ui,
+    campaign: &mut Campaign,
+    player: usize,
+    trade: &TradeAgreement,
+    scale: f32,
+) -> Option<String> {
+    let mut message = None;
+    if network_action_button(ui, Icon::Cancel, "Abort", true, scale)
+        .on_hover_text(abort_trade_tip(campaign))
+        .clicked()
+    {
+        message = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|error| error));
+    }
+    let (label, tip) = trade.cancellation_month.map_or_else(
+        || ("Close".to_owned(), format!("Close Trade\nGive {} months' notice. Trading continues during notice, then ends without penalties.", campaign.economy.config.trade.cancellation_notice_months)),
+        |due| {
+            let months = due.saturating_sub(campaign.economy.month);
+            (format!("{months} {}", if months == 1 { "month" } else { "months" }), format!("Close Trade\nNotice already given. This trade ends after {months} more months without penalties."))
+        },
+    );
+    let close =
+        network_action_button(ui, Icon::Notice, &label, trade.cancellation_month.is_none(), scale);
+    block_disabled_action_click(ui, &close, &tip);
+    if close.on_hover_text(&tip).on_disabled_hover_text(tip).clicked() {
+        message = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|error| error));
+    }
+    message
+}
+
+const TRADE_PROVINCE_CLICK_ID: &str = "campaign-trade-province-click";
+
+pub(in crate::app) fn take_province_click(ctx: &egui::Context) -> Option<usize> {
+    ctx.data_mut(|data| data.remove_temp::<usize>(egui::Id::new(TRADE_PROVINCE_CLICK_ID)))
+}
+
+fn party_province(world: &EconomyWorld, partner: TradeParty) -> Option<usize> {
+    match partner {
+        TradeParty::Npc(province) => world.provinces.get(province).map(|_| province),
+        TradeParty::Player(player) => world
+            .provinces
+            .iter()
+            .position(|province| province.owner == Some(player) && province.name != "Rome"),
+    }
+}
+
+/// The entire route card opens its partner; child action buttons retain their own clicks.
+fn route_card(
+    ui: &mut egui::Ui,
+    campaign: &mut Campaign,
+    partner: TradeParty,
+    scale: f32,
+    render: impl FnOnce(&mut egui::Ui, &mut Campaign),
+) {
+    let province = party_province(&campaign.economy, partner);
+    let margin = (10.0 * scale).round() as i8;
+    let width = ui.available_width() - 2.0 * f32::from(margin) - 1.6 * scale;
+    let card = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+        let mut prepared = egui::Frame::new()
+            .fill(egui::Color32::from_rgb(247, 243, 232))
+            .stroke(egui::Stroke::new(0.8 * scale, RULE))
+            .corner_radius(2.0 * scale)
+            .inner_margin(egui::Margin::same(margin))
+            .begin(ui);
+        prepared.content_ui.set_width(width.max(1.0));
+        prepared.content_ui.spacing_mut().item_spacing.y = 5.0 * scale;
+        render(&mut prepared.content_ui, campaign);
+        prepared.allocate_space(ui);
+        prepared
+    });
+    let mut prepared = card.inner;
+    let response = card.response;
+    if province.is_some()
+        && (response.hovered()
+            || response.has_focus()
+            || response.is_pointer_button_down_on()
+            || response.clicked())
+    {
+        prepared.frame.fill = directory_row_fill(&response, 0);
+    }
+    prepared.paint(ui);
+    if let Some(province) = province {
+        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new(TRADE_PROVINCE_CLICK_ID), province);
+            });
+        }
+    }
 }
 
 /// This panel is scoped to the viewing nation, independently of selected map provinces.
@@ -444,8 +635,6 @@ pub(in crate::app) fn show(
     scale: f32,
 ) -> Option<String> {
     let key = egui::Id::new(("national-trade-view", player));
-    let portrait = portrait(ui, ProvinceLandscape::Trade, 76.0 * scale);
-    space_after_portrait(ui, portrait, scale, 0.0);
     let mut view = ui.ctx().data_mut(|data| data.get_temp::<TradeView>(key)).unwrap_or_default();
     let result = page(ui, campaign, player, scale, &mut view);
     ui.ctx().data_mut(|data| data.insert_temp(key, view));
@@ -576,27 +765,7 @@ fn network_trade(
                     message = Some(campaign.accept_national_trade(player, trade.id).unwrap_or_else(|error| error));
                 }
             } else {
-                let tip = stop_immediately_tip(campaign);
-                if network_action_button(ui, Icon::Cancel, "Abort", true, scale)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    message = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|error| error));
-                }
-                let (label, tip) = trade.cancellation_month.map_or_else(
-                    || ("Close".to_owned(), format!("Give {} months' notice. Trading continues during notice, then ends without penalties.", campaign.economy.config.trade.cancellation_notice_months)),
-                    |due| {
-                        let months = due.saturating_sub(campaign.economy.month);
-                        (format!("{months} {}", if months == 1 { "month" } else { "months" }), format!("Notice already given. This trade ends after {months} more months without penalties."))
-                    },
-                );
-                if network_action_button(ui, Icon::Notice, &label, trade.cancellation_month.is_none(), scale)
-                    .on_hover_text(&tip)
-                    .on_disabled_hover_text(tip)
-                    .clicked()
-                {
-                    message = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|error| error));
-                }
+                message = trade_end_actions(ui, campaign, player, trade, scale);
             }
         });
     });
@@ -607,6 +776,11 @@ fn network_trade(
     } else {
         (trade.b_gives, trade.a_gives)
     };
+    let partner = if trade.party_a == TradeParty::Player(player) {
+        trade.party_b
+    } else {
+        trade.party_a
+    };
     exchange_columns(
         ui,
         outgoing,
@@ -615,6 +789,7 @@ fn network_trade(
         } else {
             efficiency
         }),
+        &party_name(&campaign.economy, partner),
         scale,
     );
     message
@@ -667,7 +842,14 @@ fn page(
         [(Icon::Trade, "Trade routes"), (Icon::Building(BuildingType::UrbanMarket), "Open market")];
     view.page = view.page.min(pages.len() - 1);
     icon_tabs(ui, &mut view.page, &pages, "trade-pages", false, scale);
-    ui.add_space(8.0 * scale);
+    ui.separator();
+    let landscape = if view.page == 1 {
+        ProvinceLandscape::OpenMarket
+    } else {
+        ProvinceLandscape::Trade
+    };
+    let portrait = portrait(ui, landscape, 76.0 * scale);
+    space_after_portrait(ui, portrait, scale, 0.0);
     match view.page {
         1 => market(ui, campaign, player, scale, view),
         _ => routes(ui, campaign, player, scale, None),
@@ -717,24 +899,44 @@ fn routes(
     }
     for trade in active {
         ui.push_id(trade.id, |ui| {
-            let outgoing = if trade.party_a == TradeParty::Player(player) { trade.a_gives } else { trade.b_gives };
-            let incoming = if trade.party_a == TradeParty::Player(player) { trade.b_gives } else { trade.a_gives };
-            let partner = if trade.party_a == TradeParty::Player(player) { trade.party_b } else { trade.party_a };
-            frame(ui, scale, |ui| {
+            let outgoing = if trade.party_a == TradeParty::Player(player) {
+                trade.a_gives
+            } else {
+                trade.b_gives
+            };
+            let incoming = if trade.party_a == TradeParty::Player(player) {
+                trade.b_gives
+            } else {
+                trade.a_gives
+            };
+            let partner = if trade.party_a == TradeParty::Player(player) {
+                trade.party_b
+            } else {
+                trade.party_a
+            };
+            route_card(ui, campaign, partner, scale, |ui, campaign| {
                 ui.horizontal(|ui| {
                     icon(ui, Icon::Trade, 25.0 * scale);
-                    let label_width = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
+                    let label_width = (ui.available_width()
+                        - 2.0 * (98.0 * scale + ui.spacing().item_spacing.x))
+                        .max(1.0);
                     route_title(ui, &party_name(&campaign.economy, partner), label_width, scale);
-                    let tip = stop_immediately_tip(campaign);
-                    if action(ui, Icon::Cancel, "Abort trade immediately", &tip, true, scale) { result = Some(campaign.end_trade(player, trade.id, false).unwrap_or_else(|e| e)); }
-                    let tip = if let Some(due) = trade.cancellation_month { format!("Notice already given. This route ends after {} more months without a relation penalty.", due.saturating_sub(campaign.economy.month)) }
-                        else { "Give six months' notice. Trading continues during notice, then ends without penalties.".into() };
-                    if action(ui, Icon::Notice, "Close trade with notice", &tip, trade.cancellation_month.is_none(), scale) { result = Some(campaign.end_trade(player, trade.id, true).unwrap_or_else(|e| e)); }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        result =
+                            trade_end_actions(ui, campaign, player, trade, scale).or(result.take());
+                    });
                 });
                 let inputs = campaign.inputs();
                 let path = campaign.economy.trade_route(trade.party_a, trade.party_b, &inputs);
-                let efficiency = path.as_ref().map_or(0.0, |route| campaign.economy.route_efficiency(route));
-                exchange_columns(ui, outgoing, incoming.scaled(efficiency), scale);
+                let efficiency =
+                    path.as_ref().map_or(0.0, |route| campaign.economy.route_efficiency(route));
+                exchange_columns(
+                    ui,
+                    outgoing,
+                    incoming.scaled(efficiency),
+                    &party_name(&campaign.economy, partner),
+                    scale,
+                );
             });
             ui.add_space(7.0 * scale);
         });
@@ -744,9 +946,13 @@ fn routes(
         section(ui, "PENDING OFFERS", scale);
     }
     for trade in pending {
-        ui.push_id(("pending", trade.id), |ui| frame(ui, scale, |ui| {
+        let partner = if trade.party_a == TradeParty::Player(player) {
+            trade.party_b
+        } else {
+            trade.party_a
+        };
+        ui.push_id(("pending", trade.id), |ui| route_card(ui, campaign, partner, scale, |ui, campaign| {
             ui.horizontal(|ui| {
-                let partner = if trade.party_a == TradeParty::Player(player) { trade.party_b } else { trade.party_a };
                 icon(ui, Icon::Trade, 25.0 * scale);
                 let available = (ui.available_width() - 2.0 * (30.0 * scale + ui.spacing().item_spacing.x)).max(1.0);
                 route_title(ui, &party_name(&campaign.economy, partner), available, scale);
@@ -761,7 +967,7 @@ fn routes(
                 if trade.party_b == TradeParty::Player(player) { "Awaiting your response" } else { "Awaiting acceptance" },
             )).size(12.0 * scale).color(MUTED));
             let (outgoing, incoming) = if trade.party_a == TradeParty::Player(player) { (trade.a_gives, trade.b_gives) } else { (trade.b_gives, trade.a_gives) };
-            exchange_columns(ui, outgoing, incoming, scale);
+            exchange_columns(ui, outgoing, incoming, &party_name(&campaign.economy, partner), scale);
         }));
         ui.add_space(7.0 * scale);
     }
@@ -879,6 +1085,9 @@ fn composer(
     } else {
         view.receive_at_maximum = [false; 5];
     }
+    let mut balance_resource = None;
+    let can_balance_offer =
+        maximum_receive.is_some() && view.receive.iter().any(|amount| *amount > 0.0);
     compact_frame(ui, scale, |ui| {
         card_title(ui, "Exchange terms", scale);
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -912,21 +1121,40 @@ fn composer(
                                         .speed(1.0)
                                         .max_decimals(1),
                                 );
+                                if side == 0 && maximum_receive.is_some() {
+                                    let maximum = maximum_icon_button(
+                                        ui,
+                                        &format!("Required {}", NAMES[resource]),
+                                        can_balance_offer,
+                                        false,
+                                        scale,
+                                    );
+                                    if maximum_reset_clicked(ui, &maximum) {
+                                        *value = 0.0;
+                                        amount.surrender_focus();
+                                    } else if maximum.clicked() {
+                                        balance_resource = Some(resource);
+                                        amount.surrender_focus();
+                                    }
+                                }
                                 if let Some(maximum) = maximum_receive.filter(|_| side == 1) {
                                     let maximum = maximum[resource];
                                     if amount.changed() {
                                         *at_maximum =
                                             maximum > 0.0 && (*value - maximum).abs() < 1e-9;
                                     }
-                                    if maximum_amount_button(
+                                    let maximum_button = maximum_icon_button(
                                         ui,
-                                        resource,
-                                        maximum,
+                                        &format!("Maximum {}", NAMES[resource]),
+                                        maximum > 0.0,
                                         *at_maximum,
                                         scale,
-                                    )
-                                    .clicked()
-                                    {
+                                    );
+                                    if maximum_reset_clicked(ui, &maximum_button) {
+                                        *value = 0.0;
+                                        *at_maximum = false;
+                                        amount.surrender_focus();
+                                    } else if maximum_button.clicked() {
                                         *value = maximum;
                                         *at_maximum = true;
                                         amount.surrender_focus();
@@ -938,6 +1166,46 @@ fn composer(
                 });
             });
         }
+        if let Some(resource) = balance_resource {
+            match required_offer_amount(
+                campaign,
+                player,
+                partner,
+                view.give,
+                view.receive,
+                frequency,
+                resource,
+            ) {
+                Ok(amount) => view.give[resource] = amount,
+                Err(reason) => result = Some(reason),
+            }
+        }
+        let values = if let TradeParty::Npc(id) = partner {
+            campaign.economy.provinces[id].market.resources.map(|market| market.local_unit_value)
+        } else {
+            config.base_value
+        };
+        let totals = [view.give, view.receive]
+            .map(|amounts| bundle(amounts).value(values, config.influence_value));
+        let total_tip = if matches!(partner, TradeParty::Npc(_)) {
+            "Total value at this province's listed coin prices, before transport losses and the discount on imports above Wants + Reserves. Relation and distance also affect acceptance."
+        } else {
+            "Total value at base coin prices, before transport losses. Both players choose and accept their own exchange terms."
+        };
+        trade_row(ui, 3, 27.0 * scale, true, scale, |ui, cells| {
+            for (side, (cell, total)) in cells[1..].iter().zip(totals).enumerate() {
+                campaign_economy::ledger_text(
+                    ui,
+                    cell.shrink2(egui::vec2(7.0 * scale, 0.0)),
+                    &format!("Total: {} coins", policy_widgets::coin_decimal(total)),
+                    12.0 * scale,
+                    INK,
+                    egui::Align::Max,
+                );
+                ui.interact(*cell, ui.id().with(("exchange-total", side)), egui::Sense::hover())
+                    .on_hover_text(total_tip);
+            }
+        });
     });
     let agreement = TradeAgreement::new(
         TradeParty::Player(player),
@@ -1038,32 +1306,14 @@ fn resource_icon(ui: &mut egui::Ui, cell: egui::Rect, resource: usize, scale: f3
         .on_hover_text(NAMES[resource]);
 }
 
-fn maximum_amount_button(
-    ui: &mut egui::Ui,
-    resource: usize,
-    maximum: f64,
-    selected: bool,
-    scale: f32,
-) -> egui::Response {
-    maximum_icon_button(ui, resource, maximum, selected, scale)
-        .on_hover_text(format!(
-            "Use the partner's live maximum for {} ({maximum:.0}). The amount follows availability; edit the number to keep a fixed amount.",
-            NAMES[resource]
-        ))
-        .on_disabled_hover_text(format!(
-            "The partner has no {} available for this exchange.",
-            NAMES[resource]
-        ))
-}
-
 fn maximum_icon_button(
     ui: &mut egui::Ui,
-    resource: usize,
-    maximum: f64,
+    label: &str,
+    enabled: bool,
     selected: bool,
     scale: f32,
 ) -> egui::Response {
-    ui.add_enabled_ui(maximum > 0.0, |ui| {
+    ui.add_enabled_ui(enabled, |ui| {
         let response =
             ui.add_sized(egui::vec2(36.0, 24.0) * scale, egui::Button::new("").selected(selected));
         paint_icon(
@@ -1072,15 +1322,21 @@ fn maximum_icon_button(
             egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(18.0 * scale)),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                response.enabled(),
-                format!("Maximum {}", NAMES[resource]),
-            )
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
         });
         response
     })
     .inner
+}
+
+/// An unavailable maximum can still clear a manually entered amount with a right click.
+fn maximum_reset_clicked(ui: &mut egui::Ui, response: &egui::Response) -> bool {
+    if response.enabled() {
+        response.secondary_clicked()
+    } else {
+        ui.interact(response.rect, response.id.with("reset-maximum"), egui::Sense::CLICK)
+            .secondary_clicked()
+    }
 }
 
 fn table_headings(ui: &mut egui::Ui, headings: &[(&str, &str)], scale: f32) {
@@ -1120,8 +1376,11 @@ fn partner_market(
         "Whole units {} can send {period}, after this month's deliveries. These supply the {} sends amounts.",
         p.name, p.name,
     );
-    let import_tip = format!(
-        "Preferred additional imports {period} for shortages and replenishing reserves. {} values further units at {:.0}% of the listed value, so surplus needs {:.0}× as many units for the same value. A generous offer can still be accepted.",
+    let shortage_tip = format!(
+        "Whole units of unmet internal need {period}, after local production and this month's delivered imports. Surplus-producing resources have no shortage.",
+    );
+    let reserve_tip = format!(
+        "Additional imports {period} for replenishing reserves, separate from Wants. {} values units beyond Wants + Reserves at {:.0}% of the listed coin price, so surplus needs {:.0}× as many units for the same value.",
         p.name,
         config.surplus_import_value_share.clamp(0.01, 1.0) * 100.0,
         1.0 / config.surplus_import_value_share.clamp(0.01, 1.0),
@@ -1148,18 +1407,20 @@ fn partner_market(
             ui,
             &[
                 ("Can send", export_tip.as_str()),
-                ("Wants", import_tip.as_str()),
-                ("Value", "Local coin value per unit, used to compare both sides of your offer. Scarce resources are worth more."),
+                ("Wants", shortage_tip.as_str()),
+                ("Reserves", reserve_tip.as_str()),
+                ("Coins per unit", "Local coin value of one unit, used to compare both sides of your offer. Scarce resources are worth more."),
             ],
             scale,
         );
         for resource in 0..3 {
             let m = p.market.resources[resource];
-            trade_row(ui, 4, 26.0 * scale, resource % 2 == 0, scale, |ui, cells| {
+            trade_row(ui, 5, 26.0 * scale, resource % 2 == 0, scale, |ui, cells| {
                 resource_icon(ui, cells[0], resource, scale);
                 for (cell, (value, tip)) in cells[1..].iter().zip([
                     (m.available_exports(config, frequency), Some(export_tip.as_str())),
-                    (m.available_imports(config, frequency), Some(import_tip.as_str())),
+                    (m.remaining_shortage(config, frequency), Some(shortage_tip.as_str())),
+                    (m.reserve_demand(config, frequency), Some(reserve_tip.as_str())),
                     (m.local_unit_value, None),
                 ]) {
                     let mut text_rect = cell.shrink2(egui::vec2(7.0 * scale, 0.0));
@@ -1277,17 +1538,19 @@ fn market(
                                     format!("There is no {} stock to sell.", NAMES[resource]),
                                 )
                             };
-                            if maximum_icon_button(
+                            let maximum = maximum_icon_button(
                                 ui,
-                                resource,
-                                limit,
+                                &format!("Maximum {}", NAMES[resource]),
+                                limit > 0.0,
                                 limit > 0.0 && view.quantities[resource] == limit,
                                 scale,
                             )
                             .on_hover_text(tip)
-                            .on_disabled_hover_text(disabled_tip)
-                            .clicked()
-                            {
+                            .on_disabled_hover_text(disabled_tip);
+                            if maximum.secondary_clicked() {
+                                view.quantities[resource] = 0.0;
+                                amount.surrender_focus();
+                            } else if maximum.clicked() {
                                 view.quantities[resource] = limit;
                                 amount.surrender_focus();
                             }
@@ -1402,7 +1665,7 @@ fn market(
                             format_statistic(quote.coin),
                             sestertius_unit(quote.coin)
                         );
-                        campaign.notify_market_trade(player, &message);
+                        campaign.notify_market_trade(player, view.market_side);
                         message
                     },
                     Err(reason) => reason,

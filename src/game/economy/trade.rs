@@ -71,7 +71,7 @@ pub enum TradeStatus {
     Suspended,
     /// A one-time agreement has already executed.
     Completed,
-    /// Explicit cancellation or too many consecutive failures.
+    /// Explicit cancellation or too many consecutive route/counterparty failures.
     Cancelled,
 }
 
@@ -94,7 +94,7 @@ pub struct TradeAgreement {
     pub status: TradeStatus,
     /// Accepted flags for A and B; player trades need both.
     pub accepted: [bool; 2],
-    /// Consecutive suspension count; success resets it.
+    /// Consecutive failures eligible for automatic cancellation; success resets it.
     pub failure_months: u8,
     /// Most recent failure reason for a tooltip.
     pub last_failure: Option<String>,
@@ -208,6 +208,20 @@ impl NpcResourceMarket {
             * config.maximum_import_multiple
             * Self::capacity_multiplier(config, frequency)
             - self.imported)
+            .max(0.0)
+    }
+
+    /// Unmet internal need after local production and this month's delivered imports.
+    pub fn remaining_shortage(&self, config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        ((self.internal_need - self.production_potential).max(0.0)
+            * Self::capacity_multiplier(config, frequency)
+            - self.imported)
+            .max(0.0)
+    }
+
+    /// Additional full-value imports beyond the remaining shortage, for replenishing reserves.
+    pub fn reserve_demand(&self, config: &TradeConfig, frequency: TradeFrequency) -> f64 {
+        (self.available_imports(config, frequency) - self.remaining_shortage(config, frequency))
             .max(0.0)
     }
 
@@ -516,8 +530,8 @@ impl EconomyWorld {
             .unwrap_or(0)
     }
 
-    /// Validate and quote a proposal; this read-only method never reserves or transfers anything.
-    pub fn quote_trade(
+    /// Validate agreed bundles and access without reconsidering the NPC's market terms.
+    fn quote_trade_route(
         &self,
         agreement: &TradeAgreement,
         inputs: &MonthlyInputs,
@@ -553,7 +567,7 @@ impl EconomyWorld {
         }
         let route = self.trade_route(agreement.party_a, agreement.party_b, inputs)?;
         let efficiency = self.route_efficiency(&route);
-        let mut quote = TradeQuote {
+        let quote = TradeQuote {
             route,
             efficiency,
             a_receives: agreement.b_gives.scaled(efficiency),
@@ -571,6 +585,23 @@ impl EconomyWorld {
             if relation < self.config.trade.minimum_relation {
                 return Err("The NPC's relation is too hostile for trade".into());
             }
+        }
+        Ok(quote)
+    }
+
+    /// Validate and quote a proposal; this read-only method never reserves or transfers anything.
+    pub fn quote_trade(
+        &self,
+        agreement: &TradeAgreement,
+        inputs: &MonthlyInputs,
+    ) -> Result<TradeQuote, String> {
+        let mut quote = self.quote_trade_route(agreement, inputs)?;
+        if let TradeParty::Npc(npc) = agreement.party_b {
+            let TradeParty::Player(player) = agreement.party_a else {
+                unreachable!()
+            };
+            let province = &self.provinces[npc];
+            let relation = province.relation_by_player.get(player).copied().unwrap_or(50.0);
             let band = ((relation.clamp(0.0, 100.0) / 20.0).floor() as usize).min(4);
             let distance_cost =
                 distance_multiplier(self.territorial_distance(player, npc)).unwrap_or(3.0);
@@ -610,7 +641,7 @@ impl EconomyWorld {
                 );
                 let explanation = if surplus {
                     format!(
-                        " Surplus resources beyond Wants count at {:.0}% of their listed value.",
+                        " Surplus resources beyond Wants + Reserves count at {:.0}% of their listed value.",
                         self.config.trade.surplus_import_value_share.clamp(0.01, 1.0) * 100.0
                     )
                 } else {
@@ -637,16 +668,29 @@ impl EconomyWorld {
         Ok(quote)
     }
 
-    /// Quote an immediate execution including both parties' current balances.
-    /// Monthly proposals use `quote_trade` because future production can fund them.
+    /// Quote a delivery; accepted monthly NPC terms survive changes in the NPC's economy.
+    /// Player payments and diplomatic access still apply. New deals use live market limits.
     pub fn quote_trade_execution(
         &self,
         agreement: &TradeAgreement,
         inputs: &MonthlyInputs,
     ) -> Result<TradeQuote, String> {
-        let quote = self.quote_trade(agreement, inputs)?;
+        let committed_npc = agreement.frequency == TradeFrequency::Monthly
+            && matches!(agreement.party_b, TradeParty::Npc(_))
+            && agreement.accepted == [true, true]
+            && matches!(agreement.status, TradeStatus::Active | TradeStatus::Suspended);
+        let quote = if committed_npc {
+            self.quote_trade_route(agreement, inputs)?
+        } else {
+            self.quote_trade(agreement, inputs)?
+        };
         self.check_party_supply(agreement.party_a, agreement.a_gives.scaled(quote.fulfillment))?;
-        self.check_party_supply(agreement.party_b, agreement.b_gives.scaled(quote.fulfillment))?;
+        if !committed_npc {
+            self.check_party_supply(
+                agreement.party_b,
+                agreement.b_gives.scaled(quote.fulfillment),
+            )?;
+        }
         Ok(quote)
     }
 
@@ -781,7 +825,7 @@ impl EconomyWorld {
             if trade.frequency != TradeFrequency::Monthly || trade.status != TradeStatus::Active {
                 continue;
             }
-            if let Err(reason) = self.trade_route(trade.party_a, trade.party_b, inputs) {
+            if let Err(reason) = self.quote_trade_route(trade, inputs) {
                 let trade = &mut self.trades[index];
                 trade.status = TradeStatus::Suspended;
                 trade.last_failure = Some(reason.clone());
@@ -796,7 +840,7 @@ impl EconomyWorld {
         events
     }
 
-    /// Recurring agreements execute in stable creation order; reservations prevent overcommitment.
+    /// Recurring agreements execute in stable creation order and record actual deliveries.
     pub(super) fn advance_trade(
         &mut self,
         inputs: &MonthlyInputs,
@@ -832,12 +876,19 @@ impl EconomyWorld {
                     }
                 },
                 Err(reason) => {
+                    // Missing player payments pause an NPC route without revoking its acceptance.
+                    let can_cancel = !matches!(trade.party_b, TradeParty::Npc(_))
+                        || self.quote_trade_route(&trade, inputs).is_err();
                     let agreement = &mut self.trades[index];
-                    agreement.failure_months = agreement.failure_months.saturating_add(1);
+                    agreement.failure_months = if can_cancel {
+                        agreement.failure_months.saturating_add(1)
+                    } else {
+                        0
+                    };
                     agreement.last_failure = Some(reason.clone());
                     agreement.last_delivered_value = 0.0;
                     agreement.last_fulfillment = 0.0;
-                    if agreement.failure_months >= self.config.trade.failure_limit {
+                    if can_cancel && agreement.failure_months >= self.config.trade.failure_limit {
                         agreement.status = TradeStatus::Cancelled;
                         events.push(EconomyEvent::TradeCancelled {
                             agreement: agreement.id,
@@ -887,7 +938,8 @@ impl EconomyWorld {
             .collect()
     }
 
-    /// Commit only after both parties pass affordability and supply checks.
+    /// Accepted monthly NPC commitments survive changes in supply, demand, prices, and cash.
+    /// Route access, relations, and the player's gross payment must still permit delivery.
     fn execute_trade(
         &mut self,
         agreement: &mut TradeAgreement,

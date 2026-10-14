@@ -206,7 +206,8 @@ pub fn deploy_formation(
     formation
 }
 
-/// Refill casualties from reserves without shifting surviving active troops.
+/// Refill casualties from reserves, then advance uncovered support into its front slot.
+/// Other surviving deployed troops keep their positions.
 pub fn refill_formation(
     formation: &mut Formation,
     units: &[Unit],
@@ -237,7 +238,8 @@ pub fn refill_formation(
         if formation.front[slot].is_none() {
             let flank =
                 slot < formation.flank_size || slot >= width.saturating_sub(formation.flank_size);
-            formation.front[slot] = take_best(&mut available, plans, flank, false, true, config);
+            formation.front[slot] = take_best(&mut available, plans, flank, false, true, config)
+                .or_else(|| formation.support[slot].take());
         }
     }
     for slot in &mut formation.support {

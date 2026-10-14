@@ -1136,7 +1136,11 @@ impl MilitaryWorld {
                         {
                             winner
                         },
-                        Some(ForceOwner::Local(_)) if outcome.territorial_owner.is_none() => winner,
+                        Some(ForceOwner::Local(home))
+                            if home != outcome.province || outcome.territorial_owner.is_none() =>
+                        {
+                            winner
+                        },
                         _ => None,
                     }
                 } else {
@@ -1244,7 +1248,7 @@ fn record_destroyed_cohorts(
     }
 }
 
-/// Initial NPC defenses with three times the original roster, independent of civilians.
+/// Initial NPC defenses with nine times the original roster, independent of civilians.
 pub fn initial_defenders(name: &str) -> Vec<UnitType> {
     use UnitType::*;
     let roster = match name {
@@ -1265,7 +1269,7 @@ pub fn initial_defenders(name: &str) -> Vec<UnitType> {
         "Armenia Mesopotamia" | "Dacia" => vec![LightInfantry, HorseArchers],
         _ => vec![LightInfantry, Archers],
     };
-    roster.repeat(3)
+    roster.repeat(9)
 }
 
 /// Historical recruitment capabilities are explicit data, never inferred from terrain.

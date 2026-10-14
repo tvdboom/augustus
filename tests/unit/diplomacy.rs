@@ -1,6 +1,69 @@
 use super::*;
 
 #[test]
+fn vassal_policies_set_actual_income_and_stack_monthly_relations() {
+    let config = DiplomacyConfig::default();
+    for (tribute, fraction, tribute_relation) in
+        [(Tribute::Low, 0.1, 0.5), (Tribute::Normal, 0.2, 0.0), (Tribute::High, 0.3, -1.0)]
+    {
+        for (autonomy, multiplier, autonomy_relation) in [
+            (VassalAutonomy::Low, 1.25, -0.5),
+            (VassalAutonomy::Normal, 1.0, 0.0),
+            (VassalAutonomy::High, 0.75, 0.5),
+        ] {
+            let mut province = ProvincePolitics::independent(2);
+            province.state = PoliticalState::Vassal {
+                overlord: 0,
+                control: 60.0,
+                tribute,
+            };
+            province.vassal_autonomy = autonomy;
+            province.relations = vec![70.0, 25.0];
+            assert_eq!(province.tribute_due(100.0), Some((0, 100.0 * fraction)));
+            assert_eq!(province.tribute_due(-10.0), Some((0, 0.0)));
+            assert_eq!(province.vassal_income(&config), Some((0, 3.0 * multiplier)));
+            for months in 1..=3 {
+                province.resolve_month(&[0.0; 2], None, 0.0, &config);
+                assert_eq!(
+                    province.relation(0),
+                    70.0 + months as f64 * (tribute_relation + autonomy_relation),
+                );
+                assert_eq!(province.relation(1), 25.0);
+                assert_eq!(province.control(0), 60.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn harsh_vassal_policies_erode_stability_and_end_income_at_independence() {
+    let config = DiplomacyConfig::default();
+    let mut province = ProvincePolitics::independent(1);
+    province.state = PoliticalState::Vassal {
+        overlord: 0,
+        control: 0.1,
+        tribute: Tribute::High,
+    };
+    province.vassal_autonomy = VassalAutonomy::Low;
+    province.resolve_month(&[0.0], None, 0.0, &config);
+    assert_eq!(province.relation(0), 48.5);
+    assert!(province.last_control_change.relation < 0.0);
+    assert!(matches!(province.state, PoliticalState::Independent { .. }));
+    assert_eq!(province.tribute_due(100.0), None);
+    assert_eq!(province.vassal_income(&config), None);
+
+    province.state = PoliticalState::Vassal {
+        overlord: 0,
+        control: 60.0,
+        tribute: Tribute::Low,
+    };
+    province.vassal_autonomy = VassalAutonomy::High;
+    province.relations[0] = 99.5;
+    province.resolve_month(&[0.0], None, 0.0, &config);
+    assert_eq!(province.relation(0), 100.0);
+}
+
+#[test]
 fn liberation_garrison_recovers_owned_control_without_transferring_ownership() {
     let mut province = ProvincePolitics::owned(2, 0);
     let config = DiplomacyConfig::default();
@@ -202,6 +265,29 @@ fn multiplayer_control_stays_nonnegative_and_conserved() {
         resolve_control(&mut local, &mut shares, &gains, &losses);
         assert!(shares.iter().all(|value| *value >= 0.0));
         assert!((local + shares.iter().sum::<f64>() - 100.0).abs() < 1e-7);
+    }
+}
+
+#[test]
+fn zero_owner_control_from_monthly_or_immediate_pressure_releases_the_province() {
+    for immediate in [false, true] {
+        let mut province = ProvincePolitics::owned(2, 0);
+        if immediate {
+            province.gain_control_now(1, 100.0).unwrap();
+        } else {
+            province.queue_control_gain(1, 100.0).unwrap();
+            province.resolve_month(&[0.0; 2], None, 0.0, &DiplomacyConfig::default());
+        }
+        assert_eq!(province.control(0), 0.0);
+        assert_eq!(province.control(1), 100.0);
+        assert!(matches!(
+            province.state,
+            PoliticalState::Independent {
+                local: 0.0,
+                ..
+            }
+        ));
+        assert_eq!(province.take_ownership(1), Ok(0.0), "Ownership remains an explicit choice");
     }
 }
 

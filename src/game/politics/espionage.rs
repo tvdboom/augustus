@@ -44,7 +44,7 @@ impl Default for EspionageConfig {
             npc_generation_chance: 0.05,
             npc_pool_cap: 3,
             npc_discovery_chance: 0.15,
-            favorable_trade_months: 6,
+            favorable_trade_months: 24,
             favorable_trade_ratio: 0.75,
         }
     }
@@ -855,7 +855,7 @@ impl EspionageState {
         Ok(())
     }
 
-    /// Consume NPC evidence for six months of favorable, player-specific trade terms.
+    /// Consume NPC evidence for temporary, player-specific trade terms (two years by default).
     pub fn blackmail_trade(
         &mut self,
         player: PlayerId,

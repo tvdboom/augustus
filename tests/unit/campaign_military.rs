@@ -3,6 +3,9 @@
 use super::super::campaign_notifications::{NoticeAction, NoticeKind};
 use super::*;
 
+#[path = "campaign_hostility.rs"]
+mod hostility_tests;
+
 /// Construct a small deterministic three-province campaign without renderer assets.
 fn campaign() -> Campaign {
     campaign_with_players(2)
@@ -339,7 +342,10 @@ fn low_relations_without_visitors_or_local_defenders_do_not_create_a_battle() {
         c.reconcile_provinces();
         assert!(c.military.battles.is_empty());
         assert!(!c.npc_wars[0][1]);
-        assert!(c.military.movements.is_empty(), "Locals never chase into another province");
+        assert!(
+            c.military.movements.is_empty(),
+            "Reconciliation alone never rolls a border attack"
+        );
     }
 }
 
@@ -1725,12 +1731,14 @@ fn insults_reject_own_provinces_rome_and_missing_targets_without_using_the_coold
 }
 
 #[test]
-fn hostile_npc_forces_defend_home_without_ever_issuing_offensive_orders() {
+fn declared_hostility_without_very_low_relation_keeps_npc_armies_at_home() {
     let mut c = campaign();
+    c.military.config.npc_invasion_monthly_chance = 1.;
     c.military.seed_local_defenders(1, "Achaia").unwrap();
     let original: Vec<_> =
         c.military.provinces[1].forces[&ForceOwner::Local(1)].iter().map(|u| u.id).collect();
     c.declare_hostility(0, 1);
+    assert_eq!(c.politics[1].relation(0), 50.);
     for _ in 0..24 {
         c.advance_month();
     }

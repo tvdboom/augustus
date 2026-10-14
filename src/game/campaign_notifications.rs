@@ -77,7 +77,7 @@ pub(crate) enum NoticeKind {
     WonderStarted,
     /// A foreign wonder finished construction.
     WonderCompleted,
-    /// Independent Control crossed 50 upward.
+    /// Independent Control rose above 50 and enabled vassalization.
     ControlFifty,
     /// Independent Control crossed 100 upward.
     ControlFull,
@@ -603,6 +603,25 @@ impl Campaign {
                 province,
                 owner: ForceOwner::Player(player),
             } => self.notify_occupation(province, player),
+            MilitaryEvent::OccupationEstablished {
+                province,
+                owner: ForceOwner::Local(home),
+            } => {
+                if let Some(player) = self.economy.provinces[province].owner {
+                    self.notifications.province_notice(
+                        player,
+                        province,
+                        month,
+                        NoticeSeverity::Warning,
+                        NoticeKind::OccupationEstablished,
+                        format!("{} occupied", self.economy.provinces[province].name),
+                        format!(
+                            "An army from {} occupies this province, reducing your Control.",
+                            self.economy.provinces[home].name,
+                        ),
+                    );
+                }
+            },
             MilitaryEvent::RankIncreased {
                 owner: ForceOwner::Player(player),
                 rank,
@@ -982,7 +1001,14 @@ impl Campaign {
                     for (threshold, kind) in
                         [(50.0, NoticeKind::ControlFifty), (100.0, NoticeKind::ControlFull)]
                     {
-                        if old < threshold - 1e-7 && new >= threshold - 1e-7 {
+                        let newly_available = if threshold == 100.0 {
+                            old < threshold - 1e-7 && new >= threshold - 1e-7
+                        } else {
+                            old <= threshold
+                                && new > threshold
+                                && politics.clone().vassalize(player).is_ok()
+                        };
+                        if newly_available {
                             self.notifications.province_notice(
                                 player,
                                 province,
@@ -992,12 +1018,12 @@ impl Campaign {
                                 if threshold == 100.0 {
                                     format!("Full Control of {name}")
                                 } else {
-                                    format!("50 Control in {name}")
+                                    "Vassalization available".into()
                                 },
                                 if threshold == 100.0 {
-                                    "Take Ownership is now available."
+                                    format!("You can now take ownership of {name}.")
                                 } else {
-                                    "Vassalize above 50 Control if you are the sole leader."
+                                    format!("You can now vassalize {name}.")
                                 },
                             );
                         }

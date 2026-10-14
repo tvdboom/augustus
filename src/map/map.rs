@@ -1548,6 +1548,7 @@ pub(crate) fn draw_map(
                 interactions_enabled,
             );
             if let Some(detail) = clicked_detail.filter(|_| !panel_close_click.0) {
+                crate::app::dismiss_battle_panel(ctx);
                 province_open.0 = Some(detail);
                 campaign_ui.map_detail_clicked();
                 governance_open.0 = false;

@@ -5,6 +5,7 @@ mod menu;
 #[path = "ui/mod.rs"]
 mod ui;
 use menu::*;
+pub(crate) use ui::campaign_military::dismiss_battle_panel;
 pub(crate) use ui::campaign_panel::CampaignUi;
 use ui::*;
 
@@ -16,6 +17,8 @@ mod campaign_espionage;
 mod campaign_events;
 #[path = "game/campaign_governance.rs"]
 mod campaign_governance;
+#[path = "game/campaign_hostility.rs"]
+mod campaign_hostility;
 #[path = "game/campaign_intelligence.rs"]
 pub(crate) mod campaign_intelligence;
 #[path = "game/campaign_notifications.rs"]

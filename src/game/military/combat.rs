@@ -356,18 +356,10 @@ impl Battle {
                 before[1].saturating_sub(self.defenders.units.iter().map(Unit::people).sum()),
             ],
         });
-        // Remove destroyed and routed icons immediately, preserving living positions.
+        // Replace casualties immediately so the visible state is ready for the next round.
+        // Newly committed reserves did not participate in the round just resolved.
         for side in [&mut self.attackers, &mut self.defenders] {
-            for slot in side.formation.front.iter_mut().chain(&mut side.formation.support) {
-                if slot.is_some_and(|id| {
-                    side.routed.contains(&id) || !side.units.iter().any(|unit| unit.id == id)
-                }) {
-                    *slot = None;
-                }
-            }
-            side.formation.reserves.retain(|id| {
-                !side.routed.contains(id) && side.units.iter().any(|unit| unit.id == *id)
-            });
+            refill_formation(&mut side.formation, &side.units, &side.plans, &side.routed, config);
         }
         self.result = broken_result(&self.attackers, &self.defenders);
     }

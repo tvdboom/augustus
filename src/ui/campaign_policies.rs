@@ -16,7 +16,7 @@ fn speed_multiplier(value: f64) -> String {
     format!("{value:.2}").trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-fn card<T: Copy + PartialEq>(
+pub(super) fn card<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     title: &str,
     selected: &mut T,
@@ -33,9 +33,10 @@ fn card<T: Copy + PartialEq>(
         .unwrap_or(egui::Color32::from_rgb(155, 77, 52));
     for (index, (symbol, value)) in effects.iter().enumerate() {
         let badge = policy_widgets::effect_rect(&painter, rect, scale, effects.len(), index);
-        let value_color = if *symbol == Icon::Happiness && value.starts_with('-') {
+        let sentiment = matches!(symbol, Icon::Happiness | Icon::Relation);
+        let value_color = if sentiment && value.starts_with('-') {
             super::resource_hud::hud_delta_color(-1.0)
-        } else if *symbol == Icon::Happiness && value.starts_with('+') {
+        } else if sentiment && value.starts_with('+') {
             super::resource_hud::hud_delta_color(1.0)
         } else {
             INK

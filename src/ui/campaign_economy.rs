@@ -332,6 +332,22 @@ fn ledger_signed_breakdown_value(
     color: egui::Color32,
     scale: f32,
 ) {
+    ledger_tooltip_value(ui, rect, value, color, scale, |ui| {
+        for &(label, amount) in entries {
+            let (value, color) = signed_contribution(amount, decimals);
+            tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+        }
+    });
+}
+
+fn ledger_tooltip_value(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    value: &str,
+    color: egui::Color32,
+    scale: f32,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
     ledger_text(
         ui,
         rect.shrink2(egui::vec2(4.0 * scale, 0.0)),
@@ -345,12 +361,81 @@ fn ledger_signed_breakdown_value(
         ui.id().with((rect.min.x.to_bits(), rect.min.y.to_bits())),
         egui::Sense::hover(),
     )
-    .inspection_hover_ui(|ui| {
-        for &(label, amount) in entries {
-            let (value, color) = signed_contribution(amount, decimals);
-            tooltip_numeric_bullet(ui, label, &value, color, 0.0);
-        }
-    });
+    .inspection_hover_ui(contents);
+}
+
+/// Standing effects on the neutral baseline, including accumulated hardship.
+fn happiness_modifier_entries(
+    province: &EconomicProvince,
+    class: usize,
+    config: &EconomyConfig,
+) -> Vec<(&'static str, f64)> {
+    let policies = province.policies;
+    let mut entries = vec![
+        ("Food policy", config.food_policy[policies.food as usize].happiness),
+        ("Buildings", province.building_effects(config).happiness[class]),
+        ("Manumission policy", config.manumission_happiness[policies.manumission as usize][class]),
+        ("Citizenship policy", config.citizenship_happiness[policies.citizenship as usize][class]),
+        // Campaign resolution supplies this field exclusively from military draft penalties.
+        ("Military drafting", province.happiness_modifiers[class]),
+        ("Events / espionage", province.temporary_happiness[class]),
+    ];
+    if class == 0 {
+        entries.push(("Noble wages", province.noble_wage_happiness));
+        entries.push(("Treasury insolvency", -province.insolvency_unhappiness));
+    }
+    if class == 1 || class == 2 {
+        entries.push(("Recruitment effort", province.recruitment_happiness));
+    }
+    if class == 3 {
+        entries.push(("Slave labor", config.slave_policy[policies.slave_labor as usize].happiness));
+    } else {
+        entries.push(("Migration policy", config.migration_happiness[policies.migration as usize]));
+        entries.push(("Civic spending", province.civic_happiness));
+    }
+    entries.push(("Accumulated overcrowding", -province.overcrowding_unhappiness));
+    entries.push(("Accumulated food shortage", -province.shortage_unhappiness));
+    entries.retain(|(_, amount)| (amount * 10.0).round() != 0.0);
+    entries
+}
+
+fn happiness_tooltip(
+    ui: &mut egui::Ui,
+    province: &EconomicProvince,
+    class: usize,
+    config: &EconomyConfig,
+    scale: f32,
+) {
+    ui.set_max_width(320.0 * scale);
+    let affected =
+        ["Noble Influence", "Citizen taxes", "Plebeian resources", "Slave resources"][class];
+    let output = happiness_output_multiplier(class, province.happiness[class], config);
+    tooltip_numeric_bullet(
+        ui,
+        affected,
+        &format!("{:.0}% of normal", output * 100.0),
+        if output < 1.0 {
+            super::resource_hud::hud_delta_color(-1.0)
+        } else {
+            egui::Color32::BLACK
+        },
+        0.0,
+    );
+    let births = birth_modifier(province.happiness[class]);
+    tooltip_numeric_bullet(
+        ui,
+        "Birth rate from happiness",
+        &format!("{:.0}% of base", births * 100.0),
+        super::resource_hud::hud_delta_color(births - 1.0),
+        0.0,
+    );
+    for (label, loss) in [
+        ("Accumulated overcrowding", province.overcrowding_unhappiness),
+        ("Accumulated food shortage", province.shortage_unhappiness),
+    ] {
+        let (value, color) = signed_contribution(-loss, 1);
+        tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+    }
 }
 
 /// Population and resource ledgers fill the inspector without a scroll container.
@@ -391,7 +476,12 @@ pub(in crate::app) fn overview_for_player(
         .allocate_exact_size(egui::vec2(ui.available_width(), 48.0 * scale), egui::Sense::hover());
     let gap = 6.0 * scale;
     let show_food = p.owner.is_some() && p.owner == player;
-    let badge_width = (badges.width() - 2.0 * gap) / 3.0;
+    let badge_count = if show_food {
+        4
+    } else {
+        2
+    };
+    let badge_width = (badges.width() - (badge_count - 1) as f32 * gap) / badge_count as f32;
     let badge = |index: usize| {
         egui::Rect::from_min_size(
             badges.min + egui::vec2(index as f32 * (badge_width + gap), 0.0),
@@ -418,13 +508,11 @@ pub(in crate::app) fn overview_for_player(
     );
     ui.interact(badge(0), ui.id().with("population-capacity"), egui::Sense::hover())
         .inspection_hover_ui(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0 * scale;
-            ui.strong("Population capacity");
             tooltip_numeric_bullet(
                 ui,
                 "Area",
                 &format!("{:.1}", p.capacity_area),
-                egui::Color32::BLACK,
+                super::resource_hud::hud_delta_color(p.capacity_area),
                 0.0,
             );
             let terrain = world.config.terrain_capacity[p.terrain as usize];
@@ -488,22 +576,19 @@ pub(in crate::app) fn overview_for_player(
             food_color,
             scale,
         );
-        ui.interact(badge(1), ui.id().with("food-demand-breakdown"), egui::Sense::hover()).inspection_hover_ui(
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0 * scale;
-            ui.strong("Food demand per month");
-            ui.label("Food consumed each month, not a food deficit. Your national food stock supplies this demand.");
-            let (value, color) = food_demand_amount(civilian_food);
-            tooltip_numeric_bullet(ui, "Civilians", &value, color, 0.0);
-            for (class, name) in CLASS_NAMES.iter().enumerate() {
-                let amount = p.population[class] * world.config.food_per_class[class] * food_policy;
-                let (value, color) = food_demand_amount(amount);
-                tooltip_numeric_bullet(ui, name, &value, color, 14.0 * scale);
-            }
-            let (value, color) = food_demand_amount(military_food);
-            tooltip_numeric_bullet(ui, "Military", &value, color, 0.0);
-        },
-    );
+        ui.interact(badge(1), ui.id().with("food-demand-breakdown"), egui::Sense::hover())
+            .inspection_hover_ui(|ui| {
+                let (value, color) = food_demand_amount(civilian_food);
+                tooltip_numeric_bullet(ui, "Civilians", &value, color, 0.0);
+                for (class, name) in CLASS_NAMES.iter().enumerate() {
+                    let amount =
+                        p.population[class] * world.config.food_per_class[class] * food_policy;
+                    let (value, color) = food_demand_amount(amount);
+                    tooltip_numeric_bullet(ui, name, &value, color, 14.0 * scale);
+                }
+                let (value, color) = food_demand_amount(military_food);
+                tooltip_numeric_bullet(ui, "Military", &value, color, 0.0);
+            });
         let supply_color = last.map_or(ink, |month| {
             super::resource_hud::hud_delta_color(if month.food_supply_ratio < 1.0 {
                 -1.0
@@ -514,6 +599,41 @@ pub(in crate::app) fn overview_for_player(
         overview_badge(ui, badge(2), Icon::Food, "Food supplied", &last.map_or_else(|| "—".to_owned(), |last| format!("{:.0}%", (last.food_supply_ratio * 100.0).floor())),
             "Last month's food fulfillment\n\n100% means all food demand was covered by the owner's national food stock. Shortages proportionally lower happiness and births and can potentially cause famines.", supply_color, scale);
     }
+    let production_output =
+        [2, 3].map(|class| happiness_output_multiplier(class, p.happiness[class], &world.config));
+    let average_output = (production_output[0] + production_output[1]) / 2.0;
+    let output_badge = badge(badge_count - 1);
+    overview_badge(
+        ui,
+        output_badge,
+        Icon::BaseAmount,
+        "Production output",
+        &format!("{:.0}%", (average_output * 100.0).floor()),
+        "",
+        super::resource_hud::hud_delta_color(if average_output < 1.0 {
+            -1.0
+        } else {
+            1.0
+        }),
+        scale,
+    );
+    ui.interact(output_badge, ui.id().with("production-output"), egui::Sense::hover())
+        .inspection_hover_ui(|ui| {
+            ui.set_max_width(320.0 * scale);
+            for (class, output) in [2, 3].into_iter().zip(production_output) {
+                tooltip_numeric_bullet(
+                    ui,
+                    CLASS_NAMES[class],
+                    &format!("{:.0}%", (output * 100.0).floor()),
+                    super::resource_hud::hud_delta_color(if output < 1.0 {
+                        -1.0
+                    } else {
+                        1.0
+                    }),
+                    0.0,
+                );
+            }
+        });
     ui.add_space(10.0 * scale);
     ledger_header(
         ui,
@@ -522,7 +642,7 @@ pub(in crate::app) fn overview_for_player(
             (Icon::Amount, "Total population"),
             (Icon::Delta, "Monthly growth"),
             (Icon::Happiness, "Happiness"),
-            (Icon::Delta, "Monthly happiness modifiers"),
+            (Icon::Delta, "Happiness modifiers"),
         ],
         scale,
     );
@@ -566,81 +686,29 @@ pub(in crate::app) fn overview_for_player(
             } else {
                 ledger_value(ui, cells[2], "—", "No month has resolved yet.", MUTED, scale);
             }
-            let food = world.config.food_policy[p.policies.food as usize];
-            let slave = world.config.slave_policy[p.policies.slave_labor as usize];
-            let mut entries = vec![
-                ("Food policy", food.happiness),
-                ("Buildings", p.building_effects(&world.config).happiness[class]),
-                (
-                    "Manumission policy",
-                    world.config.manumission_happiness[p.policies.manumission as usize][class],
-                ),
-                (
-                    "Citizenship policy",
-                    world.config.citizenship_happiness[p.policies.citizenship as usize][class],
-                ),
-                ("Events / unrest", p.happiness_modifiers[class] + p.temporary_happiness[class]),
-            ];
-            if class == 1 || class == 2 {
-                entries.push(("Recruitment", p.recruitment_happiness));
-            }
-            if class == 3 {
-                entries.push(("Slave labor", slave.happiness));
-            } else {
-                entries.push((
-                    "Migration policy",
-                    world.config.migration_happiness[p.policies.migration as usize],
-                ));
-                entries.push(("Civic spending", p.civic_happiness));
-            }
-            entries.push(("Overcrowding", -last.map_or(0.0, |month| month.overcrowding_penalty)));
-            entries.push(("Food shortage", -last.map_or(0.0, |month| month.shortage_penalty)));
-            // Show only modifiers large enough to appear at the tooltip's precision.
-            entries.retain(|(_, amount)| (amount * 10.0).round() != 0.0);
-            let modifier: f64 =
-                entries.iter().map(|(_, amount)| (amount * 10.0).round() / 10.0).sum();
+            let entries = happiness_modifier_entries(p, class, &world.config);
+            let modifier = rounded_breakdown_total(&entries);
             let (modifier_value, modifier_color) = signed_contribution(modifier, 1);
-            let affected =
-                ["Noble Influence", "Citizen taxes", "Plebeian resources", "Slave resources"]
-                    [class];
-            let threshold = UNHAPPINESS_THRESHOLDS[class];
-            let mut consequence = format!(
-                "Below {threshold:.0} happiness, {affected} fall with happiness. Current output: {:.0}%. Accumulated overcrowding loss: {:.1}; food shortage loss: {:.1}. These recover after conditions improve.",
-                happiness_output_multiplier(class, p.happiness[class], &world.config) * 100.0,
-                p.overcrowding_unhappiness,
-                p.shortage_unhappiness,
-            );
-            if class == 3 {
-                consequence.push_str(" At 5 or lower, Slaves can revolt.");
-            }
-            ledger_value(
+            ledger_tooltip_value(
                 ui,
                 cells[3],
                 &format!("{:.0}", p.happiness[class]),
-                &consequence,
                 ink,
                 scale,
+                |ui| happiness_tooltip(ui, p, class, &world.config, scale),
             );
-            if entries.is_empty() {
-                ledger_text(
-                    ui,
-                    cells[4].shrink2(egui::vec2(4.0 * scale, 0.0)),
-                    &modifier_value,
-                    16.0 * scale,
-                    modifier_color,
-                    egui::Align::Center,
-                );
-            } else {
-                ledger_signed_breakdown_value(
-                    ui,
-                    cells[4],
-                    &modifier_value,
-                    &entries,
-                    1,
-                    modifier_color,
-                    scale,
-                );
-            }
+            ledger_tooltip_value(ui, cells[4], &modifier_value, modifier_color, scale, |ui| {
+                ui.set_max_width(320.0 * scale);
+                if entries.is_empty() {
+                    ui.label(
+                        egui::RichText::new("• No active modifiers.").color(egui::Color32::BLACK),
+                    );
+                }
+                for &(label, amount) in &entries {
+                    let (value, color) = signed_contribution(amount, 1);
+                    tooltip_numeric_bullet(ui, label, &value, color, 0.0);
+                }
+            });
         });
     }
     if p.owner.is_some() {
@@ -784,13 +852,13 @@ pub(in crate::app) fn overview_for_player(
                     RESOURCE_NAMES[resource],
                     scale,
                 );
-                ledger_value(
+                ledger_text(
                     ui,
-                    cells[1],
+                    cells[1].shrink2(egui::vec2(4.0 * scale, 0.0)),
                     &p.potential[resource].to_string(),
-                    "These values give the production ratio at Balanced focus, before bonuses. Food gain also subtracts what civilians and troops eat.",
+                    16.0 * scale,
                     ink,
-                    scale,
+                    egui::Align::Center,
                 );
                 let mut entries: Vec<_> = [2, 3]
                     .into_iter()

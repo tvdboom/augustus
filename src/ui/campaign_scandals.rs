@@ -492,7 +492,7 @@ fn use_explanation(
             format!("Spend this scandal to gain {amount} Relation with {province}.")
         },
         ScandalUse::Trade => format!(
-            "Spend this scandal to get {amount}% better trade terms with {province} for {} months.",
+            "Spend this scandal to get {amount}% better trade terms with {province} for {} months. Lowers the value required for new offers and active monthly trades; agreed amounts stay fixed.",
             campaign.espionage_config.favorable_trade_months
         ),
     }

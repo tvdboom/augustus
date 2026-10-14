@@ -24,6 +24,10 @@ mod orders;
 pub(in crate::app) use battle_panel::{draw_battle_panel, open_battle_panel};
 pub(in crate::app) use orders::{draw_orders_menu, prepare_orders};
 
+pub(crate) fn dismiss_battle_panel(ctx: &egui::Context) {
+    battle_panel::dismiss(ctx);
+}
+
 /// One player intent dispatched by the campaign bridge after rendering.
 pub(in crate::app) enum MilitaryUiAction {
     /// Draft the selected type in the current province.
@@ -272,6 +276,16 @@ struct ArmyOverviewRow {
 }
 
 impl ArmyOverviewRow {
+    fn composition(&self) -> Vec<(UnitType, usize)> {
+        UnitType::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let count = self.units.iter().filter(|unit| unit.unit_type == kind).count();
+                (count > 0).then_some((kind, count))
+            })
+            .collect()
+    }
+
     fn averages(&self) -> (f64, f64) {
         let manpower: f64 = self.units.iter().map(|unit| unit.current_manpower).sum();
         let training =
@@ -523,21 +537,173 @@ pub(in crate::app) fn overview(
     selected_province
 }
 
-const OVERVIEW_FRACTIONS: [f32; 6] = [0., 0.24, 0.62, 0.75, 0.875, 1.];
+fn overview_unit_row_width(
+    ui: &egui::Ui,
+    composition: &[(UnitType, usize)],
+    icon_size: f32,
+    count_size: f32,
+    scale: f32,
+) -> f32 {
+    composition
+        .iter()
+        .map(|(_, count)| {
+            icon_size
+                + 3. * scale
+                + ui.painter()
+                    .layout_no_wrap(
+                        count.to_string(),
+                        egui::FontId::proportional(count_size),
+                        super::province_panel::INK,
+                    )
+                    .size()
+                    .x
+        })
+        .sum::<f32>()
+        + composition.len().saturating_sub(1) as f32 * 8. * scale
+}
 
-fn overview_cells(rect: egui::Rect, scale: f32) -> [egui::Rect; 5] {
+const OVERVIEW_TACTIC_GAP: f32 = 12.;
+
+fn overview_column_widths(
+    ui: &egui::Ui,
+    rows: &[&ArmyOverviewRow],
+    compositions: &[Vec<(UnitType, usize)>],
+    economy: &EconomyWorld,
+    width: f32,
+    scale: f32,
+) -> [f32; 5] {
+    let text_width = |text: &str, size| {
+        ui.painter()
+            .layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::proportional(size * scale),
+                super::province_panel::INK,
+            )
+            .size()
+            .x
+    };
+    let mut metrics = [
+        text_width("Tactic", 12.).max(26. * scale) + (10. + OVERVIEW_TACTIC_GAP) * scale,
+        text_width("Morale", 12.).max(25. * scale + text_width("100%", 12.)) + 10. * scale,
+        text_width("Training", 12.).max(25. * scale + text_width("100%", 12.)) + 10. * scale,
+    ];
+    let metric_scale = (width * 0.5 / metrics.iter().sum::<f32>()).min(1.);
+    for metric in &mut metrics {
+        *metric *= metric_scale;
+    }
+    let remaining = width - metrics.iter().sum::<f32>();
+    // Measure only displayed provinces, including the owner marker and name insets.
+    let province_width = rows
+        .iter()
+        .map(|row| text_width(&economy.provinces[row.province].name, 14.) + 40. * scale)
+        .fold(text_width("Province", 12.) + 10. * scale, f32::max);
+    // Reserve a compact two-row composition; sparse armies keep their larger icons.
+    let unit_width = compositions
+        .iter()
+        .map(|composition| {
+            let (columns, icon_size, count_size) = if composition.len() <= 2 {
+                (composition.len().max(1), 32., 14.)
+            } else {
+                (composition.len().div_ceil(2), 24., 12.)
+            };
+            composition
+                .chunks(columns)
+                .map(|row| {
+                    overview_unit_row_width(ui, row, icon_size * scale, count_size * scale, scale)
+                })
+                .fold(0., f32::max)
+        })
+        .fold(text_width("Units", 12.), f32::max)
+        + 10. * scale;
+    let minimum_province = province_width.min(78. * scale).min(remaining * 0.4);
+    let province_width = province_width.min((remaining - unit_width).max(minimum_province));
+    [province_width, remaining - province_width, metrics[0], metrics[1], metrics[2]]
+}
+
+fn overview_cells(rect: egui::Rect, widths: &[f32; 5], scale: f32) -> [egui::Rect; 5] {
+    let mut left = rect.left();
     std::array::from_fn(|index| {
-        egui::Rect::from_min_max(
+        let right = left + widths[index];
+        let cell = egui::Rect::from_min_max(
+            egui::pos2(left + 5. * scale, rect.top()),
             egui::pos2(
-                rect.left() + rect.width() * OVERVIEW_FRACTIONS[index] + 5. * scale,
-                rect.top(),
-            ),
-            egui::pos2(
-                rect.left() + rect.width() * OVERVIEW_FRACTIONS[index + 1] - 5. * scale,
+                right
+                    - (5.
+                        + if index == 2 {
+                            OVERVIEW_TACTIC_GAP
+                        } else {
+                            0.
+                        })
+                        * scale,
                 rect.bottom(),
             ),
-        )
+        );
+        left = right;
+        cell
     })
+}
+
+struct OverviewUnitLayout {
+    columns: usize,
+    icon_size: f32,
+    count_size: f32,
+    spacing_scale: f32,
+}
+
+impl OverviewUnitLayout {
+    fn new(ui: &egui::Ui, composition: &[(UnitType, usize)], width: f32, scale: f32) -> Self {
+        if overview_unit_row_width(ui, composition, 32. * scale, 14. * scale, scale) <= width {
+            return Self {
+                columns: composition.len().max(1),
+                icon_size: 32. * scale,
+                count_size: 14. * scale,
+                spacing_scale: scale,
+            };
+        }
+        let columns = composition.len().div_ceil(2).max(1);
+        let needed = composition
+            .chunks(columns)
+            .map(|row| overview_unit_row_width(ui, row, 24. * scale, 12. * scale, scale))
+            .fold(0., f32::max);
+        let fit = (width / needed.max(1.)).clamp(0., 1.);
+        Self {
+            columns,
+            icon_size: 24. * scale * fit,
+            count_size: 12. * scale * fit,
+            spacing_scale: scale * fit,
+        }
+    }
+
+    fn paint(&self, ui: &mut egui::Ui, cell: egui::Rect, composition: &[(UnitType, usize)]) {
+        let scale = self.spacing_scale;
+        let mut unit_ui = ui.new_child(egui::UiBuilder::new().max_rect(cell));
+        unit_ui.set_clip_rect(ui.clip_rect().intersect(cell));
+        let painter = unit_ui.painter();
+        let rows = composition.len().div_ceil(self.columns);
+        let height = rows as f32 * self.icon_size + rows.saturating_sub(1) as f32 * 4. * scale;
+        for (row_index, row) in composition.chunks(self.columns).enumerate() {
+            let mut x = cell.left();
+            let y =
+                cell.center().y - height * 0.5 + row_index as f32 * (self.icon_size + 4. * scale);
+            for &(kind, count) in row {
+                let image =
+                    egui::Rect::from_min_size(egui::pos2(x, y), egui::Vec2::splat(self.icon_size));
+                paint_icon(&unit_ui, Icon::Unit(kind), image);
+                let count = painter.layout_no_wrap(
+                    count.to_string(),
+                    egui::FontId::proportional(self.count_size),
+                    super::province_panel::INK,
+                );
+                let count_width = count.size().x;
+                painter.galley(
+                    image.right_center() + egui::vec2(3. * scale, -count.size().y * 0.5),
+                    count,
+                    super::province_panel::INK,
+                );
+                x = image.right() + count_width + 11. * scale;
+            }
+        }
+    }
 }
 
 fn overview_text(
@@ -589,9 +755,11 @@ fn overview_table(
 ) {
     use super::province_panel::{INK, PAPER, RULE};
     let width = ui.available_width().max(1.);
+    let compositions: Vec<_> = rows.iter().map(|row| row.composition()).collect();
+    let widths = overview_column_widths(ui, rows, &compositions, economy, width, scale);
     let (header, _) = ui.allocate_exact_size(egui::vec2(width, 34. * scale), egui::Sense::hover());
     ui.painter().rect_filled(header, 2. * scale, egui::Color32::from_rgb(73, 69, 61));
-    for (cell, label) in overview_cells(header, scale)
+    for (cell, label) in overview_cells(header, &widths, scale)
         .into_iter()
         .zip(["Province", "Units", "Tactic", "Morale", "Training"])
     {
@@ -603,16 +771,13 @@ fn overview_table(
         overview_text(ui, cell, label, 12., PAPER, align, scale);
     }
     for (index, row) in rows.iter().enumerate() {
-        let composition: Vec<_> = UnitType::ALL
-            .into_iter()
-            .filter_map(|kind| {
-                let count = row.units.iter().filter(|unit| unit.unit_type == kind).count();
-                (count > 0).then_some((kind, count))
-            })
-            .collect();
-        let unit_width = width * (OVERVIEW_FRACTIONS[2] - OVERVIEW_FRACTIONS[1]) - 10. * scale;
-        let columns = (unit_width / (48. * scale)).floor().max(1.) as usize;
-        let height = (composition.len().div_ceil(columns) as f32 * 28. + 12.).max(54.) * scale;
+        let composition = &compositions[index];
+        let unit_layout = OverviewUnitLayout::new(ui, composition, widths[1] - 10. * scale, scale);
+        let height = if composition.len() > unit_layout.columns {
+            64.
+        } else {
+            54.
+        } * scale;
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -628,7 +793,7 @@ fn overview_table(
             )
         });
         paint_directory_row(ui, rect, &response, index, scale);
-        let cell = overview_cells(rect, scale);
+        let cell = overview_cells(rect, &widths, scale);
         let color = match row.owner {
             ForceOwner::Player(id) => colors.get(id).copied().unwrap_or(RULE),
             ForceOwner::Local(_) => super::province_panel::NEUTRAL,
@@ -656,26 +821,7 @@ fn overview_table(
             name_width,
             scale,
         );
-        let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(cell[1]));
-        for (unit_index, &(kind, count)) in composition.iter().enumerate() {
-            let min = cell[1].min
-                + egui::vec2(
-                    (unit_index % columns) as f32 * 48. + 1.,
-                    (unit_index / columns) as f32 * 28. + 6.,
-                ) * scale;
-            paint_icon(
-                ui,
-                Icon::Unit(kind),
-                egui::Rect::from_min_size(min, egui::vec2(24., 24.) * scale),
-            );
-            painter.text(
-                min + egui::vec2(27., 12.) * scale,
-                egui::Align2::LEFT_CENTER,
-                count.to_string(),
-                egui::FontId::proportional(12. * scale),
-                INK,
-            );
-        }
+        unit_layout.paint(ui, cell[1], composition);
         if let Some(tactic) = row.tactic {
             let image =
                 egui::Rect::from_center_size(cell[2].center(), egui::vec2(26., 26.) * scale);
@@ -748,32 +894,7 @@ fn military_banner(
         egui::pos2(banner.right() - margin - switch_width * badge_scale, bottom - button_height),
         egui::pos2(banner.right() - margin, bottom),
     );
-    let rank_response = ui
-        .interact(rank_rect, ui.id().with("military-rank-badge"), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .inspection_hover_text("Open the Military panel.");
-    rank_response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, rank.name()));
-    if rank_response.clicked() {
-        ui.ctx().data_mut(|data| {
-            data.insert_temp(egui::Id::new(MILITARY_OVERVIEW_CLICK_ID), true);
-        });
-    }
-    let rank_fill = egui::Color32::from_black_alpha(if rank_response.is_pointer_button_down_on() {
-        215
-    } else if rank_response.hovered() {
-        140
-    } else {
-        180
-    });
-    paint_army_banner_badge(
-        ui,
-        rank_rect,
-        rank.name(),
-        Icon::MilitaryRank(rank),
-        rank_fill,
-        badge_scale,
-    );
+    military_rank_badge(ui, rank_rect, rank, badge_scale);
     if !can_recruit {
         return banner;
     }
@@ -813,6 +934,27 @@ fn military_banner(
         egui::StrokeKind::Inside,
     );
     banner
+}
+
+fn military_rank_badge(ui: &egui::Ui, rect: egui::Rect, rank: MilitaryRank, scale: f32) {
+    let response = ui
+        .interact(rect, ui.id().with("military-rank-badge"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .inspection_hover_text("Open the Military panel.");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, rank.name()));
+    if response.clicked() {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new(MILITARY_OVERVIEW_CLICK_ID), true);
+        });
+    }
+    let fill = egui::Color32::from_black_alpha(if response.is_pointer_button_down_on() {
+        215
+    } else if response.hovered() {
+        140
+    } else {
+        180
+    });
+    paint_army_banner_badge(ui, rect, rank.name(), Icon::MilitaryRank(rank), fill, scale);
 }
 
 /// Province Military is a compact ledger; only the player's rows open an army panel.
@@ -1252,14 +1394,7 @@ fn army_detail_banner(
         egui::pos2(banner.left() + 8. * scale, bottom - 32. * badge_scale),
         egui::vec2(rank_width, 32.) * badge_scale,
     );
-    paint_army_banner_badge(
-        ui,
-        rank_rect,
-        rank.name(),
-        Icon::MilitaryRank(rank),
-        egui::Color32::from_black_alpha(180),
-        badge_scale,
-    );
+    military_rank_badge(ui, rank_rect, rank, badge_scale);
     let mut action = None;
     for (index, label, art, availability, tip, value) in [
         (

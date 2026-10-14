@@ -98,6 +98,61 @@ fn fixture(count: usize) -> Snapshot {
     }
 }
 
+#[test]
+fn vassal_policies_default_in_older_saves_and_survive_online_replay() {
+    use crate::game::politics::diplomacy::{PoliticalState, Tribute, VassalAutonomy};
+    for count in [1, 2] {
+        let mut state = fixture(count);
+        let id = state
+            .campaign
+            .politics
+            .iter()
+            .position(|province| matches!(province.state, PoliticalState::Independent { .. }))
+            .unwrap();
+        state.campaign.politics[id].state = PoliticalState::Vassal {
+            overlord: 0,
+            control: 60.0,
+            tribute: Tribute::Normal,
+        };
+        state.campaign.reconcile_provinces();
+        let mut legacy = serde_json::to_value(state).unwrap();
+        for governance in legacy["campaign"]["governance"].as_array_mut().unwrap() {
+            let fields = governance.as_object_mut().unwrap();
+            fields.remove("vassal_tribute");
+            fields.remove("vassal_autonomy");
+        }
+        for province in legacy["campaign"]["politics"].as_array_mut().unwrap() {
+            province.as_object_mut().unwrap().remove("vassal_autonomy");
+        }
+        let mut original: Snapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(original.campaign.governance_for(0).vassal_tribute, Tribute::Normal);
+        assert_eq!(original.campaign.governance_for(0).vassal_autonomy, VassalAutonomy::Normal);
+        assert_eq!(original.campaign.politics[id].vassal_autonomy, VassalAutonomy::Normal);
+        let before = serde_json::to_value(&original).unwrap();
+        let mut governance = original.campaign.governance_for(0);
+        governance.vassal_tribute = Tribute::High;
+        governance.vassal_autonomy = VassalAutonomy::Low;
+        original.campaign.set_governance(0, governance);
+        let after = serde_json::to_value(&original).unwrap();
+        let changes = patch::changes(&before, &after);
+        assert!(!changes.is_empty());
+        let replay = patch::apply(&before, &changes, true).unwrap();
+        assert_eq!(replay, after);
+        let mut restored: Snapshot = serde_json::from_value(replay).unwrap();
+        assert_eq!(restored.campaign.politics[id].tribute_due(100.0), Some((0, 30.0)));
+        assert_eq!(
+            restored.campaign.politics[id].vassal_income(&restored.campaign.diplomacy_config),
+            Some((0, 3.75))
+        );
+        original.campaign.advance_month();
+        restored.campaign.advance_month();
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
+    }
+}
+
 fn battle_fixture() -> Snapshot {
     use crate::game::military::{ForceOwner, MilitaryTerrain, UnitType};
     let mut snapshot = fixture(2);
@@ -315,6 +370,83 @@ fn new_snapshots_install_with_the_protected_rome_province() {
             world.resource::<campaign::Campaign>().economy.provinces.last().unwrap().name,
             "Rome"
         );
+    }
+}
+
+#[test]
+fn accepted_npc_routes_survive_resource_changes_snapshot_install_and_delta_replay() {
+    use crate::game::economy::{
+        TradeAgreement, TradeBundle, TradeFrequency, TradeParty, TradeStatus,
+    };
+    for count in [1, 2] {
+        let mut original = fixture(count);
+        let campaign = &mut original.campaign;
+        campaign.economy.players[0].coin = 1_000_000.0;
+        campaign.pull_wallets();
+        let (npc, resource) = campaign
+            .economy
+            .provinces
+            .iter()
+            .enumerate()
+            .filter(|(id, province)| {
+                province.owner.is_none()
+                    && campaign
+                        .economy
+                        .trade_route(
+                            TradeParty::Player(0),
+                            TradeParty::Npc(*id),
+                            &campaign.inputs(),
+                        )
+                        .is_ok()
+            })
+            .find_map(|(id, province)| {
+                province
+                    .market
+                    .resources
+                    .iter()
+                    .position(|market| market.export_capacity >= 1.0)
+                    .map(|resource| (id, resource))
+            })
+            .unwrap();
+        let mut resources = [0.0; 3];
+        resources[resource] = 1.0;
+        let id = campaign
+            .propose_national_trade(TradeAgreement::new(
+                TradeParty::Player(0),
+                TradeParty::Npc(npc),
+                TradeBundle {
+                    coin: 100.0,
+                    ..Default::default()
+                },
+                TradeBundle {
+                    resources,
+                    ..Default::default()
+                },
+                TradeFrequency::Monthly,
+            ))
+            .unwrap();
+        let before = serde_json::to_value(&original).unwrap();
+        original.campaign.economy.provinces[npc].potential[resource] = 0.0;
+        original.campaign.advance_month();
+        let after = serde_json::to_value(&original).unwrap();
+        let replayed = patch::apply(&before, &patch::changes(&before, &after), true).unwrap();
+        assert_eq!(replayed, after);
+        for saved in [after, replayed] {
+            let mut world = World::new();
+            world.init_resource::<ProvinceOwnership>();
+            world.init_resource::<GamePaused>();
+            install(&mut world, saved).unwrap();
+            let mut campaign = world.resource_mut::<campaign::Campaign>();
+            campaign.advance_month();
+            let trade = campaign.economy.trades.iter().find(|trade| trade.id == id).unwrap();
+            assert_eq!(trade.status, TradeStatus::Active);
+            assert_eq!(trade.last_executed_month, Some(2));
+            assert_eq!(trade.last_fulfillment, 1.0);
+            assert_eq!(
+                campaign.economy.provinces[npc].market.resources[resource].export_capacity,
+                0.0
+            );
+        }
     }
 }
 
@@ -637,8 +769,16 @@ fn sql_fixtures_and_delta_budget() {
             })
             .collect();
         let delta_bytes = serde_json::to_vec(&replay).unwrap().len();
+        std::fs::write(
+            folder.join(format!("{name}-monthly-replay.json")),
+            serde_json::to_vec(&replay).unwrap(),
+        )
+        .unwrap();
         assert!(snapshot_bytes < 2_097_152);
-        assert!(delta_bytes < snapshot_bytes / 2, "delta {delta_bytes}, snapshot {snapshot_bytes}");
+        // Starting armies now train three times as many cohorts each month.
+        // Match the schema's actual replay-byte cap rather than a snapshot ratio.
+        assert!(delta_bytes < 262_144, "monthly replay exceeds the SQL budget: {delta_bytes}");
+        assert!(delta_bytes < snapshot_bytes, "delta {delta_bytes}, snapshot {snapshot_bytes}");
         println!("{name}: snapshot {snapshot_bytes} bytes, monthly replay {delta_bytes} bytes");
     }
 }
@@ -685,6 +825,204 @@ fn only_connected_host_advances_time() {
     assert!(!client.runs_time());
     client.base = Some(json!({"campaign":{"defeated":[false,true]}}));
     assert!(client.runs_time(), "eliminated players do not block the remaining campaign");
+}
+
+fn single_player_world() -> World {
+    let mut world = reconnect_world();
+    world.insert_resource(State::new(AppState::Map));
+    let mut record: GameRecord = serde_json::from_value(reconnect_record()).unwrap();
+    record.single_player = true;
+    record.player = 0;
+    record.members.truncate(1);
+    record.state = Some(serde_json::to_value(fixture(1)).unwrap());
+    let mut client = OnlineClient::default();
+    enter(&mut world, &mut client, record).unwrap();
+    world.insert_resource(client);
+    world
+}
+
+#[test]
+fn solo_time_continues_during_background_requests_but_respects_pause_and_leave() {
+    use bevy::ecs::system::RunSystemOnce;
+    for kind in [Operation::Save, Operation::Sync] {
+        let mut world = single_player_world();
+        let (_sender, receiver) = mpsc::channel();
+        world.resource_mut::<OnlineClient>().pending = Some(Pending {
+            kind,
+            payload: json!({}),
+            receiver: Mutex::new(receiver),
+            sent: None,
+        });
+        world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+        world.run_system_once(advance_game_time).unwrap();
+        assert_eq!(world.resource::<GameClock>().month_progress, 1.);
+        world.resource_mut::<GamePaused>().0 = true;
+        world.run_system_once(advance_game_time).unwrap();
+        assert_eq!(world.resource::<GameClock>().month_progress, 1.);
+        world.resource_mut::<GamePaused>().0 = false;
+        world.resource_mut::<OnlineClient>().leave();
+        world.run_system_once(advance_game_time).unwrap();
+        assert_eq!(world.resource::<GameClock>().month_progress, 1.);
+        let mut client = world.resource_mut::<OnlineClient>();
+        client.leave_requested = false;
+        client.record.as_mut().unwrap().single_player = false;
+        assert!(!client.runs_time(), "Multiplayer still waits for its outstanding request");
+        client.record.as_mut().unwrap().single_player = true;
+        client.reconnect_lobby = true;
+        assert!(!client.runs_time(), "Opening a saved game still waits for Resume");
+        client.reconnect_lobby = false;
+        client.report_error("This campaign cannot be edited.");
+        assert!(!client.runs_time(), "Permanent failures still stop the campaign");
+    }
+}
+
+#[test]
+fn solo_save_retry_preserves_the_receipt_and_progress_made_while_waiting() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = single_player_world();
+    let before = snapshot(&world).unwrap();
+    world.resource_mut::<campaign::Campaign>().economy.players[0].coin -= 1.;
+    let sent = snapshot(&world).unwrap();
+    let payload = json!({"p_game_id":"fixture","p_connection":"connection", "p_revision":1,
+        "p_request_id":"same-request", "p_changes":patch::changes(&before,&sent)});
+    let (sender, receiver) = mpsc::channel();
+    world.resource_mut::<OnlineClient>().pending = Some(Pending {
+        kind: Operation::Save,
+        payload: payload.clone(),
+        receiver: Mutex::new(receiver),
+        sent: Some(sent.clone()),
+    });
+    sender
+        .send(Response {
+            session: None,
+            result: Err(supabase::CONNECTION_ERROR.into()),
+        })
+        .unwrap();
+    update(&mut world);
+    {
+        let mut client = world.resource_mut::<OnlineClient>();
+        assert!(client.retrying);
+        assert!(client.runs_time());
+        assert_eq!(client.queue.front().unwrap().1, payload);
+        assert_eq!(client.retry_sent.as_ref(), Some(&sent));
+        assert_eq!(client.take_errors().count(), 0, "A brief interruption is a retry notice");
+    }
+    world.resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+    world.run_system_once(advance_game_time).unwrap();
+    world.resource_mut::<campaign::Campaign>().advance_month();
+    world.resource_mut::<campaign::Campaign>().economy.players[0].coin -= 2.;
+    let current = snapshot(&world).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    {
+        let mut client = world.resource_mut::<OnlineClient>();
+        let (kind, payload) = client.queue.pop_front().unwrap();
+        let sent = client.retry_sent.take();
+        client.pending = Some(Pending {
+            kind,
+            payload,
+            receiver: Mutex::new(receiver),
+            sent,
+        });
+    }
+    // The first attempt might have committed. Its duplicate receives the same revision.
+    sender
+        .send(Response {
+            session: None,
+            result: Ok(json!({"revision":2})),
+        })
+        .unwrap();
+    update(&mut world);
+    let client = world.resource::<OnlineClient>();
+    assert!(!client.retrying);
+    assert!(client.connected);
+    assert!(client.runs_time());
+    assert_eq!(client.base.as_ref(), Some(&sent));
+    assert_eq!(client.record.as_ref().unwrap().revision, 2);
+    assert_eq!(snapshot(&world).unwrap(), current, "A receipt must not roll back newer simulation");
+    let unsaved = patch::changes(client.base.as_ref().unwrap(), &current);
+    assert!(!unsaved.is_empty());
+    assert_eq!(patch::apply(&sent, &unsaved, true).unwrap(), current);
+}
+
+#[test]
+fn interrupted_presence_requests_retry_and_recover_without_reinstalling_solo_state() {
+    let mut world = single_player_world();
+    let payload = json!({"p_game_id":"fixture","p_connection":"connection",
+        "p_revision":1,"p_roster_token":"roster"});
+    let (sender, receiver) = mpsc::channel();
+    world.resource_mut::<OnlineClient>().pending = Some(Pending {
+        kind: Operation::Sync,
+        payload: payload.clone(),
+        receiver: Mutex::new(receiver),
+        sent: None,
+    });
+    drop(sender);
+    update(&mut world);
+    {
+        let client = world.resource::<OnlineClient>();
+        assert!(client.pending.is_none(), "A dropped task must not hang the request forever");
+        assert!(client.retrying);
+        assert!(client.runs_time());
+        assert_eq!(client.queue.front().unwrap().1, payload);
+    }
+    world.resource_mut::<campaign::Campaign>().advance_month();
+    world.resource_mut::<GameClock>().advance(SECONDS_PER_MONTH);
+    let current = snapshot(&world).unwrap();
+    world.clear_trackers();
+    complete_response(
+        &mut world,
+        Operation::Sync,
+        json!({
+            "revision":1,"resume_generation":7,"status":"active","roster_token":"roster",
+            "members":null,"events":[],"state":null
+        }),
+    );
+    let client = world.resource::<OnlineClient>();
+    assert!(client.runs_time());
+    assert!(!client.retrying);
+    assert!(client.notice.is_none());
+    assert_eq!(snapshot(&world).unwrap(), current);
+    assert!(!world.resource_ref::<campaign::Campaign>().is_changed());
+    assert!(!world.resource_ref::<GameClock>().is_changed());
+}
+
+#[test]
+fn persistent_connection_failures_announce_once_while_solo_retries_continue() {
+    let mut world = single_player_world();
+    for failure in 1..=4 {
+        let (sender, receiver) = mpsc::channel();
+        {
+            let mut client = world.resource_mut::<OnlineClient>();
+            client.queue.clear();
+            client.pending = Some(Pending {
+                kind: Operation::Sync,
+                payload: json!({}),
+                receiver: Mutex::new(receiver),
+                sent: None,
+            });
+        }
+        sender
+            .send(Response {
+                session: None,
+                result: Err(supabase::CONNECTION_ERROR.into()),
+            })
+            .unwrap();
+        update(&mut world);
+        let mut client = world.resource_mut::<OnlineClient>();
+        assert!(client.runs_time());
+        assert_eq!(client.take_errors().count(), usize::from(failure == 3));
+        assert_eq!(client.queue.len(), 1);
+    }
+    world.insert_resource(State::new(AppState::Lobby));
+    complete_response(
+        &mut world,
+        Operation::Sync,
+        json!({"revision":1,"status":"active","roster_token":"roster",
+            "members":null,"events":[],"state":null}),
+    );
+    let client = world.resource::<OnlineClient>();
+    assert!(!client.retrying);
+    assert!(client.error().is_none(), "A recovered connection also clears its lobby error");
 }
 
 #[test]

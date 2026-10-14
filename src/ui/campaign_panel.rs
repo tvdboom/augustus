@@ -709,7 +709,7 @@ fn overview_politics(
         },
         PoliticalState::Owned {
             owner,
-        } if *owner == player => "Your political hold over this province. Other players can gain Control and reduce your share. A rebellion without your troops present also reduces Control each month, in proportion to its surviving strength. Troops fighting here count as present. At zero Control from rebellion, the province becomes independent.",
+        } if *owner == player => "Your political hold over this province. Other players can gain Control and reduce your share. Unopposed NPC occupation reduces Control each month using the occupying army's effective strength, with diminishing returns. Unopposed rebels also reduce Control. Troops fighting here stop occupation pressure. At zero Control, the province becomes independent. Losing your last owned province ends your campaign.",
         PoliticalState::Independent {
             ..
         }
@@ -722,6 +722,11 @@ fn overview_politics(
     };
     let relation_tooltip = if domestic {
         "Your relationship with this province's population, measured by its population-weighted average Happiness."
+    } else if matches!(
+        politics.state,
+        PoliticalState::Independent { .. } | PoliticalState::Vassal { .. }
+    ) {
+        "How friendly this province is toward you. Local defenders attack your visiting troops below 50 Relation. Below 20 (very hostile), an available local army has a 10% monthly chance to invade your adjacent owned provinces."
     } else {
         "How friendly this province is toward you."
     };
@@ -807,39 +812,28 @@ fn political_card(
         .inner_margin(8.0 * scale)
         .show(ui, |ui| {
             ui.set_width((width - 2.0 * (8.0 * scale).round() - 2.0 * scale).max(1.0));
-            if !actions.is_empty() {
-                let side = 22.0 * scale;
-                let gap = 3.0 * scale;
-                let buttons: Vec<_> = actions
-                    .iter()
-                    .map(|&action| {
-                        let (label, symbol) = match action {
-                            ConfirmationAction::Vassalize => ("Vassalize", Icon::Vassalize),
-                            ConfirmationAction::Integrate => ("Integrate", Icon::Integrate),
-                            _ => unreachable!(),
-                        };
-                        let text = ui.painter().layout_no_wrap(
-                            label.into(),
-                            egui::FontId::proportional(10.0 * scale),
-                            province_panel::INK,
-                        );
-                        (action, label, symbol, text)
-                    })
-                    .collect();
-                let labeled_width = buttons.iter().map(|(_, _, _, text)| text.size().x + side).sum::<f32>()
-                    + gap * (buttons.len() - 1) as f32;
-                // Choose the presentation from the card width before handling hover.
-                let show_labels = labeled_width <= ui.available_width();
-                let (row, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), side),
-                    egui::Sense::hover(),
+            let side = 22.0 * scale;
+            let gap = 3.0 * scale;
+            let action_width = actions.len() as f32 * (side + gap);
+            let header = ui.horizontal(|ui| {
+                icon(ui, symbol, 28.0 * scale);
+                ui.allocate_ui_with_layout(
+                    egui::vec2((ui.available_width() - action_width).max(1.0), 28.0 * scale),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| ui.add(egui::Label::new(egui::RichText::new(title).size(15.0 * scale)).truncate()),
                 );
-                let mut right = row.right();
-                for (action, label, symbol, text) in buttons.into_iter().rev() {
-                    let button_width = if show_labels { text.size().x + side } else { side };
+            }).response.rect;
+            if !actions.is_empty() {
+                let mut right = ui.max_rect().right();
+                for &action in actions.iter().rev() {
+                    let (label, symbol) = match action {
+                        ConfirmationAction::Vassalize => ("Vassalize", Icon::Vassalize),
+                        ConfirmationAction::Integrate => ("Integrate", Icon::Integrate),
+                        _ => unreachable!(),
+                    };
                     let rect = egui::Rect::from_min_size(
-                        egui::pos2(right - button_width, row.top()),
-                        egui::vec2(button_width, side),
+                        egui::pos2(right - side, header.center().y - side * 0.5),
+                        egui::Vec2::splat(side),
                     );
                     right = rect.left() - gap;
                     let response = ui.interact(rect, ui.id().with(("political-action", label)), egui::Sense::click());
@@ -847,15 +841,8 @@ fn political_card(
                     let fill = if response.hovered() { province_panel::PAPER } else { province_panel::TABLE_STRIPE };
                     ui.painter().rect_filled(rect, 3.0 * scale, fill);
                     ui.painter().rect_stroke(rect, 3.0 * scale, egui::Stroke::new(scale, province_panel::RULE), egui::StrokeKind::Inside);
-                    let icon_rect = if show_labels {
-                        egui::Rect::from_min_size(rect.min + egui::vec2(3.0, 3.0) * scale, egui::vec2(16.0, 16.0) * scale)
-                    } else {
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0) * scale)
-                    };
+                    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0) * scale);
                     campaign_widgets::paint_icon(ui, symbol, icon_rect);
-                    if show_labels {
-                        ui.painter().galley(rect.min + egui::vec2(20.0 * scale, (rect.height() - text.size().y) * 0.5), text, province_panel::INK);
-                    }
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
                     if response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -866,10 +853,6 @@ fn political_card(
                     }
                 }
             }
-            ui.horizontal(|ui| {
-                icon(ui, symbol, 28.0 * scale);
-                ui.label(egui::RichText::new(title).size(15.0 * scale));
-            });
             ui.add_space(4.0 * scale);
             ui.visuals_mut().extreme_bg_color = egui::Color32::from_rgb(224, 215, 195);
             ui.add(
@@ -972,6 +955,18 @@ pub(in crate::app) fn draw(
         open_map_battle(ctx, &mut view, &mut detail, battle, player);
         governance_open.0 = false;
         play_click(&sound, &audio, &assets);
+    }
+    // Army badges can request the overview while the province inspector is closed.
+    if campaign_military::take_military_overview_click(ctx) {
+        view.close_inspector(&mut detail);
+        view.open = Some(CampaignTab::Military);
+        campaign_military::collapse_army_panel(ctx);
+        governance_open.0 = false;
+        close_click.0 = true;
+        play_click(&sound, &audio, &assets);
+    }
+    if view.open.is_some() || governance_open.0 {
+        campaign_military::dismiss_battle_panel(ctx);
     }
     if terminal.spectating {
         player = spectator::inspection_player(&campaign, view.province, player);
@@ -1471,6 +1466,14 @@ pub(in crate::app) fn draw(
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
     }
+    if let Some(province) = campaign_trade::take_province_click(ctx) {
+        view.open_province_section(province, 1);
+        view.notice.clear();
+        detail.0 = Some(MapDetail::Province(province));
+        map_view.focus_province(province);
+        close_click.0 = true;
+        play_click(&sound, &audio, &assets);
+    }
     if campaign_military::army_details_open(ctx) {
         view.close_inspector(&mut detail);
         governance_open.0 = false;
@@ -1480,13 +1483,6 @@ pub(in crate::app) fn draw(
             campaign_trade::open_notice(ctx, &notice);
         }
         open_notification(&mut view, &notice, campaign, &mut detail, &mut map_view);
-        close_click.0 = true;
-        play_click(&sound, &audio, &assets);
-    }
-    if campaign_military::take_military_overview_click(ctx) {
-        view.close_inspector(&mut detail);
-        view.open = Some(CampaignTab::Military);
-        governance_open.0 = false;
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
     }

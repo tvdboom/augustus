@@ -123,6 +123,38 @@ impl Tribute {
     }
 }
 
+/// Local autonomy trades the overlord's political income against vassal goodwill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum VassalAutonomy {
+    /// Tighter oversight: +25% Influence, -0.5 monthly Relation.
+    Low,
+    /// Existing local-government arrangements.
+    #[default]
+    Normal,
+    /// More local freedom: -25% Influence, +0.5 monthly Relation.
+    High,
+}
+
+impl VassalAutonomy {
+    /// Multiplier on Influence generated from Vassal Control.
+    pub fn influence_multiplier(self) -> f64 {
+        match self {
+            Self::Low => 1.25,
+            Self::Normal => 1.0,
+            Self::High => 0.75,
+        }
+    }
+
+    /// Monthly sentiment change toward the overlord, added to tribute's effect.
+    pub fn relation_delta(self) -> f64 {
+        match self {
+            Self::Low => -0.5,
+            Self::Normal => 0.0,
+            Self::High => 0.5,
+        }
+    }
+}
+
 /// Independent switches for relationship and government-support spending.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonthlySupport {
@@ -175,6 +207,9 @@ pub struct ControlBreakdown {
 pub struct ProvincePolitics {
     /// Current legal relationship.
     pub state: PoliticalState,
+    /// Overlord's autonomy policy; only active while this province is a vassal.
+    #[serde(default)]
+    pub vassal_autonomy: VassalAutonomy,
     /// Sentiment toward each player; retained across state transitions.
     pub relations: Vec<f64>,
     /// Player Control in directly owned land; any remaining share belongs to local rebels.
@@ -203,6 +238,7 @@ impl ProvincePolitics {
                 local: 100.0,
                 shares: vec![0.0; players],
             },
+            vassal_autonomy: VassalAutonomy::default(),
             relations: vec![50.0; players],
             owned_shares: vec![0.0; players],
             support: vec![MonthlySupport::default(); players],
@@ -305,8 +341,8 @@ impl ProvincePolitics {
         Ok(())
     }
 
-    /// Transfer an owner's Control to local rebels, releasing the province at zero.
-    pub fn apply_rebellion_control_loss(&mut self, amount: f64) -> Result<(), PoliticalError> {
+    /// Transfer an owner's Control to local government, releasing the province at zero.
+    pub fn apply_local_control_loss(&mut self, amount: f64) -> Result<(), PoliticalError> {
         valid_amount(amount)?;
         let PoliticalState::Owned {
             owner,
@@ -318,16 +354,13 @@ impl ProvincePolitics {
             self.owned_shares[owner] = 100.0;
         }
         self.owned_shares[owner] = (self.owned_shares[owner] - amount).max(0.0);
-        if self.owned_shares[owner] <= 1e-7 {
-            self.owned_shares[owner] = 0.0;
-            self.state = PoliticalState::Independent {
-                local: (100.0 - self.owned_shares.iter().sum::<f64>()).max(0.0),
-                shares: self.owned_shares.clone(),
-            };
-            self.support.fill(MonthlySupport::default());
-            self.clear_pending();
-        }
+        self.release_owned_if_unstable();
         Ok(())
+    }
+
+    /// Unopposed rebels return the owner's lost Control to local government.
+    pub fn apply_rebellion_control_loss(&mut self, amount: f64) -> Result<(), PoliticalError> {
+        self.apply_local_control_loss(amount)
     }
 
     /// Pay for immediate relation gain with diminishing returns at high friendship.
@@ -466,6 +499,7 @@ impl ProvincePolitics {
             },
             _ => return Err(PoliticalError::Ineligible),
         }
+        self.release_owned_if_unstable();
         Ok(())
     }
 
@@ -637,6 +671,7 @@ impl ProvincePolitics {
             control: control - 50.0,
             tribute: Tribute::Normal,
         };
+        self.vassal_autonomy = VassalAutonomy::default();
         self.clear_pending();
         Ok(())
     }
@@ -831,7 +866,10 @@ impl ProvincePolitics {
                 tribute,
                 ..
             } => {
-                self.change_relation(overlord, tribute.relation_delta());
+                self.change_relation(
+                    overlord,
+                    tribute.relation_delta() + self.vassal_autonomy.relation_delta(),
+                );
                 let relation = ((self.relation(overlord) - 50.0) / 10.0).min(0.0);
                 let military = if let Some(occupier) =
                     occupation.filter(|player| *player != overlord)
@@ -897,7 +935,7 @@ impl ProvincePolitics {
                     &self.pending_gains,
                     &self.pending_reductions,
                 );
-                // Local rebel Control persists until a player gains that share.
+                self.release_owned_if_unstable();
             },
             PoliticalState::Rome => {},
         }
@@ -912,7 +950,12 @@ impl ProvincePolitics {
                 overlord,
                 control,
                 ..
-            } => Some((overlord, control * config.vassal_influence_per_control)),
+            } => Some((
+                overlord,
+                control
+                    * config.vassal_influence_per_control
+                    * self.vassal_autonomy.influence_multiplier(),
+            )),
             _ => None,
         }
     }
@@ -940,6 +983,25 @@ impl ProvincePolitics {
                 support.control_coin = false;
                 support.control_influence = false;
             }
+            self.clear_pending();
+        }
+    }
+
+    /// Losing the final owned share ends legal ownership without annexing the province.
+    fn release_owned_if_unstable(&mut self) {
+        let PoliticalState::Owned {
+            owner,
+        } = self.state
+        else {
+            return;
+        };
+        if self.owned_shares[owner] <= 1e-7 {
+            self.owned_shares[owner] = 0.0;
+            self.state = PoliticalState::Independent {
+                local: (100.0 - self.owned_shares.iter().sum::<f64>()).max(0.0),
+                shares: self.owned_shares.clone(),
+            };
+            self.support.fill(MonthlySupport::default());
             self.clear_pending();
         }
     }

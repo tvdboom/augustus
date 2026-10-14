@@ -3,16 +3,16 @@ use super::*;
 use crate::egui_capture as revolt_capture;
 
 #[test]
-fn trade_toasts_use_retained_history_details_and_open_the_trade_panel() {
+fn trade_toasts_keep_one_line_under_the_title_and_open_the_trade_panel() {
     use super::super::campaign_notifications::{CampaignNotice, NoticeAction};
     let mut campaign = super::super::campaign::Campaign::default();
     campaign.notifications.push(CampaignNotice {
         id: 0,
         recipient: 0,
         severity: NoticeSeverity::Warning,
-        title: "Trade interrupted".into(),
-        body: "Achaia: Route #42 suspended: Player cannot supply the promised bundle.".into(),
-        kind: NoticeKind::TradeInterrupted,
+        title: "Trade stopped".into(),
+        body: "Numidia: Trade route cancelled.".into(),
+        kind: NoticeKind::TradeUpdated,
         province: Some(3),
         building: None,
         wonder: None,
@@ -26,6 +26,44 @@ fn trade_toasts_use_retained_history_details_and_open_the_trade_panel() {
     assert_eq!(toast.level, ToastLevel::Warning);
     assert!(toast.text.contains(&history.body));
     assert_eq!(toast.notice.as_ref().unwrap().id, history.id);
+    for width in [420.0, 260.0, 180.0] {
+        let context = egui::Context::default();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 180.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                *ui.style_mut() = super::super::campaign_widgets::map_style(1.0);
+                super::super::campaign_notices::card(
+                    ui,
+                    toast.notice.as_ref().unwrap(),
+                    &campaign,
+                    &super::super::PLAYER_COLORS,
+                    0,
+                    1.0,
+                );
+            },
+        );
+        let body = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == history.body => Some(text),
+                _ => None,
+            })
+            .expect("Trade description must appear below its title");
+        assert_eq!(body.galley.rows.len(), 1, "Trade description wrapped at {width}px");
+        revolt_capture::Capture::default().frame(
+            &context,
+            &output,
+            &format!("trade-stopped-{}", width as u32),
+        );
+        output.textures_delta.clear();
+    }
     assert!(campaign.notifications.drain_for(0).is_empty());
 }
 

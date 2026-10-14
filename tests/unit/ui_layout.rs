@@ -2668,6 +2668,7 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_precision(
             let text = text_shapes(output);
             let label =
                 text.iter().find(|(_, galley)| galley.job.text == format!("• {label}:")).unwrap();
+            assert_eq!(label.1.job.sections[0].format.color, egui::Color32::BLACK);
             let right = label.0.x + label.1.size().x;
             let number = text
                 .iter()
@@ -2739,7 +2740,12 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_precision(
         render(2.0, Some(population_pointer));
         render(3.0, None);
         let output = render(3.1, None);
-        check_bullet(&output, "Area", &format!("{:.1}", p.capacity_area), egui::Color32::BLACK);
+        check_bullet(
+            &output,
+            "Area",
+            &format!("{:.1}", p.capacity_area),
+            super::super::resource_hud::hud_delta_color(p.capacity_area),
+        );
         check_bullet(
             &output,
             "Terrain modifier",
@@ -2798,23 +2804,32 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
 
     for (class, name) in ["Nobles", "Citizens", "Plebeians", "Slaves"].into_iter().enumerate() {
         let ctx = layout_context();
+        ctx.set_global_style(campaign_widgets::map_style(1.0));
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         let mut campaign = fixture();
         campaign.advance_month();
         let p = &mut campaign.economy.provinces[0];
         p.capacity_area = 1000.0;
         p.buildings[BuildingType::Temple as usize] = 1;
-        p.happiness_modifiers[class] = -3.0;
-        p.temporary_happiness[class] = 0.0;
+        p.happiness_modifiers[class] = -21.7;
+        p.temporary_happiness[class] = -1.5;
         p.civic_happiness = 4.0;
         p.recruitment_happiness = -2.0;
+        p.noble_wage_happiness = 1.0;
+        p.insolvency_unhappiness = 2.0;
+        p.overcrowding_unhappiness = 6.0;
+        p.shortage_unhappiness = 4.5;
+        p.happiness = p.calculate_happiness(&campaign.economy.config);
         let report = &mut campaign.economy.last_report.province_reports[0];
         report.births[class] = 0.105;
         report.normal_deaths[class] = 0.06;
         report.famine_deaths[class] = 0.0;
         report.migration[class] = -0.006;
         report.food_supply_ratio = 1.0;
-        let render = |time, pointer: Option<egui::Pos2>| {
+        report.overcrowding_penalty = 2.0;
+        report.shortage_penalty = 1.0;
+        let mut capture = capture::Capture::default();
+        let mut render = |time, pointer: Option<egui::Pos2>| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     time: Some(time),
@@ -2827,10 +2842,15 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
                 },
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| {
-                        ui.set_width(546.0);
-                        panel_style(ui, 1.0);
+                        let mut body = ui.new_child(egui::UiBuilder::new().max_rect(
+                            egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(546.0, ui.available_height()),
+                            ),
+                        ));
+                        panel_style(&mut body, 1.0);
                         campaign_economy::overview(
-                            ui,
+                            &mut body,
                             &campaign.economy,
                             &campaign.military,
                             0,
@@ -2839,6 +2859,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
                     });
                 },
             );
+            capture.frame(&ctx, &output, &format!("population-{class}-{time:.1}"));
             output.textures_delta.clear();
             output
         };
@@ -2904,6 +2925,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             let text = text_shapes(output);
             let label =
                 text.iter().find(|(_, galley)| galley.job.text == format!("• {title}:")).unwrap();
+            assert_eq!(label.1.job.sections[0].format.color, egui::Color32::BLACK);
             let right = label.0.x + label.1.size().x;
             let amount = text
                 .iter()
@@ -2934,12 +2956,39 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
         render(2.0, Some(columns[3]));
         render(3.0, None);
         let happiness = render(3.1, None);
-        assert!(text_shapes(&happiness).iter().any(|(_, galley)| {
-            galley.job.text.contains("happiness") && galley.job.text.contains("Current output")
-        }));
-        assert!(!text_shapes(&happiness)
-            .iter()
-            .any(|(_, galley)| galley.job.text.starts_with('•')));
+        let p = &campaign.economy.provinces[0];
+        let output = crate::game::economy::happiness_output_multiplier(
+            class,
+            p.happiness[class],
+            &campaign.economy.config,
+        );
+        check_bullet(
+            &happiness,
+            ["Noble Influence", "Citizen taxes", "Plebeian resources", "Slave resources"][class],
+            &format!("{:.0}% of normal", output * 100.0),
+            if output < 1.0 {
+                super::super::resource_hud::hud_delta_color(-1.0)
+            } else {
+                egui::Color32::BLACK
+            },
+        );
+        let births = crate::game::economy::birth_modifier(p.happiness[class]);
+        check_bullet(
+            &happiness,
+            "Birth rate from happiness",
+            &format!("{:.0}% of base", births * 100.0),
+            super::super::resource_hud::hud_delta_color(births - 1.0),
+        );
+        for (title, value) in
+            [("Accumulated overcrowding", "-6.0"), ("Accumulated food shortage", "-4.5")]
+        {
+            check_bullet(
+                &happiness,
+                title,
+                value,
+                super::super::resource_hud::hud_delta_color(-1.0),
+            );
+        }
         render(3.2, Some(columns[4]));
         render(4.2, None);
         let modifiers = render(4.3, None);
@@ -2951,12 +3000,38 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
         );
         check_bullet(
             &modifiers,
-            "Events / unrest",
-            "-3.0",
+            "Military drafting",
+            "-21.7",
             super::super::resource_hud::hud_delta_color(-1.0),
         );
+        for (title, value) in [
+            ("Events / espionage", "-1.5"),
+            ("Accumulated overcrowding", "-6.0"),
+            ("Accumulated food shortage", "-4.5"),
+        ] {
+            check_bullet(
+                &modifiers,
+                title,
+                value,
+                super::super::resource_hud::hud_delta_color(-1.0),
+            );
+        }
+        if class == 0 {
+            check_bullet(
+                &modifiers,
+                "Noble wages",
+                "+1.0",
+                super::super::resource_hud::hud_delta_color(1.0),
+            );
+            check_bullet(
+                &modifiers,
+                "Treasury insolvency",
+                "-2.0",
+                super::super::resource_hud::hud_delta_color(-1.0),
+            );
+        }
         assert!(!text_shapes(&modifiers).iter().any(|(_, galley)| {
-            ["Base happiness", "Food shortage", "Food policy"]
+            ["Events / unrest", "Food policy"]
                 .iter()
                 .any(|removed| galley.job.text.contains(removed))
         }));
@@ -2971,16 +3046,29 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
         if class == 1 || class == 2 {
             check_bullet(
                 &modifiers,
-                "Recruitment",
+                "Recruitment effort",
                 "-2.0",
                 super::super::resource_hud::hud_delta_color(-1.0),
             );
         }
         for output in [&growth, &happiness, &modifiers] {
             assert!(!text_shapes(output).iter().any(|(_, galley)| {
-                ["Class promotions", "Space factor", "Birth factors", "never directly"]
-                    .iter()
-                    .any(|removed| galley.job.text.contains(removed))
+                [
+                    &format!("{name} happiness"),
+                    "Effects relative to base happiness",
+                    "• Below",
+                    "Hardship losses recover",
+                    "Slaves can revolt",
+                    "repeated drafts stack",
+                    "happiness points per month",
+                    "fade by",
+                    "Class promotions",
+                    "Space factor",
+                    "Birth factors",
+                    "never directly",
+                ]
+                .iter()
+                .any(|removed| galley.job.text.contains(removed))
             }));
         }
         let baseline_labels: Vec<_> =
@@ -2995,7 +3083,8 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             let labels: Vec<_> =
                 text_shapes(&output).iter().map(|(_, galley)| galley.job.text.clone()).collect();
             if time == 7.0 {
-                assert!(labels.iter().any(|label| label == "Population capacity"));
+                assert!(labels.iter().any(|label| label == "• Area:"));
+                assert!(!labels.iter().any(|label| label == "Population capacity"));
             } else {
                 assert_eq!(
                     labels, baseline_labels,
@@ -3014,6 +3103,11 @@ fn overview_groups_and_badges_keep_floor_counts_alignment_and_warning_colors() {
         let mut campaign = fixture();
         campaign.advance_month();
         campaign.economy.provinces[0].population = [11.9, 27.9, 53.9, 31.9];
+        campaign.economy.provinces[0].happiness = if warning {
+            [100.0, 100.0, 10.0, 0.0]
+        } else {
+            [0.0, 0.0, 20.0, 10.0]
+        };
         campaign.economy.provinces[0].capacity_area = if warning {
             0.0
         } else {
@@ -3061,6 +3155,25 @@ fn overview_groups_and_badges_keep_floor_counts_alignment_and_warning_colors() {
             "100%"
         });
         assert!(text("Food supplied").pos.y < supplied.pos.y);
+        let production_caption = text("Production output");
+        let production = texts
+            .iter()
+            .find(|value| {
+                value.galley.job.text == if warning { "62%" } else { "100%" }
+                    && value.pos.y > production_caption.pos.y
+                    && (value.pos.x + value.galley.size().x / 2.0
+                        - production_caption.pos.x - production_caption.galley.size().x / 2.0)
+                        .abs() < 1.0
+            })
+            .expect("Production output must average the two classes equally, regardless of population size");
+        assert_eq!(
+            production.galley.job.sections[0].format.color,
+            super::super::resource_hud::hud_delta_color(if warning {
+                -1.0
+            } else {
+                1.0
+            }),
+        );
         for (value, normal_color) in [
             (total, province_panel::INK),
             (supplied, super::super::resource_hud::hud_delta_color(1.0)),
@@ -3497,8 +3610,6 @@ fn full_control_diplomacy_shows_spy_and_political_actions() {
         for expected in [
             "Control",
             "Relation",
-            "Vassalize",
-            "Integrate",
             "Distance modifier ×1",
             "Build control",
             "Improve relations",
@@ -3509,6 +3620,12 @@ fn full_control_diplomacy_shows_spy_and_political_actions() {
             "POLITICAL MANEUVERS",
         ] {
             assert!(labels.contains(&expected), "Missing {expected:?} at {width}px: {labels:?}");
+        }
+        for action in ["Vassalize", "Integrate"] {
+            assert!(
+                !labels.contains(&action),
+                "Acquisition buttons should display only their icons"
+            );
         }
         assert!(labels.contains(&"Bribe nobles"));
         assert!(labels.contains(&"Send insult"));
@@ -3846,6 +3963,90 @@ fn selecting_an_owned_map_army_closes_the_province_inspector_and_retains_its_tab
         campaign_military::selected_army_province(&ctx),
         None,
         "Clicking the selected army again deselects it"
+    );
+}
+
+#[test]
+fn opening_a_province_or_any_campaign_menu_dismisses_the_battle_panel() {
+    use bevy::asset::AssetPlugin;
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .insert_resource(State::new(AppState::Map))
+        .insert_resource(fixture())
+        .insert_resource(LocalPractice {
+            players: vec![PracticePlayer {
+                name: "Player 1".into(),
+                color_index: 0,
+                rank: 0,
+                main_province: Some(0),
+            }],
+            ..Default::default()
+        })
+        .insert_resource(MenuAudio {
+            volume: 0.0,
+            mode: AudioMode::Mute,
+            restored_mode: AudioMode::Effects,
+            music: default(),
+        })
+        .init_resource::<Audio>()
+        .init_resource::<TerminalPresentation>()
+        .init_resource::<bevy_egui::EguiUserTextures>()
+        .init_resource::<CampaignUi>()
+        .init_resource::<ProvincePanelOpen>()
+        .init_resource::<GovernancePanelOpen>()
+        .init_resource::<MapPanelCloseClick>()
+        .init_resource::<MapView>()
+        .add_systems(Update, draw);
+    let entity = app
+        .world_mut()
+        .spawn((bevy_egui::EguiContext::default(), bevy_egui::PrimaryEguiContext))
+        .id();
+    let ctx = app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut().clone();
+    for tab in [
+        None,
+        Some(CampaignTab::Province),
+        Some(CampaignTab::Governance),
+        Some(CampaignTab::Military),
+        Some(CampaignTab::Trade),
+        Some(CampaignTab::Senate),
+    ] {
+        campaign_military::open_battle_panel(&ctx, 42, 0);
+        *app.world_mut().resource_mut::<CampaignUi>() = CampaignUi {
+            open: tab,
+            province: Some(0),
+            ..Default::default()
+        };
+        app.world_mut().resource_mut::<ProvincePanelOpen>().0 =
+            (tab == Some(CampaignTab::Province)).then_some(MapDetail::Province(0));
+        app.world_mut().resource_mut::<GovernancePanelOpen>().0 = tab.is_none();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600., 900.),
+                )),
+                ..Default::default()
+            },
+            |_| app.update(),
+        );
+        output.textures_delta.clear();
+        assert_eq!(
+            ctx.data(
+                |data| data.get_temp::<(u64, usize)>(egui::Id::new("campaign-battle-inspection"))
+            ),
+            None,
+            "Battle remained open alongside {tab:?}"
+        );
+    }
+    campaign_military::open_battle_panel(&ctx, 42, 0);
+    app.world_mut().resource_mut::<GovernancePanelOpen>().0 = false;
+    app.world_mut().resource_mut::<CampaignUi>().open = None;
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| app.update());
+    output.textures_delta.clear();
+    assert_eq!(
+        ctx.data(|data| data.get_temp::<(u64, usize)>(egui::Id::new("campaign-battle-inspection"))),
+        Some((42, 0)),
+        "An unobstructed battle must remain open"
     );
 }
 
@@ -4530,7 +4731,7 @@ fn player_trade_notice_is_penalty_free_and_immediate_stop_hurts_partner_relation
 }
 
 #[test]
-fn route_icon_buttons_give_notice_then_apply_the_immediate_cancellation_penalty() {
+fn route_close_and_abort_buttons_give_notice_then_apply_the_cancellation_penalty() {
     use crate::game::economy::{
         TradeAgreement, TradeBundle, TradeFrequency, TradeParty, TradeStatus,
     };
@@ -4585,22 +4786,11 @@ fn route_icon_buttons_give_notice_then_apply_the_immediate_cancellation_penalty(
         ))
         .unwrap();
     let output = render(&ctx, &mut campaign, 0.0, vec![]);
-    let buttons: Vec<_> = output
-        .shapes
-        .iter()
-        .filter_map(|shape| match &shape.shape {
-            egui::Shape::Rect(rect)
-                if rect.fill == province_panel::PAPER
-                    && rect.rect.size() == egui::vec2(30.0, 30.0) =>
-            {
-                Some(rect.rect.center())
-            },
-            _ => None,
-        })
-        .collect();
-    assert_eq!(buttons.len(), 2, "Each open route must have two icon actions");
+    let close = spy_text_position(&output, "Close");
+    let abort = spy_text_position(&output, "Abort");
+    assert!(close.x < abort.x, "Close precedes Abort");
     let relation = campaign.politics[2].relation(0);
-    for (action, position) in [(0, buttons[1]), (1, buttons[0])] {
+    for (action, position) in [(0, close), (1, abort)] {
         for pressed in [true, false] {
             render(
                 &ctx,
@@ -4651,6 +4841,7 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
         for province in 0..5 {
             for construction in [false, true] {
                 let ctx = layout_context();
+                let mut capture = capture::Capture::default();
                 ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
                 let mut campaign = fixture();
                 campaign.advance_month();
@@ -4725,6 +4916,13 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
                             });
                         },
                     );
+                    if province == 0 && !construction {
+                        capture.frame(
+                            &ctx,
+                            &output,
+                            &format!("production-overview-{width}x{height}-{frame}"),
+                        );
+                    }
                     output.textures_delta.clear();
                     assert!(
                         outer.right() <= rect.right() + 1.0
@@ -4751,10 +4949,13 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
                     if campaign.economy.provinces[province].owner == Some(0) {
                         let demand = text_rect("Food demand");
                         let supplied = text_rect("Food supplied");
+                        let production = text_rect("Production output");
                         assert!(
                             (demand.center().y - supplied.center().y).abs() < 1.0
-                                && demand.right() < supplied.left(),
-                            "Summary badges must stay on one horizontal row"
+                                && (supplied.center().y - production.center().y).abs() < 1.0
+                                && demand.right() < supplied.left()
+                                && supplied.right() < production.left(),
+                            "All four summary badges must stay on one horizontal row"
                         );
                         let row = text_rect("Nobles");
                         let values: Vec<_> = output
@@ -4834,6 +5035,7 @@ fn complete_province_overview_fits_without_scrolling_and_aligns_badges_and_ledge
                         }
                     } else {
                         text_rect("Population");
+                        text_rect("Production output");
                         for caption in ["Food demand", "Food supplied"] {
                             assert!(
                                 !output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -5473,8 +5675,106 @@ fn overview_meters_follow_live_control_relation_and_ownership() {
 }
 
 #[test]
+fn control_badge_keeps_geometry_when_acquisition_actions_become_available() {
+    for (width, scale) in [(570.0, 1.0), (380.0, 1.0), (380.0, 0.75), (240.0, 1.0)] {
+        let ctx = layout_context();
+        ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
+        let mut baseline = None;
+        let mut capture = capture::Capture::default();
+        for control in [49.0, 52.0, 100.0] {
+            let mut politics = ProvincePolitics::independent(2);
+            politics.state = PoliticalState::Independent {
+                local: 100.0 - control,
+                shares: vec![control, 0.0],
+            };
+            for _ in 0..2 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800.0, 300.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            ui.allocate_ui(egui::vec2(width * scale, 260.0), |ui| {
+                                panel_style(ui, scale);
+                                overview_politics(ui, &politics, 0, scale, 60.0);
+                            });
+                        });
+                    },
+                );
+                capture.frame(&ctx, &output, &format!("control-badge-{width}-{scale}-{control}"));
+                let cards: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill == province_panel::TABLE_STRIPE
+                                && rect.rect.height() > 28.0 * scale
+                                && rect.stroke
+                                    == egui::Stroke::new(scale, province_panel::RULE) =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(cards.len(), 2);
+                assert_eq!(
+                    cards[0].size(),
+                    cards[1].size(),
+                    "Control and Relation cards must stay aligned"
+                );
+                let heading = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == "Control" => {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        },
+                        _ => None,
+                    })
+                    .unwrap();
+                if let Some((original_cards, original_heading)) = &baseline {
+                    assert_eq!(
+                        &cards, original_cards,
+                        "Acquisition availability must not resize or move the cards"
+                    );
+                    assert_eq!(
+                        &heading.min, original_heading,
+                        "The Control heading must stay at the top"
+                    );
+                } else {
+                    baseline = Some((cards.clone(), heading.min));
+                }
+                for shape in &output.shapes {
+                    if let egui::Shape::Rect(button) = &shape.shape {
+                        if button.stroke == egui::Stroke::new(scale, province_panel::RULE)
+                            && (button.rect.height() - 22.0 * scale).abs() < 0.1
+                        {
+                            assert!(cards[0].contains_rect(button.rect));
+                            assert!(
+                                (button.rect.center().y - heading.center().y).abs() < scale,
+                                "Acquisition buttons must sit alongside the Control heading"
+                            );
+                            assert!(
+                                button.rect.left() >= heading.right(),
+                                "Acquisition buttons must not overlap the heading"
+                            );
+                        }
+                    }
+                }
+                output.textures_delta.clear();
+            }
+        }
+    }
+}
+
+#[test]
 fn control_actions_keep_their_size_and_own_their_hover_feedback() {
-    for (width, scale, labeled) in [(570.0, 1.0, true), (240.0, 1.0, false), (240.0, 0.75, false)] {
+    for (width, scale) in [(570.0, 1.0), (380.0, 1.0), (240.0, 1.0), (240.0, 0.75)] {
         let ctx = layout_context();
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         campaign_widgets::configure_cursor(&ctx);
@@ -5545,12 +5845,10 @@ fn control_actions_keep_their_size_and_own_their_hover_feedback() {
         let buttons = button_rects(&normal);
         assert_eq!(buttons.len(), 2);
         for label in ["Vassalize", "Integrate"] {
-            assert_eq!(has_text(&normal, label), labeled);
+            assert!(!has_text(&normal, label));
         }
-        if !labeled {
-            for button in &buttons {
-                assert_eq!(button.size(), egui::vec2(22.0, 22.0) * scale);
-            }
+        for button in &buttons {
+            assert_eq!(button.size(), egui::vec2(22.0, 22.0) * scale);
         }
         let control_title = normal
             .shapes
