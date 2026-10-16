@@ -64,7 +64,7 @@ pub(super) const OUTPUT: [(&str, [i32; 3]); 54] = [
     ("Galatia", [3, 2, 2]),
     ("Lycia", [2, 1, 4]),
     ("Asia", [4, 1, 4]),
-    ("Armenia Mesopotamia", [3, 4, 2]),
+    ("Armenia", [3, 4, 2]),
 ];
 
 pub(super) fn for_province(name: &str) -> [i32; 3] {

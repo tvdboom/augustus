@@ -1,7 +1,7 @@
 # Augustus game rules
 
 This document specifies vassal policies, provincial population movements, hostile-neighbour aggression,
-starting NPC armies, battle-line replacements, and recurring NPC trade. Other campaign mechanics are described in the
+starting NPC armies, cohort recovery, battle-line replacements, and recurring NPC trade. Other campaign mechanics are described in the
 [gameplay README](../README.md#gameplay).
 
 ## Vassal policies
@@ -32,6 +32,19 @@ reach. They retain local government and their own armies; becoming a vassal does
 the overlord command of those troops or ordinary production and wonder income. Existing
 trade, military access and hostile-neighbour rules still apply. Older saves receive
 Normal defaults for the newly exposed tribute selection and autonomy policy.
+
+## Integration and population happiness
+
+At 100 Control, a player can integrate a province for direct ownership. Integration
+applies a one-time happiness modifier of `Relation − 50` to Nobles, Citizens, and
+Plebeians only. This applies when integrating independent provinces, vassals, or
+territory controlled by a rival player.
+
+Slave happiness is independent of Relation. Integration neither lowers nor raises
+Slave happiness through Relation, and preserves existing Slave happiness modifiers.
+Food, labor policies, buildings, hardship, events, and espionage continue to affect
+Slave happiness normally. Poor Relation alone cannot cause a Slave revolt after
+integration; the existing revolt rules still apply when Slaves are actually unhappy.
 
 ## Provincial population movements
 
@@ -64,6 +77,26 @@ New campaigns give every NPC province three times its previous starting army:
 Rome starts with 450 cohorts, retaining its four guard types. These troops do not
 consume civilian population when seeded, and defeated defenders do not regenerate.
 Existing saves retain their recorded armies.
+
+## Cohort recovery
+
+Morale recovery and manpower replenishment use separate monthly rates. Both improve
+with military rank, but troop strength recovers more slowly than morale.
+
+| Military rank | Morale points/month | Nominal manpower/month | Soldiers/month per 1,000-person cohort |
+| --- | --- | --- | --- |
+| Centurion | 1 | 0.3% | 3 |
+| Tribune | 2 | 0.6% | 6 |
+| Legate | 3.5 | 1.2% | 12 |
+| Imperator | 5 | 1.5% | 15 |
+
+Replenishment uses nominal cohort size and rounds to whole soldiers. Surviving cohorts
+recover only outside battle with at least 95% Food supply, whether stationed or marching.
+Morale stops at the wage-adjusted target; manpower stops at the cohort's original size.
+Full morale does not stop manpower replenishment, and a full cohort still recovers morale.
+Destroyed or zero-morale cohorts do not recover. A half-strength Imperator cohort needs
+34 supplied months (just under three years) to replace 500 soldiers, while recovering from 50 to 100 morale
+takes 10 supplied months at normal wages. Older saves use the new manpower rates.
 
 ## Battle-line replacements
 

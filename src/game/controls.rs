@@ -193,12 +193,20 @@ pub(super) fn apply_practice_boost(
         }
         for (id, province) in campaign.economy.provinces.iter_mut().enumerate() {
             if province.owner == Some(player) {
-                let previous_population = province.total_population();
-                for population in &mut province.population {
-                    *population *= 10.0;
+                let capacity = province.capacity(&campaign.economy.config);
+                let population = province.total_population();
+                if population > 0.0 {
+                    let last_class =
+                        province.population.iter().rposition(|count| *count > 0.0).unwrap();
+                    for count in &mut province.population {
+                        *count *= capacity / population;
+                    }
+                    // Keep the total at capacity despite rounding the individual class counts.
+                    province.population[last_class] =
+                        (capacity - province.population[..last_class].iter().sum::<f64>()).max(0.0);
+                } else {
+                    province.population = [0.0, 0.0, capacity, 0.0];
                 }
-                let added_population = province.total_population() - previous_population;
-                province.practice_capacity_bonus += added_population * 100.0;
                 for kind in crate::game::military::UnitType::ALL {
                     for _ in 0..3 {
                         campaign
@@ -218,7 +226,6 @@ pub(super) fn apply_practice_boost(
             balance.amount += 5_000.0;
         }
         balances[4].amount += 1_000.0;
-        ownership.multiply_owned_population(player, 10.0);
         balances[5].amount = ownership.total_population_for(player);
         resources.refresh_player_rates(player, ownership);
     }

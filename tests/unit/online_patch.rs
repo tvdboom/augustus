@@ -40,13 +40,39 @@ fn invalid_paths_and_late_conflicts_never_partially_apply() {
             path: vec!["campaign".into(), "coin".into()],
             before: Some(json!(100)),
             after: json!(50),
+            append: false,
         },
         Change {
             path: vec!["campaign".into(), "influence".into()],
             before: Some(json!(99)),
             after: json!(10),
+            append: false,
         },
     ];
     assert!(apply(&base, &changes, true).is_err());
     assert_eq!(base["campaign"]["coin"], 100);
+}
+
+#[test]
+fn appends_send_only_new_entries_and_conflict_on_concurrent_growth() {
+    let history = vec![json!({"id":0,"text":"a".repeat(1000)}); 100];
+    let base = json!({"campaign":{"history":history,"coin":100}});
+    let mut after = base.clone();
+    after["campaign"]["history"].as_array_mut().unwrap().push(json!({"id":1,"text":"new"}));
+    let delta = changes(&base, &after);
+    assert_eq!(delta.len(), 1);
+    assert!(delta[0].append);
+    assert_eq!(delta[0].before, Some(json!(100)));
+    assert_eq!(apply(&base, &delta, true).unwrap(), after);
+    assert!(apply(&after, &delta, true).is_err(), "Concurrent appends must conflict");
+    let upload = serde_json::to_vec(&delta).unwrap().len();
+    assert!(upload < 150, "Only new history is uploaded: {upload} bytes");
+    let mut replay = delta;
+    replay[0].before = None;
+    assert_eq!(apply(&base, &replay, false).unwrap(), after);
+    assert!(!serde_json::to_string(&replay).unwrap().contains("before"));
+    // Replacements and shortening retain their compare-and-set contract.
+    assert_eq!(apply(&after, &changes(&after, &base), true).unwrap(), base);
+    assert!(!changes(&json!({"a":[]}), &json!({"a":[1]}))[0].append);
+    assert!(!changes(&json!({"a":[1]}), &json!({"a":[1,2]}))[0].append);
 }

@@ -2,6 +2,9 @@
 use super::super::province_panel::{INK, PAPER, RULE, TABLE_STRIPE};
 use super::*;
 
+#[path = "military_replay.rs"]
+mod replay;
+
 const PANEL_ID: &str = "campaign-battle-inspection";
 const PANEL_WIDTH: f32 = 900.;
 const PANEL_HEIGHT: f32 = 328.;
@@ -28,12 +31,14 @@ pub(in crate::app) fn selected_battle(ctx: &egui::Context) -> Option<(u64, usize
 
 pub(in crate::app) fn open_battle_panel(ctx: &egui::Context, battle: u64, player: usize) {
     set_selected_army(ctx, None);
+    replay::clear(ctx);
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(PANEL_ID), (battle, player)));
 }
 
 pub(super) fn dismiss(ctx: &egui::Context) -> bool {
     let open = selected_battle(ctx).is_some();
     ctx.data_mut(|data| data.remove::<(u64, usize)>(egui::Id::new(PANEL_ID)));
+    replay::clear(ctx);
     open
 }
 
@@ -99,6 +104,7 @@ pub(in crate::app) fn draw_battle_panel(
         army_owner_color(ctx, side_owner(defenders)),
     ];
     let (rect, scale) = panel_rect(ctx.content_rect());
+    let mut replay = outcome.map(|outcome| replay::Replay::load(ctx, outcome));
     let mut open = true;
     let mut action = None;
     let response = egui::Area::new(egui::Id::new(PANEL_ID).with("window"))
@@ -117,9 +123,26 @@ pub(in crate::app) fn draw_battle_panel(
                 header,
                 &format!("Battle of {}", economic.name),
                 colors,
+                outcome.is_some(),
                 scale,
                 &mut open,
             );
+            if let (Some(outcome), Some(replay)) = (outcome, replay.as_mut()) {
+                replay::controls(ui, header, outcome, replay, scale);
+            }
+            let playback = outcome.zip(replay.as_ref()).and_then(|(outcome, replay)| {
+                let frame = replay.frame(outcome)?;
+                Some([frame.sides[0].restore(attackers), frame.sides[1].restore(defenders)])
+            });
+            let (attackers, defenders, round) = if let Some(sides) = playback.as_ref() {
+                let round = replay
+                    .as_ref()
+                    .and_then(|replay| outcome?.round_history.get(replay.cursor.checked_sub(1)?));
+                (&sides[0], &sides[1], round)
+            } else {
+                (attackers, defenders, round)
+            };
+            let finished = finished && playback.is_none();
             defense_icons(ui, header, terrain, fortification, attackers, world, scale);
             let field = egui::Rect::from_min_size(
                 panel.min + egui::vec2(12., 108.) * scale,
@@ -177,6 +200,9 @@ pub(in crate::app) fn draw_battle_panel(
             );
         });
     ctx.move_to_top(response.response.layer_id);
+    if let Some(replay) = replay {
+        replay.save(ctx);
+    }
     if !open {
         dismiss(ctx);
     }
@@ -191,11 +217,20 @@ fn battle_header(
     rect: egui::Rect,
     title: &str,
     colors: [egui::Color32; 2],
+    has_replay: bool,
     scale: f32,
     open: &mut bool,
 ) {
     let mut font = egui::FontId::proportional(20. * scale);
-    let available = rect.width() - 196. * scale;
+    let title_rect = if has_replay {
+        egui::Rect::from_min_max(
+            rect.min + egui::vec2(46. * scale, 0.),
+            egui::pos2(rect.center().x - 46. * scale, rect.bottom()),
+        )
+    } else {
+        rect.shrink2(egui::vec2(98. * scale, 0.))
+    };
+    let available = title_rect.width();
     let measured = ui.painter().layout_no_wrap(title.to_owned(), font.clone(), INK).size().x;
     font.size *= (available / measured.max(1.)).min(1.);
     for (index, color) in colors.into_iter().enumerate() {
@@ -223,7 +258,7 @@ fn battle_header(
         );
         let (_, ink) = super::super::province_panel::header_close_colors(color, false, false);
         ui.painter().with_clip_rect(half).text(
-            rect.center(),
+            title_rect.center(),
             egui::Align2::CENTER_CENTER,
             title,
             font.clone(),
@@ -546,7 +581,7 @@ fn defense_icons(
     );
     paint_icon(
         ui,
-        Icon::Terrain,
+        Icon::Terrain(terrain),
         egui::Rect::from_center_size(terrain_rect.center(), egui::Vec2::splat(24. * scale)),
     );
     ui.interact(terrain_rect, ui.id().with("battle-terrain"), egui::Sense::hover()).on_hover_ui(
@@ -629,12 +664,11 @@ fn public_composition(
             ui,
             Icon::Unit(kind),
             tile.shrink2(egui::vec2(5., 1.) * scale),
-            egui::Color32::from_white_alpha(if survivors == 0 {
-                90
-            } else {
-                255
-            }),
+            egui::Color32::WHITE,
         );
+        if survivors == 0 {
+            cohort_status_badge(ui, tile, false, scale);
+        }
         ui.interact(tile, ui.id().with(("composition", kind)), egui::Sense::hover()).on_hover_text(
             format!(
                 "{} · {}\n{survivors} surviving cohorts",
@@ -644,6 +678,27 @@ fn public_composition(
         );
         slot += 1;
     }
+}
+
+fn cohort_status_badge(ui: &egui::Ui, tile: egui::Rect, routed: bool, scale: f32) {
+    let center = tile.right_top() + egui::vec2(-5., 5.) * scale;
+    let ink = if routed {
+        egui::Color32::from_rgb(133, 91, 25)
+    } else {
+        egui::Color32::from_rgb(151, 47, 35)
+    };
+    ui.painter().circle_filled(center, 6. * scale, PAPER);
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        if routed {
+            "R"
+        } else {
+            "×"
+        },
+        egui::FontId::proportional(12. * scale),
+        ink,
+    );
 }
 
 fn battlefield_rows(
@@ -787,12 +842,11 @@ fn battlefield_rows(
                 ui,
                 Icon::Unit(unit.unit_type),
                 egui::Rect::from_min_size(tile.min, egui::vec2(cell, cell)).shrink(2. * scale),
-                egui::Color32::from_white_alpha(if fallen || routed {
-                    90
-                } else {
-                    (100. + 155. * strength) as u8
-                }),
+                egui::Color32::WHITE,
             );
+            if fallen || routed {
+                cohort_status_badge(ui, tile, routed && !fallen, scale);
+            }
             let track = egui::Rect::from_min_size(
                 egui::pos2(tile.left() + scale, tile.bottom() - 3. * scale),
                 egui::vec2(cell - 2. * scale, 2. * scale),
@@ -805,6 +859,23 @@ fn battlefield_rows(
             ui.painter().rect_filled(bar, scale, army_owner_color(ui.ctx(), unit.owner));
             response.on_hover_ui(|ui| {
                 ui.label(egui::RichText::new(unit.unit_type.name()).size(14. * scale).color(INK));
+                ui.label(
+                    egui::RichText::new(if fallen {
+                        "Destroyed"
+                    } else if routed {
+                        "Routed · No longer fighting"
+                    } else if finished {
+                        "Survived · Starting deployment"
+                    } else if formation.front.contains(&Some(unit.id)) {
+                        "Front line"
+                    } else if formation.support.contains(&Some(unit.id)) {
+                        "Support"
+                    } else {
+                        "Reserve"
+                    })
+                    .size(14. * scale)
+                    .color(INK),
+                );
                 ui.label(
                     egui::RichText::new(format!(
                         "• Manpower: {}\n• Morale: {:.0}%\n• Training: {:.0}%",

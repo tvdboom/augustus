@@ -24,7 +24,7 @@ MAP = ROOT / "assets" / "map"
 GEOD = Geod(ellps="WGS84")
 MIN_ISLAND_AREA_KM2 = 316  # Approximate area of Malta, including its smaller islands.
 MALTA = Point(14.45, 35.91)
-REGIONS = {
+PROVINCE_NAMES = {
     "I": "Latium",
     "II": "Apulia",
     "III": "Lucania",
@@ -36,6 +36,7 @@ REGIONS = {
     "IX": "Liguria",
     "X": "Venetia",
     "XI": "Transpadana",
+    "Armenia Mesopotamia": "Armenia",
 }
 CRETA_CYRENE = "Creta et Cyrene"
 
@@ -92,7 +93,7 @@ def main():
                 ("Creta", creta_parts, None),
             ]
         else:
-            full_name = REGIONS.get(original, original)
+            full_name = PROVINCE_NAMES.get(original, original)
             name = full_name.split(" et ", 1)[0]
             groups = [(name, parts, labels[original])]
 

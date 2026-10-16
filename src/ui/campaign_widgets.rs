@@ -4,7 +4,9 @@ use super::spectator::InspectionHover;
 
 use super::province_panel;
 use crate::game::{
-    economy::BuildingType, military::UnitType, politics::diplomacy::distance_multiplier,
+    economy::BuildingType,
+    military::{MilitaryTerrain, UnitType},
+    politics::diplomacy::distance_multiplier,
 };
 use bevy_egui::egui;
 
@@ -159,7 +161,7 @@ pub(in crate::app) enum Icon {
     Maneuver,
     Province,
     Morale,
-    Terrain,
+    Terrain(MilitaryTerrain),
     MilitaryPower,
     Cohorts,
     MilitaryAccess,
@@ -257,7 +259,15 @@ pub(super) fn texture(ctx: &egui::Context, kind: Icon) -> egui::TextureId {
         Icon::Duration => prepared!("recruitment-time"),
         Icon::Province => prepared!("province"),
         Icon::Morale => prepared!("morale"),
-        Icon::Terrain => prepared!("terrain"),
+        Icon::Terrain(terrain) => match terrain {
+            MilitaryTerrain::Farmland => prepared!("terrain-farmland"),
+            MilitaryTerrain::Plains => prepared!("terrain-plains"),
+            MilitaryTerrain::Forest => prepared!("terrain-forest"),
+            MilitaryTerrain::Hills => prepared!("terrain-hills"),
+            MilitaryTerrain::Mountains => prepared!("terrain"),
+            MilitaryTerrain::Desert => prepared!("terrain-desert"),
+            MilitaryTerrain::Marsh => prepared!("terrain-marsh"),
+        },
         Icon::MilitaryPower => prepared!("military-power"),
         Icon::MilitaryRank(crate::game::military::MilitaryRank::Centurion) => {
             prepared!("rank-centurion")

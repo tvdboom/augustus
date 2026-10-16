@@ -676,7 +676,7 @@ impl ProvincePolitics {
         Ok(())
     }
 
-    /// Elective ownership at 100 control; return the one-time happiness shift.
+    /// Elective ownership at 100 control; return the one-time free-class happiness shift.
     pub fn take_ownership(&mut self, player: PlayerId) -> Result<f64, PoliticalError> {
         let allowed = match &self.state {
             PoliticalState::Independent {

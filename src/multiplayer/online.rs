@@ -230,7 +230,7 @@ impl OnlineClient {
             serde_json::to_value(snapshot).map_err(|_| "Could not prepare the campaign.")?;
         self.request(
             Operation::Start,
-            json!({"p_roster_token":record.roster_token,"p_state":state}),
+            json!({"p_roster_token":record.roster_token,"p_state":state,"p_known_state":true}),
         );
         Ok(())
     }
@@ -398,6 +398,15 @@ fn reconcile(
     client: &mut OnlineClient,
     sync: SyncResponse,
 ) -> Result<(), String> {
+    if let Some(record) = sync.record {
+        if client.base.is_some() || record.revision != sync.revision || record.state.is_none() {
+            return Err("Invalid campaign start response.".into());
+        }
+        enter(world, client, record)?;
+        client.resume_generation = sync.resume_generation;
+        client.since_sync = 0.;
+        return Ok(());
+    }
     let resumed = sync.resume_generation > client.resume_generation;
     let record = client.record.as_mut().ok_or("No active game.")?;
     if sync.revision < record.revision {
@@ -406,7 +415,9 @@ fn reconcile(
     if let Some(members) = sync.members {
         record.members = members;
     }
-    record.roster_token = sync.roster_token;
+    if let Some(token) = sync.roster_token {
+        record.roster_token = token;
+    }
     record.status = sync.status;
     if record.status != "lobby" && client.base.is_none() {
         client.queue.push_back((
@@ -501,7 +512,10 @@ pub(super) fn update(world: &mut World) {
             let result=response.result.and_then(|value|match pending.kind {
                 Operation::Create|Operation::Join|Operation::Open|Operation::LoadStarted|Operation::Recover|Operation::Start=> {
                     client.resume_generation=value.get("resume_generation").and_then(Value::as_u64).unwrap_or(0);
-                    let record:GameRecord=serde_json::from_value(value).map_err(|_|"Invalid game response.")?;
+                    let mut record:GameRecord=serde_json::from_value(value).map_err(|_|"Invalid game response.")?;
+                    if pending.kind==Operation::Start && record.state.is_none() {
+                        record.state=pending.payload.get("p_state").cloned();
+                    }
                     client.reconnect_lobby=record.status=="active"&&matches!(pending.kind,Operation::Open|Operation::Recover)
                         &&client.record.as_ref().is_none_or(|r|r.status!="lobby");
                     enter(world,&mut client,record)
@@ -524,6 +538,11 @@ pub(super) fn update(world: &mut World) {
                 }
                 Operation::Save=> {
                     let revision=value.get("revision").and_then(Value::as_u64).ok_or("Invalid save acknowledgement.")?;
+                    if value.get("left").and_then(Value::as_bool)==Some(true) {
+                        client.record=None;client.base=None;client.leave_requested=false;client.reconnect_lobby=false;
+                        client.save_requested=false;
+                        world.resource_mut::<NextState<AppState>>().set(AppState::MainMenu);return Ok(());
+                    }
                     let record=client.record.as_ref().ok_or("Missing game.")?;
                     if revision==record.revision+1 {
                         client.base=pending.sent.take();client.record.as_mut().ok_or("Missing game.")?.revision=revision;
@@ -531,6 +550,10 @@ pub(super) fn update(world: &mut World) {
                         client.reconcile_from=pending.sent.take();
                         client.elapsed=30.;
                     } else {return Err("Invalid save revision.".into());}
+                    if let Some(sync)=value.get("sync") {
+                        reconcile(world,&mut client,serde_json::from_value(sync.clone()).map_err(|_|"Invalid synchronization response.")?)?;
+                        client.since_sync=0.;
+                    }
                     client.notice=Some("Game saved.".into());client.save_requested=false;Ok(())
                 }
                 Operation::Sync=> {client.since_sync=0.;reconcile(world,&mut client,serde_json::from_value(value).map_err(|_|"Invalid synchronization response.")?)},
@@ -575,7 +598,7 @@ pub(super) fn update(world: &mut World) {
             let in_game=matches!(*world.resource::<State<AppState>>().get(),AppState::Map|AppState::GameMenu|AppState::GameSettings|AppState::EndGame);
             let interval=if record.single_player {15.}else{2.};
             if client.elapsed<interval&&!client.save_requested&&!client.leave_requested {return;}
-            if !record.single_player && client.since_sync>=6. && !client.leave_requested {
+            if !record.single_player && client.since_sync>=6. && !client.leave_requested && !client.save_requested {
                 Some((Operation::Sync,json!({"p_game_id":record.id,"p_connection":client.connection,"p_revision":record.revision,"p_roster_token":record.roster_token})))
             } else if record.status!="lobby"&&in_game&&record.status!="finished"&&client.reconcile_from.is_none() {
                 if let Some(base)=&client.base {
@@ -588,8 +611,13 @@ pub(super) fn update(world: &mut World) {
                         let changes=patch::changes(base,&current);
                         if !changes.is_empty() {
                             sent=Some(current);
-                            Some((Operation::Save,json!({"p_game_id":record.id,"p_connection":client.connection,
-                                "p_revision":record.revision,"p_request_id":supabase::request_id(),"p_changes":changes})))
+                            let mut payload=json!({"p_game_id":record.id,"p_connection":client.connection,
+                                "p_revision":record.revision,"p_request_id":supabase::request_id(),"p_changes":changes});
+                            // A save already renews the lease. Share infrequent roster checks
+                            // and an exit with that request instead of issuing another RPC.
+                            if client.leave_requested {payload["p_leave"]=json!(true);}
+                            else if !record.single_player && client.since_sync>=6. {payload["p_roster_token"]=json!(record.roster_token);}
+                            Some((Operation::Save,payload))
                         } else {client.save_requested=false;None}
                     } else {None}
                 } else {None}

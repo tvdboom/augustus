@@ -17,7 +17,7 @@ pub struct Member {
     pub connected: bool,
 }
 
-/// Game access response. Only opening a game downloads its full snapshot.
+/// Game access response, also sent once when a lobby starts its campaign.
 #[derive(Clone, Debug, Deserialize)]
 pub struct GameRecord {
     /// Stable database identity.
@@ -89,12 +89,15 @@ pub struct SyncResponse {
     pub revision: u64,
     /// Current lifecycle.
     pub status: String,
-    /// New public roster token.
-    pub roster_token: String,
+    /// New public roster token, omitted when unchanged.
+    pub roster_token: Option<String>,
     /// Roster only when changed.
     pub members: Option<Vec<Member>>,
     /// Contiguous deltas since caller's revision.
+    #[serde(default)]
     pub events: Vec<StateEvent>,
-    /// Full fallback only when the bounded replay window has expired.
+    /// Full fallback when bounded replay is unavailable or larger than the snapshot.
     pub state: Option<Value>,
+    /// Initial campaign access when a lobby starts, avoiding a second snapshot request.
+    pub record: Option<GameRecord>,
 }

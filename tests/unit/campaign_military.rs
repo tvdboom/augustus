@@ -165,6 +165,58 @@ fn invalid_attack_does_not_declare_war_or_remove_cohorts() {
 }
 
 #[test]
+fn defeated_attack_returns_only_recorded_survivors_with_their_actual_manpower() {
+    let mut c = campaign();
+    let own = ForceOwner::Player(0);
+    let enemy = ForceOwner::Local(1);
+    let mut sent = Vec::new();
+    for kind in UnitType::ALL {
+        for _ in 0..3 {
+            sent.push(c.military.seed_unit(0, own, kind).unwrap());
+        }
+    }
+    for _ in 0..36 {
+        c.military.seed_unit(1, enemy, UnitType::HeavyInfantry).unwrap();
+    }
+    c.order_army(0, 0, 1, &sent, &[1], BattlePlan::default(), ArmyOrderKind::Attack).unwrap();
+    assert!(c.military.provinces[0].forces[&own].is_empty());
+    let travel = c.military.movements[0].required_progress.ceil() as usize;
+    for _ in 0..travel {
+        c.advance_live_month();
+    }
+    assert_eq!(c.military.battles.len(), 1);
+    let starting_people =
+        c.military.battles[0].attackers.units.iter().map(Unit::people).sum::<u64>();
+    let max_rounds = c.military.config.maximum_battle_months * c.military.config.rounds_per_month;
+    for _ in 0..max_rounds {
+        c.advance_live_combat();
+        if c.military.battles.is_empty() {
+            break;
+        }
+    }
+    assert!(c.military.battles.is_empty());
+    let outcome = c.military.history.last().unwrap();
+    assert_eq!(outcome.result, BattleResult::DefenderVictory);
+    let survivors = &outcome.attackers.units;
+    let surviving_people = survivors.iter().map(Unit::people).sum::<u64>();
+    eprintln!(
+        "Attack: {starting_people} soldiers; return: {surviving_people} soldiers in {} cohorts ({} routed, {} in reserve)",
+        survivors.len(), outcome.attackers.routed.len(), outcome.attackers.formation.reserves.len(),
+    );
+    assert!(surviving_people > 0 && surviving_people < starting_people);
+    assert_eq!(
+        outcome.round_history.iter().map(|round| round.casualties[0]).sum::<u64>(),
+        starting_people - surviving_people,
+    );
+    assert_eq!(&c.military.provinces[0].forces[&own], survivors);
+    assert_eq!(c.military.all_units().filter(|unit| unit.owner == own).count(), survivors.len());
+    let view = c.military_view(0, true);
+    assert_eq!(&view.provinces[0].forces[&own], survivors);
+    let restored: Campaign = serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+    assert_eq!(&restored.military.provinces[0].forces[&own], survivors);
+}
+
+#[test]
 fn live_arrivals_remain_visible_then_resolve_one_round_at_a_time() {
     let mut c = campaign();
     let own = ForceOwner::Player(0);

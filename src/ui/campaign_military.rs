@@ -17,10 +17,13 @@ use bevy_egui::egui;
 use crate::game::economy::{BuildingType, EconomyWorld};
 use crate::game::military::*;
 
+#[path = "military_history.rs"]
+mod battle_history;
 #[path = "military_battle.rs"]
 mod battle_panel;
 #[path = "military_orders.rs"]
 mod orders;
+pub(super) use battle_history::take_battle_click;
 pub(in crate::app) use battle_panel::{draw_battle_panel, open_battle_panel};
 pub(in crate::app) use orders::{draw_orders_menu, prepare_orders};
 
@@ -131,6 +134,27 @@ struct ArmyPanelSelection {
     player: usize,
     owner: ForceOwner,
     panel: ArmyPanel,
+}
+
+/// Engaged armies use the combat inspector instead of editable army details.
+fn open_army_battle(
+    ctx: &egui::Context,
+    world: &MilitaryWorld,
+    selected: ArmyPanelSelection,
+) -> bool {
+    if selected.panel != ArmyPanel::Stationary {
+        return false;
+    }
+    let Some(battle) = world.battles.iter().find(|battle| {
+        battle.province == selected.province
+            && battle.result.is_none()
+            && (battle.attackers.initial_manpower.contains_key(&selected.owner)
+                || battle.defenders.initial_manpower.contains_key(&selected.owner))
+    }) else {
+        return false;
+    };
+    open_battle_panel(ctx, battle.id, selected.player);
+    true
 }
 
 fn selected_army(ctx: &egui::Context) -> Option<ArmyPanelSelection> {
@@ -533,6 +557,8 @@ pub(in crate::app) fn overview(
             if rows.is_empty() {
                 ui.label("You have no armies.");
             }
+            ui.add_space(10. * scale);
+            battle_history::show(ui, world, economy, player, scale);
         });
     selected_province
 }
@@ -562,13 +588,13 @@ fn overview_unit_row_width(
         + composition.len().saturating_sub(1) as f32 * 8. * scale
 }
 
+const OVERVIEW_MAX_UNIT_COLUMNS: usize = 4;
+const OVERVIEW_METRIC_ICON_SIZE: f32 = 22.;
 const OVERVIEW_TACTIC_GAP: f32 = 12.;
 
 fn overview_column_widths(
     ui: &egui::Ui,
-    rows: &[&ArmyOverviewRow],
     compositions: &[Vec<(UnitType, usize)>],
-    economy: &EconomyWorld,
     width: f32,
     scale: f32,
 ) -> [f32; 5] {
@@ -582,29 +608,25 @@ fn overview_column_widths(
             .size()
             .x
     };
+    let metric_width = (OVERVIEW_METRIC_ICON_SIZE + 3.) * scale + text_width("100%", 12.);
     let mut metrics = [
-        text_width("Tactic", 12.).max(26. * scale) + (10. + OVERVIEW_TACTIC_GAP) * scale,
-        text_width("Morale", 12.).max(25. * scale + text_width("100%", 12.)) + 10. * scale,
-        text_width("Training", 12.).max(25. * scale + text_width("100%", 12.)) + 10. * scale,
+        text_width("Tactic", 12.).max(metric_width) + (10. + OVERVIEW_TACTIC_GAP) * scale,
+        text_width("Morale", 12.).max(metric_width) + 10. * scale,
+        text_width("Training", 12.).max(metric_width) + 10. * scale,
     ];
-    let metric_scale = (width * 0.5 / metrics.iter().sum::<f32>()).min(1.);
+    let metric_scale = (width * 0.65 / metrics.iter().sum::<f32>()).min(1.);
     for metric in &mut metrics {
         *metric *= metric_scale;
     }
     let remaining = width - metrics.iter().sum::<f32>();
-    // Measure only displayed provinces, including the owner marker and name insets.
-    let province_width = rows
-        .iter()
-        .map(|row| text_width(&economy.provinces[row.province].name, 14.) + 40. * scale)
-        .fold(text_width("Province", 12.) + 10. * scale, f32::max);
-    // Reserve a compact two-row composition; sparse armies keep their larger icons.
+    // Reserve at most four unit types per line; sparse armies keep their larger icons.
     let unit_width = compositions
         .iter()
         .map(|composition| {
             let (columns, icon_size, count_size) = if composition.len() <= 2 {
                 (composition.len().max(1), 32., 14.)
             } else {
-                (composition.len().div_ceil(2), 24., 12.)
+                (composition.len().min(OVERVIEW_MAX_UNIT_COLUMNS), 24., 12.)
             };
             composition
                 .chunks(columns)
@@ -615,9 +637,10 @@ fn overview_column_widths(
         })
         .fold(text_width("Units", 12.), f32::max)
         + 10. * scale;
-    let minimum_province = province_width.min(78. * scale).min(remaining * 0.4);
-    let province_width = province_width.min((remaining - unit_width).max(minimum_province));
-    [province_width, remaining - province_width, metrics[0], metrics[1], metrics[2]]
+    // Give spare width to province names, keeping the units close to the tactic column.
+    let minimum_province = (78. * scale).min(remaining * 0.4);
+    let unit_width = unit_width.min(remaining - minimum_province);
+    [remaining - unit_width, unit_width, metrics[0], metrics[1], metrics[2]]
 }
 
 fn overview_cells(rect: egui::Rect, widths: &[f32; 5], scale: f32) -> [egui::Rect; 5] {
@@ -652,7 +675,9 @@ struct OverviewUnitLayout {
 
 impl OverviewUnitLayout {
     fn new(ui: &egui::Ui, composition: &[(UnitType, usize)], width: f32, scale: f32) -> Self {
-        if overview_unit_row_width(ui, composition, 32. * scale, 14. * scale, scale) <= width {
+        if composition.len() <= OVERVIEW_MAX_UNIT_COLUMNS
+            && overview_unit_row_width(ui, composition, 32. * scale, 14. * scale, scale) <= width
+        {
             return Self {
                 columns: composition.len().max(1),
                 icon_size: 32. * scale,
@@ -660,7 +685,14 @@ impl OverviewUnitLayout {
                 spacing_scale: scale,
             };
         }
-        let columns = composition.len().div_ceil(2).max(1);
+        let columns = (1..=composition.len().clamp(1, OVERVIEW_MAX_UNIT_COLUMNS))
+            .rev()
+            .find(|&columns| {
+                composition.chunks(columns).all(|row| {
+                    overview_unit_row_width(ui, row, 24. * scale, 12. * scale, scale) <= width
+                })
+            })
+            .unwrap_or(1);
         let needed = composition
             .chunks(columns)
             .map(|row| overview_unit_row_width(ui, row, 24. * scale, 12. * scale, scale))
@@ -731,15 +763,20 @@ fn overview_text(
     painter.galley(egui::pos2(x, cell.center().y - galley.size().y * 0.5), galley, color);
 }
 
-fn overview_metric(ui: &egui::Ui, cell: egui::Rect, symbol: Icon, value: &str, scale: f32) {
-    let size = (cell.width() * 0.32).min(22. * scale).max(12. * scale);
+fn overview_metric_cells(cell: egui::Rect, scale: f32) -> (egui::Rect, egui::Rect) {
+    let size = OVERVIEW_METRIC_ICON_SIZE * scale;
     let image = egui::Rect::from_center_size(
         egui::pos2(cell.left() + size * 0.5, cell.center().y),
         egui::vec2(size, size),
     );
-    paint_icon(ui, symbol, image);
     let value_cell =
         egui::Rect::from_min_max(egui::pos2(image.right() + 3. * scale, cell.top()), cell.max);
+    (image, value_cell)
+}
+
+fn overview_metric(ui: &egui::Ui, cell: egui::Rect, symbol: Icon, value: &str, scale: f32) {
+    let (image, value_cell) = overview_metric_cells(cell, scale);
+    paint_icon(ui, symbol, image);
     overview_text(ui, value_cell, value, 12., super::province_panel::INK, egui::Align::Min, scale);
 }
 
@@ -756,28 +793,23 @@ fn overview_table(
     use super::province_panel::{INK, PAPER, RULE};
     let width = ui.available_width().max(1.);
     let compositions: Vec<_> = rows.iter().map(|row| row.composition()).collect();
-    let widths = overview_column_widths(ui, rows, &compositions, economy, width, scale);
+    let widths = overview_column_widths(ui, &compositions, width, scale);
     let (header, _) = ui.allocate_exact_size(egui::vec2(width, 34. * scale), egui::Sense::hover());
     ui.painter().rect_filled(header, 2. * scale, egui::Color32::from_rgb(73, 69, 61));
     for (cell, label) in overview_cells(header, &widths, scale)
         .into_iter()
         .zip(["Province", "Units", "Tactic", "Morale", "Training"])
     {
-        let align = if label == "Tactic" {
-            egui::Align::Center
-        } else {
-            egui::Align::Min
-        };
-        overview_text(ui, cell, label, 12., PAPER, align, scale);
+        overview_text(ui, cell, label, 12., PAPER, egui::Align::Min, scale);
     }
     for (index, row) in rows.iter().enumerate() {
         let composition = &compositions[index];
         let unit_layout = OverviewUnitLayout::new(ui, composition, widths[1] - 10. * scale, scale);
-        let height = if composition.len() > unit_layout.columns {
-            64.
-        } else {
-            54.
-        } * scale;
+        let unit_rows = composition.len().div_ceil(unit_layout.columns);
+        let height = (unit_rows as f32 * unit_layout.icon_size
+            + unit_rows.saturating_sub(1) as f32 * 4. * unit_layout.spacing_scale
+            + 12. * scale)
+            .max(54. * scale);
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -823,11 +855,12 @@ fn overview_table(
         );
         unit_layout.paint(ui, cell[1], composition);
         if let Some(tactic) = row.tactic {
-            let image =
-                egui::Rect::from_center_size(cell[2].center(), egui::vec2(26., 26.) * scale);
+            let fit = tactic_effectiveness(row.units.iter(), tactic, &world.config) * 100.;
+            let (image, value_cell) = overview_metric_cells(cell[2], scale);
             paint_tactic(ui, tactic, image);
-            ui.interact(image, response.id.with("tactic"), egui::Sense::hover())
-                .inspection_hover_text(tactic.name());
+            overview_text(ui, value_cell, &format!("{fit:.0}%"), 12., INK, egui::Align::Min, scale);
+            ui.interact(cell[2], response.id.with("tactic"), egui::Sense::hover())
+                .inspection_hover_text(format!("{} · {fit:.0}% composition fit", tactic.name()));
         } else {
             overview_text(ui, cell[2], "?", 12., INK, egui::Align::Center, scale);
         }
@@ -1155,6 +1188,9 @@ pub(in crate::app) fn draw_army_panel(
     if !army_details_open(ctx) {
         return None;
     }
+    if open_army_battle(ctx, world, selected) {
+        return None;
+    }
     let scale = super::viewport_ui_scale(ctx.content_rect().size());
     let screen = ctx.content_rect();
     let bottom = ctx
@@ -1227,8 +1263,12 @@ pub(in crate::app) fn draw_army_panel(
                         });
                     }
                     if let Some(index) = selected_army {
-                        set_selected_army(ctx, Some(choices[index].0));
-                        ctx.request_repaint();
+                        let selected = choices[index].0;
+                        if !open_army_battle(ctx, world, selected) {
+                            set_selected_army(ctx, Some(selected));
+                        }
+                        ctx.request_discard("Army selection changed");
+                        return;
                     }
                     egui::Frame::new().inner_margin(10. * scale).show(ui, |ui| {
                         if super::spectator::read_only(ctx) {
@@ -1555,24 +1595,6 @@ fn stationary_army_panel(
     });
     if plan != previous && !in_battle && action.is_none() {
         action = Some(MilitaryUiAction::SavePlan(plan));
-    }
-    if in_battle {
-        ui.small("Formation and tactics are locked during battle.");
-    }
-    if let Some(battle) = world.battles.iter().find(|battle| battle.province == province) {
-        let attacker = battle.attackers.units.iter().any(|unit| unit.owner == owner);
-        let side = if attacker {
-            &battle.attackers
-        } else {
-            &battle.defenders
-        };
-        let can_retreat = battle.months >= world.config.minimum_retreat_months
-            && !side.units.iter().any(|unit| battle.trapped.contains(&unit.owner));
-        if ui.add_enabled(can_retreat, egui::Button::new("Retreat"))
-            .inspection_hover_text("Available after one combat month when an adjacent province permits stationing. Surrounded troops keep fighting.")
-            .clicked() {
-            action = Some(MilitaryUiAction::Retreat { battle: battle.id, attacker });
-        }
     }
     action
 }
@@ -2197,7 +2219,7 @@ fn army_summary(
         ),
         (Icon::Cohorts, "Cohorts", units.len().to_string(), "Total cohorts in this army."),
         (
-            Icon::Terrain,
+            Icon::Terrain(terrain),
             "Terrain",
             world.config.combat_widths[terrain as usize].to_string(),
             terrain_tip.as_str(),
@@ -3492,7 +3514,7 @@ fn cohort_facts(
     ui.allocate_ui_with_layout(egui::vec2(text_width,40.),egui::Layout::top_down(egui::Align::Min),|ui| {
         ui.add(egui::Label::new(egui::RichText::new(unit.unit_type.name()).strong()).wrap());
         ui.horizontal_wrapped(|ui| {
-            ui.small(cohort_manpower_text(unit)).inspection_hover_text(format!("{:.1}% strength. Cohorts regain manpower and morale each supplied month according to military rank.",unit.manpower_ratio()*100.));
+            ui.small(cohort_manpower_text(unit)).inspection_hover_text(format!("{:.1}% strength. Outside battle, supplied cohorts recover morale and replenish manpower more slowly. Both recovery rates improve with military rank.",unit.manpower_ratio()*100.));
             if let Some(role)=role{ui.small(role);}else{
                 stat(ui,Icon::Food,&format!("{:.1}",unit.food_demand(config)),"Monthly Food upkeep. All units share the owner's supply ratio, including movement and combat.");
             }

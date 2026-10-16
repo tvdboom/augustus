@@ -25,6 +25,25 @@ fn preview_fraction(ctx: &egui::Context, fraction: f32) {
     });
 }
 
+fn route_distance(route: &[egui::Pos2], point: egui::Pos2) -> (f32, egui::Vec2) {
+    let mut along = 0.;
+    let mut closest = (f32::INFINITY, 0., egui::Vec2::X);
+    for edge in route.windows(2) {
+        let delta = edge[1] - edge[0];
+        let length = delta.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let fraction = ((point - edge[0]).dot(delta) / delta.length_sq()).clamp(0., 1.);
+        let distance = point.distance_sq(edge[0] + delta * fraction);
+        if distance < closest.0 {
+            closest = (distance, along + length * fraction, delta / length);
+        }
+        along += length;
+    }
+    (closest.1, closest.2)
+}
+
 #[test]
 fn moving_units_and_progress_bars_advance_continuously_across_months() {
     let ctx = egui::Context::default();
@@ -464,25 +483,29 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
                 "Names and resources must be painted above the chevrons"
             );
             let mut distances = vec![];
+            let path = &anchors.marches[&world.movements[0].id];
+            let trace: Vec<_> = path.trace.iter().map(|&p| projection.point(p)).collect();
+            let length = path_length(&trace);
             for shape in arrows {
                 let egui::Shape::Path(chevron) = shape else {
                     panic!("Expected open chevron");
                 };
                 let tip = chevron.points[1];
                 let back = chevron.points[0].lerp(chevron.points[2], 0.5);
+                let (along, direction) = route_distance(&trace, tip);
                 assert!(
-                (tip - back).normalized().dot((enemy_center - tip).normalized()) > 0.9999,
-                "Attack arrows must point directly to the enemy fighter's actual screen position"
-            );
+                    (tip - back).normalized().dot(direction) > 0.9999,
+                    "Attack arrows must follow the local geographic path toward the defender"
+                );
                 assert!(chevron.stroke.width >= 3.2);
                 assert!(chevron.points[0].distance(chevron.points[2]) >= 15.99);
-                distances.push(tip.distance(enemy_center));
+                distances.push(length - along);
             }
             let army = hits.iter().find(|hit| hit.movement.is_some()).unwrap().rect.center();
             let start = *departure.get_or_insert(army);
             assert!(
-                army.distance(start.lerp(enemy_center, fraction)) < 0.01,
-                "Attacking units must follow the same straight line as the arrow, without overshooting"
+                army.distance(point_along(&trace, fraction * length).0) < 0.01,
+                "Attacking units must follow the same geographic path as the arrows"
             );
             assert!(
                 projection.point(anchors.marches[&world.movements[0].id].points[0]).distance(start)
@@ -496,12 +519,13 @@ fn attack_chevrons_point_at_the_visible_defender_below_names_and_resources() {
                 let egui::epaint::ColorMode::Solid(ink) = chevron.stroke.color else {
                     unreachable!()
                 };
-                let behind = chevron.points[1].distance(start) <= army.distance(start);
+                let behind = route_distance(&trace, chevron.points[1]).0 <= fraction * length;
                 assert_eq!(ink.r() == ink.g() && ink.g() == ink.b(), behind);
             }
             if let Some((previous_army, previous_distances)) = previous {
                 let expected = previous_distances[previous_distances.len() / 2]
-                    - previous_army.distance(army) * 0.25;
+                    - (route_distance(&trace, army).0 - route_distance(&trace, previous_army).0)
+                        * 0.25;
                 let spacing = 44.;
                 assert!(
                     distances.iter().any(|distance| {
@@ -592,8 +616,6 @@ fn march_keeps_departure_and_gray_completed_legs_across_months_and_camera_change
                 panic!("Expected the route underlay");
             };
             if order.origin == provinces[1] {
-                let departure = projection.point(path.points[0]);
-                let bend = projection.point(path.points[1]);
                 let mut gray_count = 0;
                 let mut colored_count = 0;
                 for shape in arrows {
@@ -603,11 +625,14 @@ fn march_keeps_departure_and_gray_completed_legs_across_months_and_camera_change
                     let egui::epaint::ColorMode::Solid(ink) = chevron.stroke.color else {
                         unreachable!()
                     };
-                    if chevron.points[1].distance(departure) < departure.distance(bend) {
-                        assert_eq!(ink.r(), ink.g());
+                    if ink.r() == ink.g() {
                         assert_eq!(ink.g(), ink.b());
+                        assert_eq!(
+                            colored_count, 0,
+                            "Traversed arrows must form a prefix of the curved route"
+                        );
                         gray_count += 1;
-                    } else if ink.r() != ink.g() {
+                    } else {
                         colored_count += 1;
                     }
                 }
@@ -727,6 +752,107 @@ fn moving_units_leave_and_arrive_at_the_stationary_army_anchor() {
         draw(&world, 0.).distance(arriving) < 0.1,
         "Arrival must reuse the same destination anchor"
     );
+}
+
+#[test]
+fn coastal_marches_animate_the_army_along_the_same_bends_as_the_arrows() {
+    for (name, provinces, endpoints, center) in [
+        ("march-coastal", ["Aegyptus", "Cyrenaica"], [[29.9, 30.9], [20.3, 31.8]], [25., 31.]),
+        (
+            "march-sirte",
+            ["Africa Proconsularis", "Cyrenaica"],
+            [[13.2, 32.4], [20.4, 31.4]],
+            [17., 31.5],
+        ),
+    ] {
+        let atlas = atlas();
+        let [origin, destination] =
+            provinces.map(|name| atlas.provinces.iter().position(|p| p.name == name).unwrap());
+        assert!(atlas.provinces[origin].contains(endpoints[0]));
+        assert!(atlas.provinces[destination].contains(endpoints[1]));
+        let own = ForceOwner::Player(0);
+        let mut world = MilitaryWorld::new(atlas.provinces.len());
+        world.seed_unit(origin, own, UnitType::HeavyInfantry).unwrap();
+        let units = world.provinces[origin].forces.remove(&own).unwrap();
+        world.movements.push(MovementOrder {
+            units,
+            origin,
+            route: vec![destination],
+            required_progress: 1.,
+            ..preview_order()
+        });
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 560.));
+        let projection = Projection {
+            origin: viewport.center(),
+            scale: 100.,
+            center,
+        };
+        let zoom = 6.;
+        let size = troop_size(zoom);
+        let offset = troop_rect(egui::Pos2::ZERO, size, 0, 1, UnitType::HeavyInfantry).center()
+            - egui::Pos2::ZERO;
+        let mut anchors = Anchors::default();
+        for (id, endpoint) in [origin, destination].into_iter().zip(endpoints) {
+            anchors
+                .positions
+                .insert((id, own, 0), projection.inverse(projection.point(endpoint) - offset));
+        }
+        let ctx = egui::Context::default();
+        let mut capture = crate::egui_capture::Capture::default();
+        for (frame, fraction) in [0., 0.2, 0.5, 0.8, 0.99999].into_iter().enumerate() {
+            preview_fraction(&ctx, fraction);
+            ctx.begin_pass(egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            });
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            painter.rect_filled(viewport, 0., egui::Color32::from_rgb(82, 130, 147));
+            for (id, province) in atlas.provinces.iter().enumerate() {
+                paint_meshes(
+                    &painter,
+                    &province.parts,
+                    &projection,
+                    if id == origin {
+                        egui::Color32::from_rgb(196, 179, 124)
+                    } else {
+                        egui::Color32::from_rgb(219, 201, 151)
+                    },
+                );
+            }
+            paint(
+                &painter,
+                None,
+                &world,
+                &ProvinceOwnership::default(),
+                &projection,
+                zoom,
+                0.,
+                viewport,
+                &[],
+                &[],
+                &[],
+                &mut anchors,
+            );
+            let path = &anchors.marches[&world.movements[0].id];
+            let trace: Vec<_> = path.trace.iter().map(|&p| projection.point(p)).collect();
+            assert!(trace.len() > 2);
+            assert!(path_length(&trace) > trace[0].distance(*trace.last().unwrap()) + 5.);
+            let hits = ctx
+                .data(|data| data.get_temp::<Vec<ArmyHit>>(egui::Id::new("map-army-hit-targets")))
+                .unwrap();
+            let center = hits.iter().find(|hit| hit.movement.is_some()).unwrap().rect.center();
+            assert!(center.distance(point_along(&trace, fraction * path_length(&trace)).0) < 0.01);
+            let geographic = projection.inverse(center);
+            assert!(
+                atlas.provinces[origin].contains(geographic)
+                    || atlas.provinces[destination].contains(geographic),
+                "The marching army must stay on land"
+            );
+            let mut output = ctx.end_pass();
+            capture.frame(&ctx, &output, &format!("{name}-{frame}"));
+            output.textures_delta.clear();
+        }
+    }
 }
 
 use crate::egui_capture as revolt_capture;

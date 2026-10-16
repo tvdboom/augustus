@@ -27,6 +27,8 @@ struct MarchRoute {
 struct MarchPath {
     provinces: Vec<usize>,
     points: Vec<[f32; 2]>,
+    trace: Vec<[f32; 2]>,
+    leg_ends: Vec<usize>,
 }
 
 impl MarchPath {
@@ -35,6 +37,41 @@ impl MarchPath {
         (self.provinces[leg] == order.origin && self.provinces[leg + 1..] == order.route)
             .then_some(leg)
     }
+
+    fn build_trace(&mut self) -> bool {
+        self.trace.clear();
+        self.leg_ends.clear();
+        for (provinces, endpoints) in self.provinces.windows(2).zip(self.points.windows(2)) {
+            let Some(leg) =
+                routes::march_leg(provinces[0], provinces[1], endpoints[0], endpoints[1])
+            else {
+                self.trace.clear();
+                return false;
+            };
+            self.trace.extend(leg.into_iter().skip(usize::from(!self.trace.is_empty())));
+            self.leg_ends.push(self.trace.len() - 1);
+        }
+        true
+    }
+}
+
+fn path_length(path: &[egui::Pos2]) -> f32 {
+    path.windows(2).map(|edge| edge[0].distance(edge[1])).sum()
+}
+
+fn point_along(path: &[egui::Pos2], mut distance: f32) -> (egui::Pos2, egui::Vec2) {
+    for (index, edge) in path.windows(2).enumerate() {
+        let delta = edge[1] - edge[0];
+        let length = delta.length();
+        if distance <= length || index + 2 == path.len() {
+            return (
+                edge[0] + delta * (distance / length.max(f32::EPSILON)).clamp(0., 1.),
+                delta.normalized(),
+            );
+        }
+        distance -= length;
+    }
+    (path[0], egui::Vec2::X)
 }
 
 /// Preview monthly travel continuously, sharing exactly the same fraction with the army bar.
@@ -134,6 +171,9 @@ mod frames;
 #[path = "military_combat.rs"]
 mod combat;
 
+#[path = "military_routes.rs"]
+mod routes;
+
 /// Geographic anchors survive zoom, panning, clipping and changes to nearby artwork.
 #[derive(Default)]
 pub(super) struct Anchors {
@@ -151,11 +191,15 @@ impl Anchors {
             let path = self.marches.entry(order.id).or_insert_with(|| MarchPath {
                 provinces: Vec::new(),
                 points: Vec::new(),
+                trace: Vec::new(),
+                leg_ends: Vec::new(),
             });
             if path.leg(order).is_none() {
                 path.provinces =
                     std::iter::once(order.origin).chain(order.route.iter().copied()).collect();
                 path.points.clear();
+                path.trace.clear();
+                path.leg_ends.clear();
             }
         }
         let marches = &self.marches;
@@ -648,17 +692,26 @@ pub(super) fn paint(
                     *points.last_mut().unwrap() = fighter.rect.center();
                 }
             }
-            anchors.marches.get_mut(&movement.id).unwrap().points =
-                points.into_iter().map(|point| projection.inverse(point)).collect();
+            let path = anchors.marches.get_mut(&movement.id).unwrap();
+            path.points = points.into_iter().map(|point| projection.inverse(point)).collect();
+            path.build_trace();
         }
         let path = &anchors.marches[&movement.id];
+        if path.trace.is_empty() {
+            continue;
+        }
         let leg = path.leg(movement).unwrap();
-        let route: Vec<_> = path.points.iter().map(|&point| projection.point(point)).collect();
-        let start = route[leg];
-        let end = route[leg + 1];
-        let anchor = start.lerp(end, fraction) - sprite_offset;
-        let travelled = route[..=leg].windows(2).map(|edge| edge[0].distance(edge[1])).sum::<f32>()
-            + fraction * start.distance(end);
+        let route: Vec<_> = path.trace.iter().map(|&point| projection.point(point)).collect();
+        let start = if leg == 0 {
+            0
+        } else {
+            path.leg_ends[leg - 1]
+        };
+        let end = path.leg_ends[leg];
+        let distance = fraction * path_length(&route[start..=end]);
+        let (position, direction) = point_along(&route[start..=end], distance);
+        let anchor = position - sprite_offset;
+        let travelled = path_length(&route[..=start]) + distance;
         let color =
             owner_color(movement.owner, world, ownership).gamma_multiply(f32::from(alpha) / 255.);
         march_routes.push(MarchRoute {
@@ -687,7 +740,7 @@ pub(super) fn paint(
             &mut army_hits,
             movement.origin,
             Some(movement.id),
-            end.x < start.x,
+            direction.x < 0.,
         );
     }
     let mut route_shapes = vec![];

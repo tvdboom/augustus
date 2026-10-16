@@ -33,7 +33,12 @@ impl EconomicProvince {
     /// Smooth local conditions derived solely from saved month and stable province name.
     /// Different phases and durations avoid synchronized growth across the map.
     fn npc_demographic_cycle(&self, month: u32, config: &EconomyConfig) -> f64 {
-        let seed = self.name.bytes().fold(2_166_136_261_u64, |hash, byte| {
+        // Keep Armenia's cycle stable across its display-name change.
+        let cycle_name = match self.name.as_str() {
+            "Armenia" => "Armenia Mesopotamia",
+            name => name,
+        };
+        let seed = cycle_name.bytes().fold(2_166_136_261_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(16_777_619)
         });
         let period =
@@ -70,8 +75,7 @@ impl EconomicProvince {
             } else {
                 0.0
             }
-            + self.building_effects(config).capacity
-            + self.practice_capacity_bonus)
+            + self.building_effects(config).capacity)
             .max(0.001)
     }
 

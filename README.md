@@ -116,7 +116,8 @@ Both policies cover all current and future vassals and their Relation effects st
 Vassals also bolster Provincial Senate support and diplomatic reach, while retaining their
 own local armies. High tribute damages relations; poor relations erode
 Control, while support and garrisons sustain it. At zero Control, a vassal becomes independent.
-At 100, integrate a province for direct ownership; Relation determines its initial happiness change.
+At 100, integrate a province for direct ownership; Relation determines the initial happiness
+change for Nobles, Citizens, and Plebeians. Slave happiness is independent of Relation.
 
 Attacking declares hostility and engages defenders on arrival. Victory establishes occupation
 and subsequent Control gains. Ordinary provinces still require political conversion for
@@ -229,9 +230,11 @@ a time with 13 waiting orders. Waiting cancellations refund recruits and Metal; 
 cancellations do not.
 
 Surviving troops consume Food and wages monthly. Owned provinces feed hosted armies;
-the army owner pays wages. Supplied cohorts gain Training monthly and recover strength and
-morale outside battle. Destroyed cohorts stay lost. Merge damaged cohorts of the same type to
-concentrate their strength; disbanding in owned territory returns survivors to their original class.
+the army owner pays wages. Supplied cohorts gain Training monthly and recover morale outside
+battle. Manpower replenishes more slowly: a 1,000-person cohort regains 3, 6, 12, or 15
+soldiers per month as Centurion, Tribune, Legate, or Imperator, respectively. Both recovery
+rates improve with military rank. Destroyed cohorts stay lost. Merge damaged cohorts of the same
+type to concentrate their strength; disbanding in owned territory returns survivors to their original class.
 
 The military ladder is Centurion → Tribune → Legate → Imperator, separate from political
 office. Promotions cost Influence and require peak army size and victories. Higher ranks
@@ -304,6 +307,16 @@ they must be destroyed.
 Combat runs four rounds per month, 0.75 seconds apart at normal speed. Pausing and speed
 changes apply to battles too. Surviving participants gain experience; victories grant
 Renown, career victories, and Imperialist support, while defeats reduce support.
+
+The Military tab lists your completed Battles below your armies, newest first, with
+opponents, results, and losses. Select a row to close Military and reopen the battlefield
+as it finished, including the final round, surviving and destroyed cohorts, and locked
+formations. Battle records remain in campaign saves; older saves retain the records
+they still contain.
+The completed battle header includes Play/Pause, replay speed (0.5×, 1×, 2×, or 3×),
+and End to return to the finish. Playback uses recorded cohort conditions and deployments
+and does not advance the campaign. Older battles without a full recording show their
+final result with playback disabled.
 
 <br>
 

@@ -2,7 +2,7 @@
 
 `provinces.geojson` and `provinces_label.geojson` come from the [Digital Atlas of the Roman Empire map](https://github.com/barionleg/roman-empire/tree/dbbce0d90f2c53a45c2eefe7877aa701fbf3dce6/data). Its 53 shapes include the eleven numbered regions of Roman Italy. `scripts/build-map.py` gives those regions their [Augustan names](https://etc.usf.edu/maps/pages/2000/2074.htm) in the generated atlas.
 
-The builder displays only the first part of names joined by `et` (for example, `Lucania`), while leaving other multiword names intact. It also divides the source's combined `Creta et Cyrene` shape into separate `Creta` and `Cyrenaica` provinces. The source GeoJSON retains its original names and geometry.
+The builder displays only the first part of names joined by `et` (for example, `Lucania`) and shortens `Armenia Mesopotamia` to `Armenia`, while leaving other multiword names intact. It also divides the source's combined `Creta et Cyrene` shape into separate `Creta` and `Cyrenaica` provinces. The source GeoJSON retains its original names and geometry.
 
 `world-land.geojson` is [Natural Earth 1:50m land](https://github.com/nvkelso/natural-earth-vector/blob/ca96624a56bd078437bca8184e78163e5039ad19/geojson/ne_50m_land.geojson), a public domain dataset. It supplies coastline and land beyond the mapped Roman regions. That land is backdrop only: it has no province interaction.
 
@@ -19,6 +19,7 @@ uv run --no-project --with shapely python scripts/build-terrain.py
 ```
 
 The generated file stores pretriangulated geometry so the game does no map conversion while drawing.
+On atlas load, the game aligns Asia's slightly offset border vertices with Bithynia, Galatia, and Lycia. This restores their shared land borders for movement and trade and gives marching paths continuous ground. The correction is limited to these known source seams; nearby coastlines do not create land connections. Existing campaigns restore the same three links when their province state is synchronized.
 Playable province triangles also clip the continuous Natural Earth land-cover texture. The terrain source, geographic extent, and regeneration command are documented in [`../images/map/README.md`](../images/map/README.md). Ownership uses translucent color over terrain; non-playable land retains its neutral backdrop.
 The builder removes separate land pieces smaller than Malta (about 316 km²) from both province and backdrop geometry, while retaining Malta itself despite differences between the source coastlines.
 Small-island source outlines are retained separately as `marker_land` for fitting wonder art; only the trimmed `land` meshes are painted.

@@ -677,6 +677,47 @@ fn unoccupied_wings_have_no_extra_gaps_between_center_cohorts() {
 }
 
 #[test]
+fn the_visible_front_is_filled_before_the_next_round_when_reserves_remain() {
+    let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+    world.config.random_range = [1., 1.];
+    let battle = &mut world.battles[0];
+    for side in [&mut battle.attackers, &mut battle.defenders] {
+        for unit in &mut side.units {
+            unit.unit_type = UnitType::HeavyInfantry;
+        }
+        side.formation =
+            deploy_formation(&side.units, &side.plans, 10, &BTreeSet::new(), &world.config);
+        assert_eq!(side.formation.reserves.len(), 2);
+        let casualty = side.formation.front[4].unwrap();
+        side.units.iter_mut().find(|unit| unit.id == casualty).unwrap().current_manpower = 0.001;
+    }
+    world.battles[0].advance_round(&world.config);
+    assert!(world.battles[0].result.is_none());
+    for side in [&world.battles[0].attackers, &world.battles[0].defenders] {
+        assert!(side.formation.front.iter().all(Option::is_some));
+        assert_eq!(side.formation.reserves.len(), 1);
+    }
+    let ctx = context();
+    open_battle_panel(&ctx, id, 0);
+    render(&ctx, &world, &economy, 0, egui::vec2(1600., 900.), 0.1, vec![]);
+    let (output, _) = render(&ctx, &world, &economy, 0, egui::vec2(1600., 900.), 0.4, vec![]);
+    let cells: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(r) if r.fill == TABLE_STRIPE => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    let mut rows: Vec<_> = cells.iter().map(|r| r.top()).collect();
+    rows.sort_by(f32::total_cmp);
+    rows.dedup();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(cells.iter().filter(|r| r.top() == rows[1]).count(), 10);
+    assert_eq!(cells.iter().filter(|r| r.top() == rows[2]).count(), 10);
+}
+
+#[test]
 fn destroyed_defenders_remain_visible_in_the_completed_battle() {
     let (mut world, economy, id) = fixture(ForceOwner::Local(0));
     for unit in &mut world.battles[0].defenders.units {
@@ -705,11 +746,45 @@ fn destroyed_defenders_remain_visible_in_the_completed_battle() {
         let infantry = crate::map::military_unit_icon(&ctx, UnitType::HeavyInfantry);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Mesh(mesh) if mesh.texture_id == infantry
-                && mesh.vertices.iter().all(|v| v.pos.y > panel.top() + 168. && v.color.a() == 90)
+                && mesh.vertices.iter().all(|v| v.pos.y > panel.top() + 168. && v.color.a() == 255)
         )), "Destroyed defender cohorts must remain visible to viewer {viewer}");
+        assert!(
+            text(&output).iter().any(|label| label == "×"),
+            "Losses need an explicit status marker"
+        );
         assert!(text(&output).iter().any(|label| label == "Aquitania's army"));
         assert!(!text(&output).iter().any(|label| label == "Retreat"));
     }
+}
+
+#[test]
+fn damaged_cohorts_keep_full_opacity_and_use_the_manpower_bar() {
+    let (mut world, economy, id) = fixture(ForceOwner::Player(1));
+    for unit in &mut world.battles[0].attackers.units {
+        unit.current_manpower *= 0.1;
+    }
+    let ctx = context();
+    open_battle_panel(&ctx, id, 0);
+    render(&ctx, &world, &economy, 0, egui::vec2(1600., 900.), 0.1, vec![]);
+    let (output, _) = render(&ctx, &world, &economy, 0, egui::vec2(1600., 900.), 1., vec![]);
+    let icon = crate::map::military_unit_icon(&ctx, UnitType::HeavyInfantry);
+    let icons: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == icon => Some(mesh),
+            _ => None,
+        })
+        .collect();
+    assert!(!icons.is_empty());
+    assert!(icons.iter().all(|mesh| mesh.vertices.iter().all(|v| v.color.a() == 255)));
+    let color = army_owner_color(&ctx, ForceOwner::Player(0));
+    assert!(
+        output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(r) if r.fill == color && r.rect.height() == 2. && r.rect.width() < 3.
+        )),
+        "Low manpower should remain visible in the strength bar"
+    );
 }
 
 #[test]

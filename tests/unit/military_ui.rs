@@ -191,6 +191,38 @@ fn army_badges_show_unsigned_zero_strength_and_morale() {
 }
 
 #[test]
+fn army_panel_refreshes_soldier_counts_after_a_defeated_force_returns() {
+    let (mut world, economy, graph) = military_fixture();
+    let own = ForceOwner::Player(0);
+    world.provinces[0].forces.clear();
+    for kind in UnitType::ALL {
+        for _ in 0..3 {
+            world.seed_unit(0, own, kind).unwrap();
+        }
+    }
+    let ctx = egui::Context::default();
+    render_army(&ctx, &world, &economy, &graph, 0., vec![]);
+    let (before, _) = render_army(&ctx, &world, &economy, &graph, 0.1, vec![]);
+    text_position(&before, "3,000");
+
+    // The same panel must use the returned force's current manpower, including
+    // damaged cohorts, rather than retaining the original composition or sizes.
+    let units = world.provinces[0].forces.get_mut(&own).unwrap();
+    units.truncate(5);
+    for (index, unit) in units.iter_mut().enumerate() {
+        unit.current_manpower = 1. + index as f64;
+    }
+    render_army(&ctx, &world, &economy, &graph, 0.2, vec![]);
+    let (after, _) = render_army(&ctx, &world, &economy, &graph, 0.3, vec![]);
+    text_position(&after, "600");
+    text_position(&after, "900");
+    assert!(!after.shapes.iter().any(|shape| matches!(
+        &shape.shape,
+        egui::Shape::Text(text) if text.galley.job.text == "3,000"
+    )));
+}
+
+#[test]
 fn cohort_strength_uses_whole_people_instead_of_fractional_population() {
     let mut world = MilitaryWorld::new(1);
     world.seed_unit(0, ForceOwner::Player(0), UnitType::HeavyInfantry).unwrap();
@@ -832,24 +864,12 @@ fn overview_combines_armies_with_directory_styling_and_foreign_row_opens_the_pro
         world.seed_unit(0, ForceOwner::Player(0), kind).unwrap();
     }
     world.seed_unit(0, ForceOwner::Player(1), UnitType::Archers).unwrap();
-    for (width, scale) in [(796., 1.), (380., 1.), (380., 0.85)] {
+    for (width, scale) in [(796., 1.), (558., 1.), (380., 1.), (380., 0.85)] {
         let ctx = egui::Context::default();
         let (output, _) = render_overview(&ctx, &world, &economy, width, scale, 0., vec![]);
         for label in ["MILITARY RANK", "Province", "Units", "Tactic", "Morale", "Training", "?"] {
             text_position(&output, label);
         }
-        let text_center_x = |label| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == label => {
-                        Some(text.pos.x + text.galley.size().x * 0.5)
-                    },
-                    _ => None,
-                })
-                .unwrap()
-        };
         let tactic = world.provinces[0].plans[&ForceOwner::Player(0)].tactic;
         let texture = ctx.data(|data| {
             data.get_temp::<egui::TextureHandle>(egui::Id::new((
@@ -859,18 +879,62 @@ fn overview_combines_armies_with_directory_styling_and_foreign_row_opens_the_pro
             .unwrap()
             .id()
         });
-        let icon_center_x = output
+        let tactic_icon = output
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
-                    Some(mesh.calc_bounds().center().x)
-                },
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.calc_bounds()),
                 _ => None,
             })
             .unwrap();
-        assert!((icon_center_x - text_center_x("Tactic")).abs() < 0.1);
-        assert!((text_center_x("?") - text_center_x("Tactic")).abs() < 0.1);
+        let text_left = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos.x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let tactic_header = text_left("Tactic");
+        let morale_header = text_left("Morale");
+        assert!((tactic_icon.left() - tactic_header).abs() < 0.1);
+        let fit = tactic_effectiveness(
+            world.provinces[0].forces[&ForceOwner::Player(0)].iter(),
+            tactic,
+            &world.config,
+        ) * 100.;
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == format!("{fit:.0}%")
+                && (text.pos.x - tactic_icon.right() - 3. * scale).abs() < 0.1
+                && text.pos.x + text.galley.size().x < morale_header
+                && (text.pos.y + text.galley.size().y * 0.5 - tactic_icon.center().y).abs() < 0.1))
+        );
+        for kind in [Icon::Morale, Icon::MilitaryPower] {
+            let texture = super::super::campaign_widgets::texture(&ctx, kind);
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture
+                    && (mesh.calc_bounds().width() - tactic_icon.width()).abs() < 0.1
+                    && (mesh.calc_bounds().height() - tactic_icon.height()).abs() < 0.1)));
+        }
+        let mut unit_lines = std::collections::BTreeMap::<i32, usize>::new();
+        for kind in UnitType::ALL {
+            let texture = super::super::campaign_widgets::texture(&ctx, Icon::Unit(kind));
+            let icon = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                        Some(mesh.calc_bounds())
+                    },
+                    _ => None,
+                })
+                .expect("Each unit type must remain visible in the overview");
+            *unit_lines.entry((icon.center().y * 10.).round() as i32).or_default() += 1;
+        }
+        assert!(unit_lines.values().all(|&count| count <= 4));
         for forbidden in [
             "ARMIES",
             "FRIENDLY ARMIES",
@@ -1442,56 +1506,171 @@ fn army_window_helmet_requests_its_province_military_tab() {
 
 #[test]
 fn army_title_search_lists_owned_armies_and_switches_provinces() {
-    let (mut world, mut economy, mut graph) = military_fixture();
-    for name in ["Achaia", "Gaul"] {
-        let mut province = economy.provinces[0].clone();
-        province.name = name.into();
-        economy.provinces.push(province);
-        world.provinces.push(ProvinceMilitaryState::default());
-        graph.push(graph[0].clone());
-    }
-    world.seed_unit(1, ForceOwner::Player(0), UnitType::Archers).unwrap();
-    let ctx = egui::Context::default();
-    open_army_panel(&ctx, 0, 0, None);
-    let render = |time, events| {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1600., 1000.),
-                )),
-                time: Some(time),
-                events,
-                ..Default::default()
-            },
-            |ui| {
-                draw_army_panel(
-                    ui.ctx(),
-                    &world,
-                    &economy,
-                    &graph,
+    for in_combat in [false, true] {
+        let (mut world, mut economy, mut graph) = military_fixture();
+        for name in ["Achaia", "Gaul"] {
+            let mut province = economy.provinces[0].clone();
+            province.name = name.into();
+            economy.provinces.push(province);
+            world.provinces.push(ProvinceMilitaryState::default());
+            graph.push(graph[0].clone());
+        }
+        world.seed_unit(1, ForceOwner::Player(0), UnitType::Archers).unwrap();
+        let battle = in_combat.then(|| {
+            let enemy = ForceOwner::Local(1);
+            world.seed_unit(1, enemy, UnitType::LightInfantry).unwrap();
+            world
+                .start_battle(
+                    1,
+                    &[enemy],
+                    &[ForceOwner::Player(0)],
+                    None,
+                    None,
+                    MilitaryTerrain::Plains,
                     0,
-                    |_| true,
-                    |_| None,
-                    |_, _| MilitaryAccess::Peaceful,
-                    |a, b| a != b,
-                );
+                    10,
+                )
+                .unwrap()
+        });
+        let ctx = egui::Context::default();
+        open_army_panel(&ctx, 0, 0, None);
+        let render = |time, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600., 1000.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    draw_army_panel(
+                        ui.ctx(),
+                        &world,
+                        &economy,
+                        &graph,
+                        0,
+                        |_| true,
+                        |_| None,
+                        |_, _| MilitaryAccess::Peaceful,
+                        |a, b| a != b,
+                    );
+                    draw_battle_panel(ui.ctx(), &world, &economy, 0);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        render(0., vec![]);
+        let title = text_position(&render(0.1, vec![]), "Italia");
+        render(0.2, click_events(title, true));
+        let output = render(0.3, click_events(title, false));
+        let achaia = text_position(&output, "Achaia");
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.job.text == "Gaul")));
+        render(0.4, click_events(achaia, true));
+        render(0.5, click_events(achaia, false));
+        if let Some(battle) = battle {
+            assert!(selected_army(&ctx).is_none());
+            assert_eq!(battle_panel::selected_battle(&ctx), Some((battle, 0)));
+            let output = render(0.6, vec![]);
+            text_position(&output, "Battle of Achaia");
+            for forbidden in [
+                "Deployment",
+                "Merge",
+                "Disband",
+                "Retreat",
+                "Formation and tactics are locked during battle.",
+            ] {
+                assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == forbidden)));
+            }
+        } else {
+            assert_eq!(selected_army_province(&ctx), Some(1));
+            text_position(&render(0.6, vec![]), "Achaia");
+        }
+    }
+}
+
+#[test]
+fn engaged_armies_open_combat_from_national_and_province_military_tabs() {
+    for national in [false, true] {
+        let (mut world, economy, graph) = military_fixture();
+        let own = ForceOwner::Player(0);
+        let enemy = ForceOwner::Local(0);
+        world.seed_unit(0, enemy, UnitType::LightInfantry).unwrap();
+        let battle = world
+            .start_battle(0, &[own], &[enemy], None, None, MilitaryTerrain::Plains, 0, 10)
+            .unwrap();
+        let ctx = egui::Context::default();
+        let render = |time, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600., 1000.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    *ui.style_mut() = super::super::campaign_widgets::map_style(1.);
+                    ui.set_width(796.);
+                    if national {
+                        overview(ui, &world, &economy, 0, 0., &[], 1., &mut None);
+                    } else {
+                        show(
+                            ui,
+                            &world,
+                            &economy,
+                            &graph,
+                            0,
+                            0,
+                            |_| true,
+                            |_| None,
+                            |_, _| MilitaryAccess::Peaceful,
+                            |a, b| a != b,
+                        );
+                    }
+                    draw_army_panel(
+                        ui.ctx(),
+                        &world,
+                        &economy,
+                        &graph,
+                        0,
+                        |_| true,
+                        |_| None,
+                        |_, _| MilitaryAccess::Peaceful,
+                        |a, b| a != b,
+                    );
+                    draw_battle_panel(ui.ctx(), &world, &economy, 0);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        render(0., vec![]);
+        let output = render(0.1, vec![]);
+        let army = text_position(
+            &output,
+            if national {
+                "Italia"
+            } else {
+                "Player 1"
             },
         );
-        output.textures_delta.clear();
-        output
-    };
-    render(0., vec![]);
-    let title = text_position(&render(0.1, vec![]), "Italia");
-    render(0.2, click_events(title, true));
-    let output = render(0.3, click_events(title, false));
-    let achaia = text_position(&output, "Achaia");
-    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
-        egui::Shape::Text(text) if text.galley.job.text == "Gaul")));
-    render(0.4, click_events(achaia, true));
-    render(0.5, click_events(achaia, false));
-    assert_eq!(selected_army_province(&ctx), Some(1));
-    text_position(&render(0.6, vec![]), "Achaia");
+        render(0.2, click_events(army, true));
+        render(0.3, click_events(army, false));
+        assert!(selected_army(&ctx).is_none());
+        assert_eq!(battle_panel::selected_battle(&ctx), Some((battle, 0)));
+        let output = render(0.4, vec![]);
+        text_position(&output, "Battle of Italia");
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Deployment")));
+    }
 }
 #[test]
 fn stationed_army_tooltips_are_specific_and_disband_does_not_open_the_army() {

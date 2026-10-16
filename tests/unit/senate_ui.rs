@@ -1070,7 +1070,7 @@ fn badge_hover_has_positive_and_negative_rules_and_hides_exact_confidence() {
                 assert!(text.contains(&"0 / 20 senators support you"));
                 if bloc == Bloc::Aristocrats {
                     assert!(text.contains(&"• Built forums"));
-                    assert!(text.contains(&"• Larger happy noble population"));
+                    assert!(text.contains(&"• Larger noble population"));
                 }
                 if bloc == Bloc::Merchants {
                     assert!(text.contains(&"• Positive net monthly coin income"));

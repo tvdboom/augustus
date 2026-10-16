@@ -105,8 +105,11 @@ pub struct MilitaryConfig {
     pub training_supply_threshold: f64,
     /// Morale baseline before rank/training effects.
     pub base_morale: f64,
-    /// Morale points and percentage of nominal manpower restored per month by rank.
+    /// Morale points restored per supplied month outside battle, by rank.
     pub rank_recovery: [f64; 4],
+    /// Percentage of nominal manpower restored per supplied month outside battle, by rank.
+    #[serde(default = "default_rank_manpower_recovery")]
+    pub rank_manpower_recovery: [f64; 4],
     /// Morale lost for a fully unsupplied month.
     pub shortage_morale_penalty: f64,
     /// Participation experience gain after battle.
@@ -351,6 +354,7 @@ impl Default for MilitaryConfig {
             training_supply_threshold: 0.95,
             base_morale: 100.,
             rank_recovery: [1., 2., 3.5, 5.],
+            rank_manpower_recovery: default_rank_manpower_recovery(),
             shortage_morale_penalty: 25.,
             participation_training: 2.,
             victory_training: 1.,
@@ -386,6 +390,10 @@ impl Default for MilitaryConfig {
             maximum_representatives: 3,
         }
     }
+}
+
+fn default_rank_manpower_recovery() -> [f64; 4] {
+    [0.3, 0.6, 1.2, 1.5]
 }
 
 fn default_npc_invasion_relation() -> f64 {

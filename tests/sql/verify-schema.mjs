@@ -51,9 +51,11 @@ try {
   };
   const create=(actor,conn,game=id(101))=>call(actor,'select public.augustus_create($1,$2::smallint,$3::uuid,$4::uuid) result',['Roman',0,conn,game]);
   const open=(actor,game,conn)=>call(actor,'select public.augustus_record($1::uuid,$2::uuid) result',[game,conn]);
-  const sync=(actor,g,conn,revision,token)=>call(actor,'select public.augustus_sync($1::uuid,$2::uuid,$3::bigint,$4) result',[g,conn,revision,token]);
+  const syncWire=(actor,g,conn,revision,token)=>call(actor,'select public.augustus_sync($1::uuid,$2::uuid,$3::bigint,$4) result',[g,conn,revision,token]);
+  // Match the client's defaults for omitted, unchanged fields.
+  const sync=async(actor,g,conn,revision,token)=>({state:null,events:[],members:null,roster_token:token,...await syncWire(actor,g,conn,revision,token)});
   const leave=(actor,g,conn)=>call(actor,'select public.augustus_leave($1::uuid,$2::uuid) result',[g,conn]);
-  const save=(actor,g,conn,revision,req,changes)=>call(actor,'select public.augustus_save($1::uuid,$2::uuid,$3::bigint,$4::uuid,$5::jsonb) result',[g,conn,revision,req,JSON.stringify(changes)]);
+  const save=(actor,g,conn,revision,req,changes,{token=null,leave=false}={})=>call(actor,'select public.augustus_save($1::uuid,$2::uuid,$3::bigint,$4::uuid,$5::jsonb,$6,$7) result',[g,conn,revision,req,JSON.stringify(changes),token,leave]);
   const change=(path,before,after)=>({path,before,after});
   await assert.rejects(create(null,oc,id(199)),/Sign in/);
   await assert.rejects(call(null,'select public.augustus_list() result',[],'anon'),/permission denied/);
@@ -74,8 +76,15 @@ try {
   await assert.rejects(call(guest,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb) result',[lobby.id,gc,joined.roster_token,multi]),/Only the host/);
   await assert.rejects(call(host,'select public.augustus_profile($1::uuid,$2::uuid,$3,$4::smallint) result',[lobby.id,hc,'Host',1]),/house color/);
   lobby=await open(host,lobby.id,hc);
-  const active=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb) result',[lobby.id,hc,lobby.roster_token,multi]);
+  const active=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb,true) result',[lobby.id,hc,lobby.roster_token,multi]);
   assert.equal(active.status,'active');assert.equal(active.revision,1);assert.equal(active.single_player,false);
+  assert(!('state' in active),'the host already has the initial snapshot');
+  const started=await syncWire(guest,active.id,gc,0,joined.roster_token);
+  assert.deepEqual(started.record.state,JSON.parse(JSON.stringify(JSON.parse(multi))));
+  assert.equal(started.record.player,1);assert.equal(started.record.recovery_code,joined.recovery_code);
+  assert(!('state' in started),'the initial snapshot is transferred exactly once');
+  const startRetry=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb,true) result',[lobby.id,hc,lobby.roster_token,multi]);
+  assert(startRetry.state,'an ambiguous start retry loads authoritative state');
   const resume=(actor,request)=>call(actor,'select public.augustus_resume($1::uuid,$2::uuid,$3,$4::uuid) result',[active.id,actor===host?hc:gc,active.roster_token,request]);
   await assert.rejects(resume(guest,id(601)),/Only the host/);
   await assert.rejects(call(host,'select public.augustus_resume($1::uuid,$2::uuid,$3,$4::uuid) result',[active.id,hc,'stale-roster',id(603)]),/roster changed/);
@@ -96,7 +105,7 @@ try {
   assert.deepEqual(ack,{revision:2});assert.deepEqual(await save(host,active.id,hc,1,id(201),delta),ack);
   await assert.rejects(save(host,active.id,hc,1,id(202),delta),/State conflict/);
   await assert.rejects(call(host,'select public.augustus_save($1::uuid,$2::uuid,2,$3::uuid,null) result',[active.id,hc,id(299)]),/Invalid state delta/);
-  const beforeCoin=active.state.campaign.economy.players[1].coin;
+  const beforeCoin=JSON.parse(multi).campaign.economy.players[1].coin;
   await save(guest,active.id,gc,1,id(203),[change(['campaign','economy','players','1','coin'],beforeCoin,beforeCoin-1)]);
   await assert.rejects(save(guest,active.id,gc,3,id(204),[change(['clock','month'],1,2)]),/Only the host/);
   // A later failure rolls back earlier changes from the same transaction.
@@ -106,6 +115,10 @@ try {
   assert.equal(catchup.events.length,2);assert.equal(catchup.state,null);assert(!('before' in catchup.events[0].changes[0]));
   const unchanged=await sync(guest,active.id,gc,3,catchup.roster_token);
   assert.deepEqual(unchanged.events,[]);assert.equal(unchanged.members,null);assert.equal(unchanged.state,null);
+  const idle=await syncWire(guest,active.id,gc,3,catchup.roster_token);
+  assert.deepEqual(idle,{revision:3,status:'active',resume_generation:1});
+  const previousIdle={...idle,roster_token:catchup.roster_token,members:null,events:[],state:null};
+  console.log(`Unchanged sync JSON: ${JSON.stringify(previousIdle).length} -> ${JSON.stringify(idle).length} bytes (before HTTP/compression).`);
   const timestamp=(await db.query('select saved_at from public.augustus_games where id=$1',[active.id])).rows[0].saved_at;
   await sync(host,active.id,hc,3,unchanged.roster_token);
   assert.deepEqual((await db.query('select saved_at from public.augustus_games where id=$1',[active.id])).rows[0].saved_at,timestamp);
@@ -124,10 +137,10 @@ try {
 
   const replayState=(state,changes)=>{
     const next=structuredClone(state);
-    for(const {path,after} of changes) {
+    for(const {path,after,append} of changes) {
       let target=next;
       for(const key of path.slice(0,-1)) target=target[key];
-      target[path.at(-1)]=after;
+      target[path.at(-1)]=append?target[path.at(-1)].concat(after):after;
     }
     return next;
   };
@@ -179,6 +192,45 @@ try {
   await save(guest,combat.id,gc,3,id(909),[change(['campaign','military','battles','0','retreat_requested'],null,false)]);
   await db.query('delete from public.augustus_games where id=$1',[combat.id]);
   console.log('Host-only combat, parent-object authorization, stale simulation rejection, round idempotency, guest replay and retreat commands passed.');
+
+  let compact=await create(host,hc,id(106));
+  await call(guest,'select public.augustus_join($1,$2,$3::uuid) result',[compact.code,'Guest',gc]);
+  compact=await open(host,compact.id,hc);
+  compact=await call(host,'select public.augustus_start($1::uuid,$2::uuid,$3,$4::jsonb,true) result',[compact.id,hc,compact.roster_token,multi]);
+  const compactCoin=JSON.parse(multi).campaign.economy.players[0].coin;
+  const compactDelta=[change(['campaign','economy','players','0','coin'],compactCoin,compactCoin-1)];
+  await leave(guest,compact.id,gc);
+  const combined=await save(host,compact.id,hc,1,id(950),compactDelta,{token:compact.roster_token});
+  assert.equal(combined.revision,2);assert.equal(combined.sync.members[1].connected,false);
+  assert(!('state' in combined.sync));assert(!('events' in combined.sync));
+  assert(!('recovery_code' in combined.sync));assert(!combined.sync.members.some(m=>'recovery_code' in m));
+  assert.deepEqual(await save(host,compact.id,hc,1,id(950),compactDelta,{token:compact.roster_token}),combined,'combined metadata retries commit only once');
+  await open(guest,compact.id,gc);
+  const gcCoin=JSON.parse(multi).campaign.economy.players[1].coin;
+  const guestDelta=[change(['campaign','economy','players','1','coin'],gcCoin,gcCoin-1)];
+  const stale=await save(guest,compact.id,gc,1,id(951),guestDelta,{token:compact.roster_token});
+  assert.deepEqual(stale,{revision:3},'a stale merged write must replay unseen revisions separately');
+  assert.deepEqual(await save(host,compact.id,hc,1,id(950),compactDelta,{token:compact.roster_token}),{revision:2},'an old receipt never echoes newer state');
+  const notice=interactions.steps.find(step=>step.after.campaign.notifications.history.length).after.campaign.notifications.history[0];
+  const append={path:['campaign','notifications','history'],before:0,after:[notice],append:true};
+  assert.deepEqual(await save(host,compact.id,hc,3,id(953),[append]),{revision:4});
+  assert.deepEqual(await save(host,compact.id,hc,3,id(953),[append]),{revision:4},'append retries do not duplicate entries');
+  const appendReplay=await syncWire(guest,compact.id,gc,3,compact.roster_token);
+  assert.deepEqual(appendReplay.events[0].changes,[{path:append.path,after:append.after,append:true}]);
+  await assert.rejects(save(guest,compact.id,gc,3,id(954),[append]),/State conflict/,'concurrent appends compare the array length');
+  const exitDelta=[change(['campaign','economy','players','0','coin'],compactCoin-1,compactCoin-2)];
+  await assert.rejects(save(host,compact.id,hc,4,id(955),[...exitDelta,append],{leave:true}),/State conflict/,'a late append conflict rolls back the earlier wallet edit and leave');
+  assert.equal((await open(host,compact.id,hc)).state.campaign.economy.players[0].coin,compactCoin-1);
+  await assert.rejects(save(host,compact.id,hc,4,id(956),[{...append,before:1,after:42}]),/Invalid array append/);
+  await assert.rejects(save(host,compact.id,hc,4,id(957),[{...append,before:1,append:'true'}]),/Invalid delta/);
+  const exit=await save(host,compact.id,hc,4,id(952),exitDelta,{leave:true});
+  assert.deepEqual(exit,{revision:5,left:true});
+  assert.deepEqual(await save(host,compact.id,hc,4,id(952),exitDelta,{leave:true}),exit,'save-and-leave retry commits once and releases again');
+  const released=(await db.query('select seen_at,connection_id from public.augustus_players where game_id=$1 and player=0',[compact.id])).rows[0];
+  assert.deepEqual(released,{seen_at:null,connection_id:null});
+  assert.equal((await open(host,compact.id,hc)).state.campaign.economy.players[0].coin,compactCoin-2);
+  await db.query('delete from public.augustus_games where id=$1',[compact.id]);
+  console.log('Compact startup, combined presence, stale receipts and atomic save-and-leave passed.');
 
   const solo=await create(outsider,oc,id(102));
   assert.equal(solo.status,'lobby');assert.equal(solo.single_player,false);

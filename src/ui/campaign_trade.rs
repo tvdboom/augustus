@@ -97,9 +97,10 @@ fn section(ui: &mut egui::Ui, title: &str, scale: f32) {
     policy_widgets::section(ui, scale, title);
 }
 
+/// Keep trade controls in the player's color, including inside a foreign province.
 fn accent(ui: &egui::Ui) -> egui::Color32 {
     ui.ctx()
-        .data(|data| data.get_temp::<egui::Color32>(egui::Id::new("campaign-owner-color")))
+        .data(|data| data.get_temp::<egui::Color32>(egui::Id::new("campaign-active-player-color")))
         .unwrap_or(egui::Color32::from_rgb(155, 77, 52))
 }
 

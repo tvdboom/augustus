@@ -191,7 +191,7 @@ begin
     or (s#>>'{clock,month_progress}')::numeric not between 0 and 3
     or jsonb_typeof(s->'paused') is distinct from 'boolean' then raise exception 'Invalid or oversized Augustus snapshot.'; end if;
 end $$;
-create function public.augustus_start(p_game_id uuid,p_connection uuid,p_roster_token text,p_state jsonb)
+create function public.augustus_start(p_game_id uuid,p_connection uuid,p_roster_token text,p_state jsonb,p_known_state boolean default false)
 returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
 declare n smallint; g public.augustus_games; roster jsonb; count_players integer;
 begin
@@ -210,6 +210,9 @@ begin
   end loop;
   perform public.augustus_validate_state(p_state,count_players);
   update public.augustus_games set status='active',single_player=(count_players=1),state=p_state,revision=1,saved_at=clock_timestamp() where id=p_game_id;
+  -- The initiating client already has this exact state. An idempotent retry above
+  -- still returns the authoritative snapshot, which may contain newer commands.
+  if p_known_state then return public.augustus_record(p_game_id,p_connection)-'state'; end if;
   return public.augustus_record(p_game_id,p_connection);
 end $$;
 -- Player commands may start/join battles or request retreat; only seat zero
@@ -255,14 +258,26 @@ begin
     end if;
   end loop;
 end $$;
-create function public.augustus_save(p_game_id uuid,p_connection uuid,p_revision bigint,p_request_id uuid,p_changes jsonb)
+create function public.augustus_save(p_game_id uuid,p_connection uuid,p_revision bigint,p_request_id uuid,p_changes jsonb,
+  p_roster_token text default null,p_leave boolean default false)
 returns jsonb language plpgsql security definer set search_path=pg_catalog,public as $$
 declare n smallint; g public.augustus_games; next_state jsonb; delta jsonb; path text[]; replay jsonb:='[]'; prior bigint; count_players integer;
 begin
   select * into g from public.augustus_games where id=p_game_id for update;
   n:=public.augustus_member(p_game_id,p_connection);
   select revision into prior from public.augustus_events where game_id=p_game_id and request_id=p_request_id;
-  if found then return jsonb_build_object('revision',prior); end if;
+  if found then
+    if p_leave then
+      update public.augustus_players set seen_at=null,connection_id=null where game_id=p_game_id and player=n;
+      return jsonb_build_object('revision',prior,'left',true);
+    end if;
+    -- Metadata can share the receipt only if the client knows every committed
+    -- revision. Otherwise it must replay from its own cursor in a separate sync.
+    if p_roster_token is not null and prior=p_revision+1 and prior=g.revision then
+      return jsonb_build_object('revision',prior,'sync',public.augustus_sync(p_game_id,p_connection,prior,p_roster_token));
+    end if;
+    return jsonb_build_object('revision',prior);
+  end if;
   if g.status<>'active' then raise exception 'This campaign cannot be edited.'; end if;
   if p_revision<greatest(1,g.revision-127) or p_revision>g.revision then raise exception 'State conflict. Sync and retry.'; end if;
   if jsonb_typeof(p_changes) is distinct from 'array' or jsonb_array_length(p_changes) not between 1 and 20000 or octet_length(p_changes::text)>2097152 then raise exception 'Invalid state delta.'; end if;
@@ -272,9 +287,17 @@ begin
     select array_agg(value) into path from jsonb_array_elements_text(delta->'path');
     if coalesce(cardinality(path),0) not between 1 and 16 or path[1] not in ('campaign','clock','paused') then raise exception 'Invalid delta path.'; end if;
     if n<>0 and path[1] in ('clock','paused') then raise exception 'Only the host controls time.'; end if;
-    if next_state#>path is distinct from delta->'before' then raise exception 'State conflict. Sync and retry.'; end if;
-    next_state:=jsonb_set(next_state,path,delta->'after',false);
-    replay:=replay||jsonb_build_array(jsonb_build_object('path',delta->'path','after',delta->'after'));
+    if delta?'append' and jsonb_typeof(delta->'append') is distinct from 'boolean' then raise exception 'Invalid delta.'; end if;
+    if delta->'append'='true'::jsonb then
+      if jsonb_typeof(next_state#>path) is distinct from 'array' or jsonb_typeof(delta->'after') is distinct from 'array' then raise exception 'Invalid array append.'; end if;
+      if to_jsonb(jsonb_array_length(next_state#>path)) is distinct from delta->'before' then raise exception 'State conflict. Sync and retry.'; end if;
+      next_state:=jsonb_set(next_state,path,(next_state#>path)||(delta->'after'),false);
+    else
+      if next_state#>path is distinct from delta->'before' then raise exception 'State conflict. Sync and retry.'; end if;
+      next_state:=jsonb_set(next_state,path,delta->'after',false);
+    end if;
+    replay:=replay||jsonb_build_array(jsonb_build_object('path',delta->'path','after',delta->'after')
+      || case when delta->'append'='true'::jsonb then '{"append":true}'::jsonb else '{}'::jsonb end);
   end loop;
   count_players:=(select count(*) from public.augustus_players where game_id=p_game_id);
   perform public.augustus_validate_state(next_state,count_players);
@@ -305,6 +328,13 @@ begin
       select revision,sum(octet_length(changes::text)) over(order by revision desc) as bytes
         from public.augustus_events where game_id=p_game_id
     ) recent where bytes<=262144),prior);
+  if p_leave then
+    update public.augustus_players set seen_at=null,connection_id=null where game_id=p_game_id and player=n;
+    return jsonb_build_object('revision',prior,'left',true);
+  end if;
+  if p_roster_token is not null and prior=p_revision+1 then
+    return jsonb_build_object('revision',prior,'sync',public.augustus_sync(p_game_id,p_connection,prior,p_roster_token));
+  end if;
   return jsonb_build_object('revision',prior); -- No successful-save snapshot echo.
 end $$;
 create function public.augustus_resume(p_game_id uuid,p_connection uuid,p_roster_token text,p_request_id uuid)
@@ -333,6 +363,12 @@ begin
   perform public.augustus_member(p_game_id,p_connection);
   roster:=public.augustus_roster(p_game_id); token:=md5(roster::text);
   if p_revision<0 or p_revision>g.revision then raise exception 'Invalid replay cursor.'; end if;
+  -- Lobby clients need the caller's remapped seat and one initial snapshot.
+  -- Include access metadata here instead of downloading the snapshot again via record.
+  if p_revision=0 and g.status<>'lobby' then
+    return jsonb_build_object('revision',g.revision,'status',g.status,'resume_generation',g.resume_generation,
+      'record',public.augustus_record(p_game_id,p_connection));
+  end if;
   fallback:=p_revision<g.revision and (
     not exists(select 1 from public.augustus_events where game_id=p_game_id and revision=p_revision+1)
     or exists(select 1 from public.augustus_events where game_id=p_game_id and revision>p_revision and changes='null'::jsonb));
@@ -341,8 +377,10 @@ begin
   if not fallback and p_revision<g.revision and octet_length(events::text)>octet_length(g.state::text) then
     fallback:=true;events:='[]'; -- Use the smaller representation for long catch-up.
   end if;
-  return jsonb_build_object('revision',g.revision,'status',g.status,'resume_generation',g.resume_generation,'roster_token',token,
-    'members',case when token is distinct from p_roster_token then roster else null end,'events',events,'state',case when fallback then g.state else null end);
+  return jsonb_build_object('revision',g.revision,'status',g.status,'resume_generation',g.resume_generation)
+    || case when token is distinct from p_roster_token then jsonb_build_object('roster_token',token,'members',roster) else '{}'::jsonb end
+    || case when events<>'[]'::jsonb then jsonb_build_object('events',events) else '{}'::jsonb end
+    || case when fallback then jsonb_build_object('state',g.state) else '{}'::jsonb end;
 end $$;
 create function public.augustus_list()
 returns jsonb language sql stable security definer set search_path=pg_catalog,public as $$
@@ -389,7 +427,7 @@ $$;
 revoke all on all tables in schema public from public,anon,authenticated;
 revoke all on all functions in schema public from public,anon,authenticated;
 grant execute on function public.augustus_create(text,smallint,uuid,uuid),public.augustus_join(text,text,uuid),public.augustus_record(uuid,uuid),
-  public.augustus_profile(uuid,uuid,text,smallint),public.augustus_start(uuid,uuid,text,jsonb),public.augustus_save(uuid,uuid,bigint,uuid,jsonb),
+  public.augustus_profile(uuid,uuid,text,smallint),public.augustus_start(uuid,uuid,text,jsonb,boolean),public.augustus_save(uuid,uuid,bigint,uuid,jsonb,text,boolean),
   public.augustus_resume(uuid,uuid,text,uuid),
   public.augustus_sync(uuid,uuid,bigint,text),public.augustus_list(),public.augustus_recover(text,text,uuid),public.augustus_leave(uuid,uuid) to authenticated;
 select cron.schedule('augustus-delete-expired-games','* * * * *','select public.augustus_cleanup()');

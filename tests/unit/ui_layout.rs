@@ -265,6 +265,59 @@ fn fixture() -> Campaign {
     campaign
 }
 
+#[test]
+fn integration_relation_changes_free_class_happiness_without_causing_slave_revolts() {
+    for relation in [0.0, 50.0, 100.0] {
+        for state in [
+            PoliticalState::Independent {
+                local: 0.0,
+                shares: vec![100.0, 0.0],
+            },
+            PoliticalState::Vassal {
+                overlord: 0,
+                control: 100.0,
+                tribute: Tribute::Normal,
+            },
+            PoliticalState::Owned {
+                owner: 1,
+            },
+        ] {
+            let mut campaign = fixture();
+            let province = 2;
+            campaign.politics[province].state = state;
+            campaign.politics[province].owned_shares = vec![100.0, 0.0];
+            campaign.politics[province].relations[0] = relation;
+            campaign.reconcile_provinces();
+            campaign.economy.config.slave_revolt_chance = [1.0; 2];
+            // Preserve existing slave hardship rather than resetting their wellbeing.
+            campaign.economy.provinces[province].temporary_happiness = [0.0, 0.0, 0.0, -7.0];
+            let before =
+                campaign.economy.provinces[province].calculate_happiness(&campaign.economy.config);
+
+            integrate_province(&mut campaign, province, 0).unwrap();
+
+            let shift = relation - 50.0;
+            let p = &campaign.economy.provinces[province];
+            assert_eq!(p.owner, Some(0));
+            assert_eq!(p.temporary_happiness, [shift, shift, shift, -7.0]);
+            let happiness = p.calculate_happiness(&campaign.economy.config);
+            for class in 0..3 {
+                assert_eq!(happiness[class], (before[class] + shift).clamp(0.0, 100.0));
+            }
+            assert_eq!(happiness[3], before[3]);
+
+            campaign.advance_month();
+
+            assert!(campaign.economy.provinces[province].happiness[3] > 5.0);
+            assert!(campaign.economy.provinces[province].population[3] > 0.0);
+            assert!(!campaign.military.provinces[province].slave_rebellion);
+            assert!(!campaign.notifications.history_for(0).any(|notice| {
+                notice.kind == super::super::campaign_notifications::NoticeKind::SlaveRevolt
+            }));
+        }
+    }
+}
+
 /// Exercise egui's actual layout, including expanded sections, without a desktop window.
 fn layout_context() -> egui::Context {
     let ctx = egui::Context::default();
@@ -2602,18 +2655,14 @@ fn provincial_income_tooltips_show_illustrated_contributors_without_formulas() {
 fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_precision() {
     use crate::game::economy::BuildingType;
 
-    for (terrain, military, city, practice_bonus) in [
-        (0.7, false, false, 0.0),
-        (1.0, true, true, 0.0),
-        (1.2, false, true, 0.0),
-        (0.7, false, true, 1_000_000.0),
-    ] {
+    for (terrain, military, city) in
+        [(0.7, false, false), (1.0, true, true), (1.2, false, true), (0.7, false, true)]
+    {
         let ctx = layout_context();
         ctx.memory_mut(|memory| memory.set_everything_is_visible(false));
         let mut campaign = fixture();
         let p = &mut campaign.economy.provinces[0];
         p.has_city = city;
-        p.practice_capacity_bonus = practice_bonus;
         p.buildings[BuildingType::Baths as usize] = u32::from(city);
         if !military {
             campaign.military.provinces[0].forces.clear();
@@ -2783,18 +2832,9 @@ fn food_demand_and_capacity_tooltips_use_consistent_signs_colours_and_precision(
                 },
             );
         }
-        if practice_bonus > 0.0 {
-            check_bullet(
-                &output,
-                "Practice boost",
-                "+1000000",
-                super::super::resource_hud::hud_delta_color(1.0),
-            );
-        } else {
-            assert!(!text_shapes(&output)
-                .iter()
-                .any(|(_, galley)| { galley.job.text == "• Practice boost:" }));
-        }
+        assert!(!text_shapes(&output)
+            .iter()
+            .any(|(_, galley)| { galley.job.text == "• Practice boost:" }));
     }
 }
 
@@ -2901,6 +2941,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             .max_by(|left, right| left.0.x.total_cmp(&right.0.x))
             .unwrap()
             .1;
+        modifier.job.text.parse::<i32>().expect("Whole happiness modifier");
         let modifier_sign = if modifier.job.text.starts_with('+') {
             1.0
         } else if modifier.job.text.starts_with('-') {
@@ -2980,7 +3021,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             super::super::resource_hud::hud_delta_color(births - 1.0),
         );
         for (title, value) in
-            [("Accumulated overcrowding", "-6.0"), ("Accumulated food shortage", "-4.5")]
+            [("Accumulated overcrowding", "-6"), ("Accumulated food shortage", "-5")]
         {
             check_bullet(
                 &happiness,
@@ -2995,19 +3036,19 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
         check_bullet(
             &modifiers,
             "Buildings",
-            "+2.0",
+            "+2",
             super::super::resource_hud::hud_delta_color(1.0),
         );
         check_bullet(
             &modifiers,
             "Military drafting",
-            "-21.7",
+            "-22",
             super::super::resource_hud::hud_delta_color(-1.0),
         );
         for (title, value) in [
-            ("Events / espionage", "-1.5"),
-            ("Accumulated overcrowding", "-6.0"),
-            ("Accumulated food shortage", "-4.5"),
+            ("Events / espionage", "-2"),
+            ("Accumulated overcrowding", "-6"),
+            ("Accumulated food shortage", "-5"),
         ] {
             check_bullet(
                 &modifiers,
@@ -3020,13 +3061,13 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             check_bullet(
                 &modifiers,
                 "Noble wages",
-                "+1.0",
+                "+1",
                 super::super::resource_hud::hud_delta_color(1.0),
             );
             check_bullet(
                 &modifiers,
                 "Treasury insolvency",
-                "-2.0",
+                "-2",
                 super::super::resource_hud::hud_delta_color(-1.0),
             );
         }
@@ -3039,7 +3080,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             check_bullet(
                 &modifiers,
                 "Civic spending",
-                "+4.0",
+                "+4",
                 super::super::resource_hud::hud_delta_color(1.0),
             );
         }
@@ -3047,7 +3088,7 @@ fn population_tooltips_show_signed_coloured_causes_and_capacity_on_the_badge_tot
             check_bullet(
                 &modifiers,
                 "Recruitment effort",
-                "-2.0",
+                "-2",
                 super::super::resource_hud::hud_delta_color(-1.0),
             );
         }
@@ -3963,6 +4004,131 @@ fn selecting_an_owned_map_army_closes_the_province_inspector_and_retains_its_tab
         campaign_military::selected_army_province(&ctx),
         None,
         "Clicking the selected army again deselects it"
+    );
+}
+
+#[test]
+fn clicking_battle_history_replaces_military_with_the_saved_finished_battle() {
+    use bevy::asset::AssetPlugin;
+    let mut campaign = fixture();
+    let own = ForceOwner::Player(0);
+    campaign.military.seed_unit(0, ForceOwner::Local(0), UnitType::HeavyInfantry).unwrap();
+    let id = campaign
+        .military
+        .start_battle(
+            0,
+            &[own],
+            &[ForceOwner::Local(0)],
+            Some(0),
+            None,
+            MilitaryTerrain::Plains,
+            0,
+            17,
+        )
+        .unwrap();
+    campaign.military.battles[0].advance_round(&campaign.military.config);
+    campaign.military.battles[0].result = Some(BattleResult::AttackerVictory);
+    let outcome =
+        campaign.military.battles.remove(0).into_outcome(&campaign.military.config).unwrap();
+    campaign.military.history.push(outcome);
+    let military_before = serde_json::to_value(&campaign.military).unwrap();
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .insert_resource(State::new(AppState::Map))
+        .insert_resource(campaign)
+        .insert_resource(LocalPractice {
+            players: (0..2)
+                .map(|color_index| PracticePlayer {
+                    name: format!("Player {}", color_index + 1),
+                    color_index,
+                    rank: 0,
+                    main_province: Some(color_index),
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .insert_resource(MenuAudio {
+            volume: 0.0,
+            mode: AudioMode::Mute,
+            restored_mode: AudioMode::Effects,
+            music: default(),
+        })
+        .init_resource::<Audio>()
+        .init_resource::<TerminalPresentation>()
+        .init_resource::<bevy_egui::EguiUserTextures>()
+        .insert_resource(CampaignUi {
+            open: Some(CampaignTab::Military),
+            province: Some(0),
+            ..Default::default()
+        })
+        .init_resource::<ProvincePanelOpen>()
+        .init_resource::<GovernancePanelOpen>()
+        .init_resource::<MapPanelCloseClick>()
+        .init_resource::<MapView>()
+        .add_systems(Update, (draw, draw_army_panel).chain());
+    let entity = app
+        .world_mut()
+        .spawn((bevy_egui::EguiContext::default(), bevy_egui::PrimaryEguiContext))
+        .id();
+    let ctx = app.world_mut().get_mut::<bevy_egui::EguiContext>(entity).unwrap().get_mut().clone();
+    let mut capture = capture::Capture::default();
+    let mut frame = |time, events, name| {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600., 1000.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |_| app.update(),
+        );
+        capture.frame(&ctx, &output, name);
+        output.textures_delta.clear();
+        output
+    };
+    frame(0., vec![], "battle-history-panel");
+    let output = frame(0.1, vec![], "battle-history-panel");
+    let row = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Italia" => {
+                Some(text.pos + egui::vec2(10., 10.))
+            },
+            _ => None,
+        })
+        .expect("History must render the completed battle");
+    for (time, pressed) in [(0.2, true), (0.3, false)] {
+        frame(
+            time,
+            vec![
+                egui::Event::PointerMoved(row),
+                egui::Event::PointerButton {
+                    pos: row,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            "battle-history-open",
+        );
+    }
+    let output = frame(0.4, vec![], "battle-history-open");
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Battle of Italia")));
+    assert_eq!(app.world().resource::<CampaignUi>().open, None);
+    assert_eq!(app.world().resource::<ProvincePanelOpen>().0, None);
+    assert!(!app.world().resource::<GovernancePanelOpen>().0);
+    assert!(!campaign_military::army_details_open(&ctx));
+    assert_eq!(
+        ctx.data(|data| data.get_temp::<(u64, usize)>(egui::Id::new("campaign-battle-inspection"))),
+        Some((id, 0))
+    );
+    assert_eq!(
+        serde_json::to_value(&app.world().resource::<Campaign>().military).unwrap(),
+        military_before
     );
 }
 

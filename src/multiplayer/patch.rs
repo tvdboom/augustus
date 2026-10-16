@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A replacement at an existing JSON path, with an optional compare-and-set value.
+/// A replacement or append at an existing path, with a writer precondition.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
     /// Object keys or array indexes from the snapshot root.
@@ -13,9 +13,33 @@ pub struct Change {
     pub before: Option<Value>,
     /// Replacement value.
     pub after: Value,
+    /// Append `after` entries to an array; `before` is its expected length.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub append: bool,
 }
 
-/// Computes deterministic replacements, replacing arrays when their length changes.
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn replay_size(change: &Change) -> usize {
+    #[derive(Serialize)]
+    struct Replay<'a> {
+        path: &'a [String],
+        after: &'a Value,
+        #[serde(skip_serializing_if = "is_false")]
+        append: bool,
+    }
+    serde_json::to_vec(&Replay {
+        path: &change.path,
+        after: &change.after,
+        append: change.append,
+    })
+    .map(|v| v.len())
+    .unwrap_or(usize::MAX)
+}
+
+/// Computes deterministic replacements and sends only new entries for pure appends.
 pub fn changes(before: &Value, after: &Value) -> Vec<Change> {
     fn visit(before: &Value, after: &Value, path: &mut Vec<String>, out: &mut Vec<Change>) {
         if before == after {
@@ -37,27 +61,58 @@ pub fn changes(before: &Value, after: &Value) -> Vec<Change> {
                     path.pop();
                 }
             },
+            (Value::Array(a), Value::Array(b)) if b.len() > a.len() && b.starts_with(a) => {
+                let append = Change {
+                    path: path.clone(),
+                    before: Some(Value::from(a.len())),
+                    after: Value::Array(b[a.len()..].to_vec()),
+                    append: true,
+                };
+                let replace = Change {
+                    path: path.clone(),
+                    before: Some(before.clone()),
+                    after: after.clone(),
+                    append: false,
+                };
+                // Small/empty arrays may cost less without the append marker.
+                // Require a saving on both upload and replay, regardless of player count.
+                let smaller = replay_size(&append) < replay_size(&replace)
+                    && serde_json::to_vec(&append).map(|v| v.len()).unwrap_or(usize::MAX)
+                        < serde_json::to_vec(&replace).map(|v| v.len()).unwrap_or(usize::MAX);
+                out.push(if smaller {
+                    append
+                } else {
+                    replace
+                });
+            },
             _ => out.push(Change {
                 path: path.clone(),
                 before: Some(before.clone()),
                 after: after.clone(),
+                append: false,
             }),
         }
         // Many changing numeric fields can cost more in repeated paths than one
-        // compact parent replacement. Compare actual wire sizes, including replay.
+        // compact parent replacement. Require a saving on upload and replay.
         if out.len() > start + 1 {
             let parent = Change {
                 path: path.clone(),
                 before: Some(before.clone()),
                 after: after.clone(),
+                append: false,
             };
             let child_cost = out[start..]
                 .iter()
                 .map(|c| serde_json::to_vec(c).map(|v| v.len()).unwrap_or(usize::MAX / 20000))
-                .sum::<usize>();
+                .sum::<usize>()
+                + out.len()
+                - start
+                - 1;
             let parent_cost = serde_json::to_vec(&parent).map(|v| v.len()).unwrap_or(usize::MAX);
+            let child_replay =
+                out[start..].iter().map(replay_size).sum::<usize>() + out.len() - start - 1;
             // Keep the snapshot and campaign roots stable for authorization and merging.
-            if path.len() >= 2 && parent_cost < child_cost {
+            if path.len() >= 2 && parent_cost < child_cost && replay_size(&parent) < child_replay {
                 out.truncate(start);
                 out.push(parent);
             }
@@ -81,10 +136,19 @@ pub fn apply(state: &Value, changes: &[Change], check: bool) -> Result<Value, St
             }
             .ok_or_else(|| "The game changed; retry your action.".to_string())?;
         }
-        if check && change.before.as_ref() != Some(&*target) {
-            return Err("The game changed; retry your action.".into());
+        if change.append {
+            let array = target.as_array_mut().ok_or("Invalid array append.")?;
+            let entries = change.after.as_array().ok_or("Invalid array append.")?;
+            if check && change.before.as_ref() != Some(&Value::from(array.len())) {
+                return Err("The game changed; retry your action.".into());
+            }
+            array.extend(entries.iter().cloned());
+        } else {
+            if check && change.before.as_ref() != Some(&*target) {
+                return Err("The game changed; retry your action.".into());
+            }
+            *target = change.after.clone();
         }
-        *target = change.after.clone();
     }
     Ok(next)
 }

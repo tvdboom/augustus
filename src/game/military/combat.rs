@@ -111,6 +111,9 @@ pub struct BattleRound {
     pub tactics: [BTreeMap<ForceOwner, f64>; 2],
     /// Whole people lost by each side, attacker first.
     pub casualties: [u64; 2],
+    /// Recorded cohort conditions and deployment, absent in older saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<BattleReplayFrame>,
 }
 
 /// Map a d6 roll to the configured damage range; equal bounds disable luck in tests.
@@ -144,6 +147,9 @@ pub struct Battle {
     pub months: usize,
     /// Completed rounds retained for the battle panel and outcome inspection.
     pub rounds: Vec<BattleRound>,
+    /// Initial visual state before the first round, absent in older saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_start: Option<BattleReplayFrame>,
     /// Result, assigned only once.
     pub result: Option<BattleResult>,
     /// Pending retreat at the next round boundary (true means attacker).
@@ -181,6 +187,7 @@ impl Battle {
             round: 0,
             months: 0,
             rounds: Vec::new(),
+            replay_start: None,
             result: None,
             retreat_requested: None,
             trapped: BTreeSet::new(),
@@ -273,6 +280,9 @@ impl Battle {
         if self.result.is_some() {
             return;
         }
+        if self.round == 0 && self.replay_start.is_none() {
+            self.replay_start = Some(BattleReplayFrame::capture(&self.attackers, &self.defenders));
+        }
         if self.rome_defense {
             self.trapped.insert(ForceOwner::Local(self.province));
         }
@@ -355,6 +365,7 @@ impl Battle {
                 before[0].saturating_sub(self.attackers.units.iter().map(Unit::people).sum()),
                 before[1].saturating_sub(self.defenders.units.iter().map(Unit::people).sum()),
             ],
+            replay: None,
         });
         // Replace casualties immediately so the visible state is ready for the next round.
         // Newly committed reserves did not participate in the round just resolved.
@@ -362,6 +373,8 @@ impl Battle {
             refill_formation(&mut side.formation, &side.units, &side.plans, &side.routed, config);
         }
         self.result = broken_result(&self.attackers, &self.defenders);
+        let replay = BattleReplayFrame::capture(&self.attackers, &self.defenders);
+        self.rounds.last_mut().unwrap().replay = Some(replay);
     }
     /// Apply experience/morale rewards once when consuming a finished battle.
     pub fn into_outcome(mut self, config: &MilitaryConfig) -> Option<BattleOutcome> {
@@ -401,6 +414,7 @@ impl Battle {
             rounds: self.round,
             months: self.months,
             round_history: self.rounds,
+            replay_start: self.replay_start,
             terrain: self.terrain,
             fortification_level: self.fortification_level,
         })
@@ -433,6 +447,9 @@ pub struct BattleOutcome {
     pub months: usize,
     /// Dice, bonuses and casualties for each completed round.
     pub round_history: Vec<BattleRound>,
+    /// Original deployment and cohort condition, when recorded by this version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_start: Option<BattleReplayFrame>,
     /// Original battlefield landscape for the result panel.
     pub terrain: MilitaryTerrain,
     /// Defenses present on engagement, retained for the result panel.

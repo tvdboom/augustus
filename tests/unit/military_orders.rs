@@ -108,6 +108,132 @@ fn click(
 }
 
 #[test]
+fn an_army_in_asia_can_use_attack_and_pressure_to_march_directly_to_lycia() {
+    use crate::app::campaign::Campaign;
+    use crate::game::politics::diplomacy::ProvincePolitics;
+    for kind in [ArmyOrderKind::Attack, ArmyOrderKind::Pressure] {
+        let mut ownership = crate::map::ProvinceOwnership::default();
+        ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
+        let mut campaign = Campaign::default();
+        campaign.start(&ownership, 2);
+        let asia = campaign.economy.provinces.iter().position(|p| p.name == "Asia").unwrap();
+        let lycia = campaign.economy.provinces.iter().position(|p| p.name == "Lycia").unwrap();
+        campaign.politics[asia] = ProvincePolitics::owned(2, 0);
+        campaign.politics[lycia] = ProvincePolitics::independent(2);
+        campaign.reconcile_provinces();
+        for unit_type in UnitType::ALL {
+            for _ in 0..3 {
+                campaign.military.seed_unit(asia, ForceOwner::Player(0), unit_type).unwrap();
+            }
+        }
+        let ctx = egui::Context::default();
+        open_army_panel(&ctx, asia, 0, None);
+        let army = selected_army(&ctx).unwrap();
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(MENU_ID),
+                ProvinceOrders {
+                    army,
+                    destination: lycia,
+                    position: egui::pos2(600., 100.),
+                    units: campaign.military.provinces[asia].forces[&ForceOwner::Player(0)]
+                        .iter()
+                        .map(|u| u.id)
+                        .collect(),
+                },
+            )
+        });
+        let access = campaign.access_snapshot();
+        let render_menu = |time, events| {
+            let mut action = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600., 900.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |_| {
+                    action = draw_orders_menu(
+                        &ctx,
+                        &campaign.military,
+                        &campaign.economy,
+                        &campaign.graph,
+                        0,
+                        |owner, id| match owner {
+                            ForceOwner::Player(player) => access[player][id],
+                            _ => MilitaryAccess::Blocked,
+                        },
+                        |_| true,
+                        "",
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            (output, action)
+        };
+        render_menu(0., vec![]);
+        let output = render_menu(0.05, vec![]).0;
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(t) if t.galley.job.text == "Unavailable")), "Adjacent Asia → Lycia orders must be available");
+        let button = label(
+            &output,
+            if kind == ArmyOrderKind::Attack {
+                "Attack"
+            } else {
+                "Pressure"
+            },
+        );
+        let events = |pressed| {
+            vec![
+                egui::Event::PointerMoved(button),
+                egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        render_menu(0.1, events(true));
+        let (_, action) = render_menu(0.2, events(false));
+        let (origin, action) =
+            action.expect("Clicking a neighboring province order must issue a march");
+        assert_eq!(origin, asia);
+        let (destination, units, route, plan) = match action {
+            MilitaryUiAction::Attack {
+                destination,
+                units,
+                route,
+                plan,
+            } if kind == ArmyOrderKind::Attack => (destination, units, route, plan),
+            MilitaryUiAction::Pressure {
+                destination,
+                units,
+                route,
+                plan,
+            } if kind == ArmyOrderKind::Pressure => (destination, units, route, plan),
+            _ => panic!("Wrong order kind"),
+        };
+        assert_eq!(route, vec![lycia]);
+        assert_eq!(units.len(), 33);
+        campaign.order_army(origin, 0, destination, &units, &route, plan, kind).unwrap();
+        let months = campaign.military.movements[0].required_progress.ceil() as usize;
+        let access = campaign.access_snapshot();
+        for _ in 0..months {
+            campaign.military.advance_movement(&campaign.graph, |owner, id| match owner {
+                ForceOwner::Player(player) => access[player][id],
+                _ => MilitaryAccess::Blocked,
+            });
+        }
+        assert!(campaign.military.movements.is_empty());
+        assert_eq!(campaign.military.provinces[lycia].forces[&ForceOwner::Player(0)].len(), 33);
+    }
+}
+
+#[test]
 fn an_owned_occupied_province_offers_an_attack_to_liberate_it() {
     let (mut world, mut economy, graph) = fixture();
     world.seed_unit(1, ForceOwner::Player(1), UnitType::HeavyInfantry).unwrap();

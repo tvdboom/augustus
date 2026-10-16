@@ -63,7 +63,10 @@ fn province_acquisition_waits_for_yes_and_revalidates_the_target() {
             },
             ConfirmationAction::Integrate => {
                 assert_eq!(campaign.economy.provinces[0].owner, Some(0));
-                assert_eq!(campaign.economy.provinces[0].temporary_happiness, [30.0; 4]);
+                assert_eq!(
+                    campaign.economy.provinces[0].temporary_happiness,
+                    [30.0, 30.0, 30.0, 0.0]
+                );
             },
             _ => unreachable!(),
         }

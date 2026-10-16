@@ -99,6 +99,49 @@ fn fixture(count: usize) -> Snapshot {
 }
 
 #[test]
+fn slower_rank_manpower_recovery_defaults_in_older_saves_and_survives_online_replay() {
+    use crate::game::military::{ForceOwner, MilitaryRank, UnitType};
+    for count in [1, 2] {
+        let mut state = fixture(count);
+        let owner = ForceOwner::Player(0);
+        let province =
+            state.campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
+        let military = &mut state.campaign.military;
+        military.seed_unit(province, owner, UnitType::HeavyInfantry).unwrap();
+        military.ranks.insert(owner, MilitaryRank::Imperator);
+        let unit = &mut military.provinces[province].forces.get_mut(&owner).unwrap()[0];
+        unit.current_manpower = 5.;
+        unit.morale = 50.;
+        let mut legacy = serde_json::to_value(state).unwrap();
+        legacy["campaign"]["military"]["config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rank_manpower_recovery");
+        let mut original: Snapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(original.campaign.military.config.rank_manpower_recovery, [0.3, 0.6, 1.2, 1.5]);
+        let before = serde_json::to_value(&original).unwrap();
+
+        original.campaign.military.apply_supply(owner, 1.);
+        let unit = &original.campaign.military.provinces[province].forces[&owner][0];
+        assert_eq!(unit.people(), 515);
+        assert_eq!(unit.morale, 55.);
+
+        let after = serde_json::to_value(&original).unwrap();
+        let changes = patch::changes(&before, &after);
+        assert!(!changes.is_empty());
+        let replay = patch::apply(&before, &changes, true).unwrap();
+        assert_eq!(replay, after);
+        let mut restored: Snapshot = serde_json::from_value(replay).unwrap();
+        original.campaign.advance_month();
+        restored.campaign.advance_month();
+        assert_eq!(
+            serde_json::to_value(original).unwrap(),
+            serde_json::to_value(restored).unwrap()
+        );
+    }
+}
+
+#[test]
 fn vassal_policies_default_in_older_saves_and_survive_online_replay() {
     use crate::game::politics::diplomacy::{PoliticalState, Tribute, VassalAutonomy};
     for count in [1, 2] {
@@ -741,6 +784,128 @@ fn guests_enter_newly_started_games_without_a_second_resume_lobby() {
         world.resource::<NextState<AppState>>(),
         NextState::Pending(AppState::Loading)
     ));
+}
+
+#[test]
+fn starting_guests_install_the_first_snapshot_without_another_http_request() {
+    let mut world = reconnect_world();
+    let mut record: GameRecord = serde_json::from_value(reconnect_record()).unwrap();
+    record.status = "lobby".into();
+    record.state = None;
+    record.revision = 0;
+    // A departed lobby guest can leave a seat gap; starting compacts the seats.
+    record.player = 2;
+    record.members[1].player = 2;
+    let mut client = OnlineClient::default();
+    enter(&mut world, &mut client, record).unwrap();
+    world.insert_resource(client);
+    complete_response(
+        &mut world,
+        Operation::Sync,
+        json!({"revision":1,"status":"active","resume_generation":7,
+            "record":reconnect_record()}),
+    );
+    let client = world.resource::<OnlineClient>();
+    assert_eq!(client.record.as_ref().unwrap().player, 1);
+    assert_eq!(world.resource::<LocalPractice>().active_player, 1);
+    assert!(client.base.is_some());
+    assert!(!client.busy(), "The initial poll must not queue a second snapshot download");
+    assert!(!client.reconnecting());
+    assert!(matches!(
+        world.resource::<NextState<AppState>>(),
+        NextState::Pending(AppState::Loading)
+    ));
+}
+
+#[test]
+fn start_acknowledgements_reuse_sent_state_but_retries_install_authoritative_state() {
+    for retry in [false, true] {
+        let mut world = reconnect_world();
+        let mut response = reconnect_record();
+        response["player"] = json!(0);
+        let sent = response["state"].clone();
+        if retry {
+            response["state"]["campaign"]["economy"]["players"][1]["coin"] = json!(123.);
+            response["revision"] = json!(2);
+        } else {
+            response.as_object_mut().unwrap().remove("state");
+        }
+        let expected = if retry {
+            response["state"].clone()
+        } else {
+            sent.clone()
+        };
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Response {
+                session: None,
+                result: Ok(response),
+            })
+            .unwrap();
+        world.insert_resource(OnlineClient {
+            pending: Some(Pending {
+                kind: Operation::Start,
+                payload: json!({"p_state":sent,"p_known_state":true}),
+                receiver: Mutex::new(receiver),
+                sent: None,
+            }),
+            ..Default::default()
+        });
+        update(&mut world);
+        assert_eq!(world.resource::<OnlineClient>().base.as_ref(), Some(&expected));
+        assert!(!world.resource::<OnlineClient>().busy());
+    }
+}
+
+#[test]
+fn saves_share_presence_and_leave_acknowledgements_without_followup_requests() {
+    for leave in [false, true] {
+        let mut world = single_player_world();
+        world.resource_mut::<campaign::Campaign>().economy.players[0].coin -= 1.;
+        let sent = snapshot(&world).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let value = if leave {
+            json!({"revision":2,"left":true})
+        } else {
+            json!({"revision":2,"sync":{"revision":2,"status":"active","resume_generation":7}})
+        };
+        sender
+            .send(Response {
+                session: None,
+                result: Ok(value),
+            })
+            .unwrap();
+        {
+            let mut client = world.resource_mut::<OnlineClient>();
+            client.since_sync = 6.;
+            client.leave_requested = leave;
+            client.save_requested = true;
+            client.pending = Some(Pending {
+                kind: Operation::Save,
+                payload: json!({"p_leave":leave}),
+                receiver: Mutex::new(receiver),
+                sent: Some(sent.clone()),
+            });
+        }
+        // Solo progress made during the HTTP request must survive its receipt.
+        world.resource_mut::<campaign::Campaign>().economy.players[0].coin -= 2.;
+        let current = snapshot(&world).unwrap();
+        update(&mut world);
+        let client = world.resource::<OnlineClient>();
+        assert!(!client.busy(), "Neither acknowledgement requires a follow-up RPC");
+        assert_eq!(snapshot(&world).unwrap(), current);
+        if leave {
+            assert!(client.record.is_none());
+            assert!(matches!(
+                world.resource::<NextState<AppState>>(),
+                NextState::Pending(AppState::MainMenu)
+            ));
+        } else {
+            assert_eq!(client.since_sync, 0.);
+            assert_eq!(client.base.as_ref(), Some(&sent));
+            assert_eq!(client.record.as_ref().unwrap().roster_token, "roster");
+        }
+    }
 }
 
 #[test]

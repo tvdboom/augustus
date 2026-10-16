@@ -192,7 +192,7 @@ fn merging_packs_same_type_and_weights_morale_by_people() {
 }
 
 #[test]
-fn highest_rank_recovers_five_percent_manpower_and_five_morale() {
+fn highest_rank_slowly_replenishes_manpower_while_recovering_five_morale() {
     let mut world = MilitaryWorld::new(1);
     let owner = ForceOwner::Player(0);
     world.seed_unit(0, owner, UnitType::WarElephants).unwrap();
@@ -202,10 +202,57 @@ fn highest_rank_recovers_five_percent_manpower_and_five_morale() {
     unit.morale = 50.;
     world.apply_supply(owner, 1.);
     let unit = &world.provinces[0].forces[&owner][0];
-    assert_eq!(unit.people(), 250);
+    assert_eq!(unit.people(), 215);
     assert_eq!(unit.morale, 55.);
-    assert_eq!(unit.food_demand(&world.config), 1.5);
-    assert_eq!(unit.coin_demand(&world.config), 1.25);
+    assert!((unit.food_demand(&world.config) - 1.29).abs() < 1e-10);
+    assert!((unit.coin_demand(&world.config) - 1.075).abs() < 1e-10);
+}
+
+#[test]
+fn every_rank_improves_morale_and_slow_manpower_replenishment() {
+    for (rank, soldiers, morale) in [
+        (MilitaryRank::Centurion, 3, 1.),
+        (MilitaryRank::MilitaryTribune, 6, 2.),
+        (MilitaryRank::Legate, 12, 3.5),
+        (MilitaryRank::Imperator, 15, 5.),
+    ] {
+        let mut world = MilitaryWorld::new(1);
+        let owner = ForceOwner::Player(0);
+        world.ranks.insert(owner, rank);
+        world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+        let unit = &mut world.provinces[0].forces.get_mut(&owner).unwrap()[0];
+        unit.current_manpower = 5.;
+        unit.morale = 50.;
+
+        world.apply_supply(owner, 1.);
+
+        let unit = &world.provinces[0].forces[&owner][0];
+        assert_eq!(unit.people(), 500 + soldiers, "{} manpower", rank.name());
+        assert_eq!(unit.morale, 50. + morale, "{} morale", rank.name());
+    }
+}
+
+#[test]
+fn imperator_replaces_half_a_cohort_in_thirty_four_supplied_months() {
+    let mut world = MilitaryWorld::new(1);
+    let owner = ForceOwner::Player(0);
+    world.ranks.insert(owner, MilitaryRank::Imperator);
+    world.seed_unit(0, owner, UnitType::HeavyInfantry).unwrap();
+    let unit = &mut world.provinces[0].forces.get_mut(&owner).unwrap()[0];
+    unit.current_manpower = 5.;
+    unit.morale = 50.;
+    for _ in 0..10 {
+        world.apply_supply(owner, 1.);
+    }
+    let unit = &world.provinces[0].forces[&owner][0];
+    assert_eq!(unit.morale, 100.);
+    assert_eq!(unit.people(), 650);
+    for _ in 0..23 {
+        world.apply_supply(owner, 1.);
+    }
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 995);
+    world.apply_supply(owner, 1.);
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 1_000);
 }
 
 #[test]
@@ -733,16 +780,21 @@ fn supply_restores_manpower_by_rank_and_shortages_reduce_morale() {
     world.provinces[0].forces.get_mut(&owner).unwrap()[0].current_manpower = 4.;
     world.apply_supply(owner, 0.);
     assert_eq!(world.provinces[0].forces[&owner][0].morale, 75.);
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 400);
     world.apply_supply(owner, 1.);
-    assert_eq!(world.provinces[0].forces[&owner][0].people(), 410);
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 403);
     assert_eq!(world.provinces[0].forces[&owner][0].morale, 76.);
     for _ in 0..100 {
         world.apply_supply(owner, 1.);
     }
     let troop = &world.provinces[0].forces[&owner][0];
-    assert_eq!(troop.current_manpower, 10.);
+    assert_eq!(troop.people(), 703, "manpower must still be depleted after morale recovers");
     assert_eq!(troop.morale, 100.);
     assert_eq!(troop.training, 100.);
+    for _ in 0..100 {
+        world.apply_supply(owner, 1.);
+    }
+    assert_eq!(world.provinces[0].forces[&owner][0].people(), 1_000);
     assert!((world.food_demand(owner) - 2.5).abs() < 1e-10);
 }
 
@@ -761,7 +813,7 @@ fn every_initial_npc_roster_has_three_times_its_previous_soldiers() {
         ("Numidia", 27),
         ("Mauretania Caesariensis", 27),
         ("Mauretania Tingitana", 27),
-        ("Armenia Mesopotamia", 18),
+        ("Armenia", 18),
         ("Dacia", 18),
         ("Creta", 18),
         ("Latium", 18),
@@ -1320,6 +1372,74 @@ fn seeded_battles_repeat_and_respect_deadline_and_retreat_lock() {
     assert_eq!(battle.result, replay.result);
     assert_eq!(battle.attackers.units, replay.attackers.units);
     assert_eq!(battle.defenders.units, replay.defenders.units);
+}
+
+#[test]
+fn replay_frames_preserve_actual_round_conditions_and_reinforcement_arrivals() {
+    let mut world = MilitaryWorld::new(3);
+    let own = ForceOwner::Player(0);
+    let enemy = ForceOwner::Local(1);
+    for _ in 0..5 {
+        world.seed_unit(1, own, UnitType::HeavyInfantry).unwrap();
+        world.seed_unit(1, enemy, UnitType::HeavyInfantry).unwrap();
+    }
+    world.start_battle(1, &[own], &[enemy], None, Some(0), MilitaryTerrain::Plains, 0, 91).unwrap();
+    let initial = world.battles[0].attackers.units.clone();
+    world.battles[0].advance_round(&world.config);
+    let first = world.battles[0].attackers.clone();
+    let reinforcement = world.seed_unit(1, own, UnitType::Archers).unwrap();
+    world.join_battle(1, own, true).unwrap();
+    world.battles[0].advance_round(&world.config);
+    let second = world.battles[0].attackers.clone();
+    world.battles[0].result = Some(BattleResult::AttackerVictory);
+    let outcome = world.battles.remove(0).into_outcome(&world.config).unwrap();
+    let start = outcome.replay_start.as_ref().unwrap().sides[0].restore(&outcome.attackers);
+    assert_eq!(start.units, initial);
+    for (index, expected) in [(0, first), (1, second)] {
+        let frame = outcome.round_history[index].replay.as_ref().unwrap().sides[0]
+            .restore(&outcome.attackers);
+        assert_eq!(frame.units, expected.units);
+        assert_eq!(frame.formation, expected.formation);
+        assert_eq!(frame.routed, expected.routed);
+        assert_eq!(frame.initial_manpower, expected.initial_manpower);
+        assert_eq!(frame.units.iter().any(|unit| unit.id == reinforcement), index == 1);
+    }
+    let mut saved = serde_json::to_value(&outcome).unwrap();
+    let restored: BattleOutcome = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), saved);
+    saved.as_object_mut().unwrap().remove("replay_start");
+    for round in saved["round_history"].as_array_mut().unwrap() {
+        round.as_object_mut().unwrap().remove("replay");
+    }
+    let legacy: BattleOutcome = serde_json::from_value(saved).unwrap();
+    assert!(legacy.replay_start.is_none());
+    assert!(legacy.round_history.iter().all(|round| round.replay.is_none()));
+}
+
+#[test]
+fn completed_battle_history_survives_more_than_thirty_two_battles_and_save_restore() {
+    let mut world = MilitaryWorld::new(3);
+    let own = ForceOwner::Player(0);
+    let enemy = ForceOwner::Local(1);
+    let mut ids = Vec::new();
+    for seed in 0..40 {
+        world.provinces[1].forces.clear();
+        world.seed_unit(1, own, UnitType::HeavyInfantry).unwrap();
+        world.seed_unit(1, enemy, UnitType::LightInfantry).unwrap();
+        let id = world
+            .start_battle(1, &[own], &[enemy], None, Some(0), MilitaryTerrain::Plains, 0, seed)
+            .unwrap();
+        ids.push(id);
+        world.battles[0].advance_round(&world.config);
+        world.battles[0].result = Some(BattleResult::AttackerVictory);
+        world.advance_battle_rounds(&graph(), |_, _| MilitaryAccess::Peaceful);
+        assert!(world.battles.is_empty());
+    }
+    assert_eq!(world.history.iter().map(|battle| battle.id).collect::<Vec<_>>(), ids);
+    let saved = serde_json::to_value(&world).unwrap();
+    let restored: MilitaryWorld = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), saved);
+    assert_eq!(restored.history[0].round_history.len(), 1);
 }
 
 #[test]

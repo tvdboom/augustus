@@ -8,6 +8,7 @@ mod combat;
 mod config;
 mod formation;
 mod movement;
+mod replay;
 mod world;
 
 #[cfg(test)]
@@ -18,6 +19,7 @@ pub use combat::*;
 pub use config::*;
 pub use formation::*;
 pub use movement::*;
+pub use replay::*;
 pub use world::*;
 
 use std::collections::BTreeMap;
@@ -150,7 +152,7 @@ pub enum RecruitmentTag {
 }
 
 /// Shared terrain order for combat and travel configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(usize)]
 pub enum MilitaryTerrain {
     /// Open cultivated land.

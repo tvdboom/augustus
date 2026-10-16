@@ -98,7 +98,7 @@ pub struct MilitaryWorld {
     /// Completed battles won by this owner's participating forces.
     #[serde(with = "crate::multiplayer::patch::pairs")]
     pub victories: BTreeMap<ForceOwner, u32>,
-    /// Latest completed battle records for inspection.
+    /// All completed battle records, in completion order, for historical inspection.
     pub history: Vec<BattleOutcome>,
     next_unit: u64,
     next_order: u64,
@@ -562,7 +562,9 @@ impl MilitaryWorld {
         wage_morale: f64,
     ) {
         let config = &self.config;
-        let recovery = config.rank_recovery[self.rank(owner) as usize];
+        let rank = self.rank(owner) as usize;
+        let morale_recovery = config.rank_recovery[rank];
+        let manpower_recovery = config.rank_manpower_recovery[rank];
         let update = |unit: &mut Unit, in_battle: bool, province: Option<ProvinceId>| {
             if unit.owner != owner {
                 return;
@@ -579,11 +581,11 @@ impl MilitaryWorld {
             if supply >= config.training_supply_threshold && !in_battle {
                 let target = (config.base_morale + wage_morale).clamp(0., 100.);
                 if unit.morale < target {
-                    unit.morale = (unit.morale + recovery).min(target);
+                    unit.morale = (unit.morale + morale_recovery).min(target);
                 } else {
                     unit.morale = (unit.morale - 1.).max(target);
                 }
-                let restored = (unit.max_people() as f64 * recovery / 100.).round() as u64;
+                let restored = (unit.max_people() as f64 * manpower_recovery / 100.).round() as u64;
                 unit.current_manpower = (unit.people() + restored).min(unit.max_people()) as f64
                     / PEOPLE_PER_POPULATION;
             }
@@ -1168,9 +1170,6 @@ impl MilitaryWorld {
                 battle: outcome.id,
             });
             self.history.push(outcome);
-            if self.history.len() > 32 {
-                self.history.remove(0);
-            }
         }
         self.battles = active;
         events
@@ -1266,7 +1265,7 @@ pub fn initial_defenders(name: &str) -> Vec<UnitType> {
         "Arabia" | "Numidia" | "Mauretania Caesariensis" | "Mauretania Tingitana" => {
             vec![LightInfantry, Archers, WarCamels]
         },
-        "Armenia Mesopotamia" | "Dacia" => vec![LightInfantry, HorseArchers],
+        "Armenia" | "Dacia" => vec![LightInfantry, HorseArchers],
         _ => vec![LightInfantry, Archers],
     };
     roster.repeat(9)
@@ -1276,7 +1275,7 @@ pub fn initial_defenders(name: &str) -> Vec<UnitType> {
 pub fn recruitment_tags(name: &str) -> Vec<RecruitmentTag> {
     use RecruitmentTag::*;
     match name {
-        "Armenia Mesopotamia" | "Dacia" | "Moesia Inferior" => vec![HorseArchers],
+        "Armenia" | "Dacia" | "Moesia Inferior" => vec![HorseArchers],
         "Britannia" | "Belgica" | "Lugdunensis" => vec![Chariots],
         "Numidia" | "Cyrenaica" => vec![Camels, Elephants],
         "Arabia" | "Aegyptus" | "Mauretania Caesariensis" | "Mauretania Tingitana" => {

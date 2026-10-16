@@ -278,8 +278,9 @@ fn signed_contribution(value: f64, decimals: usize) -> (String, egui::Color32) {
     }
 }
 
-fn rounded_breakdown_total(entries: &[(&str, f64)]) -> f64 {
-    entries.iter().map(|(_, amount)| (amount * 10.0).round() / 10.0).sum()
+fn rounded_breakdown_total(entries: &[(&str, f64)], decimals: usize) -> f64 {
+    let factor = 10_f64.powi(decimals as i32);
+    entries.iter().map(|(_, amount)| (amount * factor).round() / factor).sum()
 }
 
 #[cfg(test)]
@@ -287,10 +288,10 @@ fn rounded_breakdown_total(entries: &[(&str, f64)]) -> f64 {
 fn population_growth_total_matches_the_displayed_contributions() {
     let all_zero = [("Births", 0.0002), ("Natural deaths", -0.0004)];
     assert!(all_zero.iter().all(|(_, amount)| signed_contribution(*amount, 1).0 == "0"));
-    assert_eq!(rounded_breakdown_total(&all_zero), 0.0);
+    assert_eq!(rounded_breakdown_total(&all_zero, 1), 0.0);
 
     let mixed = [("Births", 0.105), ("Natural deaths", -0.06), ("Migration", -0.006)];
-    assert_eq!(rounded_breakdown_total(&mixed), 0.0);
+    assert_eq!(rounded_breakdown_total(&mixed, 1), 0.0);
     assert_eq!(signed_contribution(10.806, 1).0, "+10.8");
     assert_eq!(signed_contribution(-5.403, 1).0, "-5.4");
     assert_eq!(signed_contribution(-0.006, 1), ("0".into(), egui::Color32::BLACK));
@@ -395,7 +396,7 @@ fn happiness_modifier_entries(
     }
     entries.push(("Accumulated overcrowding", -province.overcrowding_unhappiness));
     entries.push(("Accumulated food shortage", -province.shortage_unhappiness));
-    entries.retain(|(_, amount)| (amount * 10.0).round() != 0.0);
+    entries.retain(|(_, amount)| amount.round() != 0.0);
     entries
 }
 
@@ -433,7 +434,7 @@ fn happiness_tooltip(
         ("Accumulated overcrowding", province.overcrowding_unhappiness),
         ("Accumulated food shortage", province.shortage_unhappiness),
     ] {
-        let (value, color) = signed_contribution(-loss, 1);
+        let (value, color) = signed_contribution(-loss, 0);
         tooltip_numeric_bullet(ui, label, &value, color, 0.0);
     }
 }
@@ -543,10 +544,6 @@ pub(in crate::app) fn overview_for_player(
             ] {
                 let (value, color) = signed_contribution(amount, decimals);
                 tooltip_numeric_bullet(ui, label, &value, color, 0.0);
-            }
-            if p.practice_capacity_bonus > 0.0 {
-                let (value, color) = signed_contribution(p.practice_capacity_bonus, 0);
-                tooltip_numeric_bullet(ui, "Practice boost", &value, color, 0.0);
             }
         });
     if show_food {
@@ -667,7 +664,7 @@ pub(in crate::app) fn overview_for_player(
                 if class == 3 && month.slave_revolt_loss > 0.0 {
                     entries.push(("Slave revolt", -month.slave_revolt_loss));
                 }
-                let change = rounded_breakdown_total(&entries);
+                let change = rounded_breakdown_total(&entries, 1);
                 let displayed_change = change.floor();
                 let change_color = if displayed_change == 0.0 {
                     egui::Color32::BLACK
@@ -687,8 +684,8 @@ pub(in crate::app) fn overview_for_player(
                 ledger_value(ui, cells[2], "—", "No month has resolved yet.", MUTED, scale);
             }
             let entries = happiness_modifier_entries(p, class, &world.config);
-            let modifier = rounded_breakdown_total(&entries);
-            let (modifier_value, modifier_color) = signed_contribution(modifier, 1);
+            let modifier = rounded_breakdown_total(&entries, 0);
+            let (modifier_value, modifier_color) = signed_contribution(modifier, 0);
             ledger_tooltip_value(
                 ui,
                 cells[3],
@@ -705,7 +702,7 @@ pub(in crate::app) fn overview_for_player(
                     );
                 }
                 for &(label, amount) in &entries {
-                    let (value, color) = signed_contribution(amount, 1);
+                    let (value, color) = signed_contribution(amount, 0);
                     tooltip_numeric_bullet(ui, label, &value, color, 0.0);
                 }
             });

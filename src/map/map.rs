@@ -22,6 +22,10 @@ use crate::app::{
 #[path = "military_visuals.rs"]
 mod military_visuals;
 
+#[path = "borders.rs"]
+mod borders;
+pub(crate) use borders::LAND_BORDER_REPAIRS;
+
 /// Clickable troop artwork retains its actual owner and marching order identity.
 #[derive(Clone, Copy)]
 pub(crate) struct ArmyHit {
@@ -566,18 +570,6 @@ impl ProvinceOwnership {
 
     pub(crate) fn total_population_for(&self, player: usize) -> f64 {
         self.population_for(player).into_iter().sum()
-    }
-
-    pub(crate) fn multiply_owned_population(&mut self, player: usize, factor: f64) {
-        for (index, owner) in self.owners.iter().enumerate() {
-            if *owner == Some(player) {
-                let population = &mut self.populations[index];
-                population.nobles *= factor;
-                population.citizens *= factor;
-                population.plebeians *= factor;
-                population.slaves *= factor;
-            }
-        }
     }
 
     pub(crate) fn population_sources(&self, player: usize, class: usize) -> Vec<(&str, f64)> {
@@ -1262,6 +1254,7 @@ fn atlas() -> &'static MapAtlas {
     ATLAS.get_or_init(|| {
         let mut atlas: MapAtlas = serde_json::from_str(include_str!("../../assets/map/atlas.json"))
             .expect("generated map atlas must be valid");
+        borders::align_source_borders(&mut atlas.provinces);
         for part in &mut atlas.land {
             part.cache_bounds();
         }

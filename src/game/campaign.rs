@@ -1117,8 +1117,35 @@ impl Campaign {
         }
     }
 
+    /// Repair only the known missing mainland links in older campaign snapshots.
+    fn restore_land_borders(&mut self) {
+        for [a, b] in crate::map::LAND_BORDER_REPAIRS {
+            let Some(a) = self.economy.provinces.iter().position(|p| p.name == a) else {
+                continue;
+            };
+            let Some(b) = self.economy.provinces.iter().position(|p| p.name == b) else {
+                continue;
+            };
+            for (from, to) in [(a, b), (b, a)] {
+                if let Some(province) = self.graph.get_mut(from) {
+                    if !province.neighbors.contains(&to) {
+                        province.neighbors.push(to);
+                        province.neighbors.sort_unstable();
+                    }
+                }
+                if let Some(neighbors) = self.economy.adjacency.get_mut(from) {
+                    if !neighbors.contains(&to) {
+                        neighbors.push(to);
+                        neighbors.sort_unstable();
+                    }
+                }
+            }
+        }
+    }
+
     /// Synchronize legal ownership before economic calculations and after political transitions.
     pub fn reconcile_provinces(&mut self) {
+        self.restore_land_borders();
         let previously_owned: Vec<_> = (0..self.actors.len())
             .map(|player| self.economy.provinces.iter().position(|p| p.owner == Some(player)))
             .collect();
@@ -1127,6 +1154,10 @@ impl Campaign {
         });
         let mut ownership_changed = false;
         for (id, politics) in self.politics.iter().enumerate() {
+            // Keep province names current when restoring older campaign snapshots.
+            if self.economy.provinces[id].name == "Armenia Mesopotamia" {
+                self.economy.provinces[id].name = "Armenia".into();
+            }
             let (owner, overlord) = match politics.state {
                 PoliticalState::Owned {
                     owner,

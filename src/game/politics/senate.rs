@@ -36,7 +36,7 @@ impl Bloc {
     /// Short explanation of the faction's actual structural preferences.
     pub fn preferences(self) -> &'static str {
         match self {
-            Self::Aristocrats => "Happy nobles, larger happy noble populations, higher political rank, Forums and wonders build confidence each month.",
+            Self::Aristocrats => "Happy nobles, larger noble populations, higher political rank, Forums and wonders build confidence each month.",
             Self::Merchants => "Positive net monthly coin income, fulfilled delivered trade and Markets build confidence. Larger incomes build confidence faster; shortages and wars weaken it.",
             Self::Provincials => "More vassals, good relations with other provinces and delivered trade with provinces without cities. High tribute and wars drive them away.",
             Self::Populares => "Happy citizens and plebeians, ample food reserves and supplied generous rations build confidence. Normal rations alone are neutral; shortages, taxes and harsh labor drive them away.",

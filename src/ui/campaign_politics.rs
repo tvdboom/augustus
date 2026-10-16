@@ -798,7 +798,7 @@ fn show_effects(ui: &mut egui::Ui, bloc: Bloc, scale: f32) {
         Bloc::Aristocrats => (
             &[
                 "Happy nobles",
-                "Larger happy noble population",
+                "Larger noble population",
                 "Higher political rank",
                 "Built forums",
                 "Completed wonders",

@@ -77,31 +77,18 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
         } else {
             assert_eq!(*forces, before_forces[id]);
         }
-        assert_eq!(
-            province.population,
-            population.map(|count| count
-                * if owner == Some(0) {
-                    10.0
-                } else {
-                    1.0
-                })
-        );
-        let added_population = province.total_population() - population.into_iter().sum::<f64>();
-        let expected_capacity = capacity + added_population * 100.0;
-        assert!(
-            (province.capacity(&campaign.economy.config) - expected_capacity).abs()
-                < expected_capacity.max(1.0) * 1e-12
-        );
-        if owner == Some(0) {
-            assert!(
-                province.capacity(&campaign.economy.config) > province.total_population() * 90.0
-            );
-        }
         let factor = if owner == Some(0) {
-            10.0
+            capacity / population.into_iter().sum::<f64>()
         } else {
             1.0
         };
+        for (actual, before) in province.population.into_iter().zip(population) {
+            assert!((actual - before * factor).abs() < actual.max(1.0) * 1e-12);
+        }
+        if owner == Some(0) {
+            assert_eq!(province.total_population(), capacity);
+        }
+        assert_eq!(province.capacity(&campaign.economy.config), capacity);
         for (actual, before) in
             province.production(&campaign.economy.config).1.into_iter().zip(output)
         {
@@ -114,7 +101,7 @@ fn practice_boost_updates_campaign_balances_and_every_owned_province() {
 }
 
 #[test]
-fn practice_capacity_boost_stacks_for_overcrowded_provinces_and_survives_months() {
+fn practice_boost_fills_population_to_normal_capacity_without_stacking() {
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED]);
     let mut campaign = campaign::Campaign::default();
@@ -122,23 +109,19 @@ fn practice_capacity_boost_stacks_for_overcrowded_provinces_and_survives_months(
     let mut resources = HudResources::default();
     resources.start_players(1, &ownership);
     let id = campaign.economy.provinces.iter().position(|p| p.owner == Some(0)).unwrap();
-    campaign.economy.provinces[id].population = [1_000_000.0; 4];
     let area = campaign.economy.provinces[id].capacity_area;
+    let capacity = campaign.economy.provinces[id].capacity(&campaign.economy.config);
 
-    for _ in 0..3 {
-        let province = &campaign.economy.provinces[id];
-        let population = province.total_population();
-        let capacity = province.capacity(&campaign.economy.config);
-        apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
-        let province = &campaign.economy.provinces[id];
-        let added_population = province.total_population() - population;
-        let expected_capacity = capacity + added_population * 100.0;
-        assert!(
-            (province.capacity(&campaign.economy.config) - expected_capacity).abs()
-                < expected_capacity * 1e-12
-        );
-        assert!(province.capacity(&campaign.economy.config) > province.total_population() * 90.0);
-        assert_eq!(province.capacity_area, area);
+    for population in [[1.0, 2.0, 4.0, 3.0], [1_000_000.0; 4], [0.0; 4], [1.0, 0.0, 0.0, 0.0]] {
+        campaign.economy.provinces[id].population = population;
+        for _ in 0..3 {
+            apply_practice_boost(0, &mut campaign, &mut resources, &mut ownership);
+            let province = &campaign.economy.provinces[id];
+            assert_eq!(province.total_population(), capacity);
+            assert!(province.population.iter().all(|count| count.is_finite() && *count >= 0.0));
+            assert_eq!(province.capacity(&campaign.economy.config), capacity);
+            assert_eq!(province.capacity_area, area);
+        }
     }
 
     let capacity = campaign.economy.provinces[id].capacity(&campaign.economy.config);
@@ -247,7 +230,7 @@ fn practice_boost_uses_configured_costs_and_clears_monthly_promotion_limit() {
 }
 
 #[test]
-fn practice_boost_updates_preview_balances_and_owned_population() {
+fn practice_boost_updates_preview_balances_without_a_campaign_population_limit() {
     let mut ownership = ProvinceOwnership::default();
     ownership.start_game(&[egui::Color32::RED, egui::Color32::BLUE]);
     let mut resources = HudResources::default();
@@ -262,7 +245,7 @@ fn practice_boost_updates_preview_balances_and_owned_population() {
         assert_eq!(resources.players[0][index].amount, previous.amount + 5_000.0);
     }
     assert_eq!(resources.players[0][4].amount, before[4].amount + 1_000.0);
-    assert_eq!(ownership.population_for(0), before_population.map(|count| count * 10.0));
+    assert_eq!(ownership.population_for(0), before_population);
     assert_eq!(ownership.population_for(1), other_population);
     assert_eq!(resources.players[0][5].amount, ownership.total_population_for(0));
 }

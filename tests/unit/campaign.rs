@@ -976,6 +976,44 @@ fn all_requested_sea_crossings_are_bidirectional_campaign_edges() {
 }
 
 #[test]
+fn saved_campaigns_restore_asias_missing_land_borders_without_changing_armies() {
+    let mut c = atlas_campaign();
+    let asia = c.economy.provinces.iter().position(|p| p.name == "Asia").unwrap();
+    let neighbors: Vec<_> = ["Bithynia", "Galatia", "Lycia"]
+        .iter()
+        .map(|name| c.economy.provinces.iter().position(|p| p.name == *name).unwrap())
+        .collect();
+    for &neighbor in &neighbors {
+        for (from, to) in [(asia, neighbor), (neighbor, asia)] {
+            c.graph[from].neighbors.retain(|&id| id != to);
+            c.economy.adjacency[from].retain(|&id| id != to);
+        }
+    }
+    let mut restored: Campaign = serde_json::from_value(serde_json::to_value(&c).unwrap()).unwrap();
+    let military = serde_json::to_value(&restored.military).unwrap();
+    let original_graph = restored.graph.clone();
+    restored.reconcile_provinces();
+    for neighbor in neighbors {
+        for (from, to) in [(asia, neighbor), (neighbor, asia)] {
+            assert!(restored.graph[from].neighbors.contains(&to));
+            assert!(restored.economy.adjacency[from].contains(&to));
+        }
+    }
+    assert_eq!(serde_json::to_value(&restored.military).unwrap(), military);
+    for (before, after) in original_graph.iter().zip(&restored.graph) {
+        assert_eq!(before.terrain, after.terrain);
+        assert_eq!(before.area, after.area);
+    }
+    let graph = serde_json::to_value(&restored.graph).unwrap();
+    restored.reconcile_provinces();
+    assert_eq!(
+        serde_json::to_value(&restored.graph).unwrap(),
+        graph,
+        "Restoring borders must be idempotent"
+    );
+}
+
+#[test]
 fn nile_uses_floodplain_capacity_without_changing_military_terrain() {
     let c = atlas_campaign();
     let id = c.economy.provinces.iter().position(|p| p.name == "Aegyptus").unwrap();

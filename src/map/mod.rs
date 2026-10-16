@@ -16,6 +16,7 @@ pub(crate) use governance::{EdictLevel, Governance};
 pub(crate) use marker_icon::{paint_marker_icon, MarkerIcon};
 pub(crate) use view::city_name_for_province;
 pub(crate) use view::take_army_click;
+pub(crate) use view::LAND_BORDER_REPAIRS;
 pub(crate) use view::{audible_battles, AudibleBattle};
 pub(crate) use view::{
     draw_map, military_unit_icon, movement_visual_progress, set_army_order_selection, MapView,

@@ -846,7 +846,7 @@ fn political_card(
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
                     if response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .inspection_hover_text(format!("{label} this province. Opens a confirmation before changing its status."))
+                        .inspection_hover_text(format!("{label} this province."))
                         .clicked()
                     {
                         *requested = Some(action);
@@ -1463,6 +1463,12 @@ pub(in crate::app) fn draw(
     }
     if let Some(province) = army_province {
         open_military_province(ctx, &mut view, &mut detail, &mut map_view, province, player);
+        close_click.0 = true;
+        play_click(&sound, &audio, &assets);
+    }
+    if let Some(battle) = campaign_military::take_battle_click(ctx) {
+        open_map_battle(ctx, &mut view, &mut detail, battle, player);
+        governance_open.0 = false;
         close_click.0 = true;
         play_click(&sound, &audio, &assets);
     }
@@ -3039,14 +3045,14 @@ mod layout_tests;
 #[path = "../../tests/unit/buildings_ui.rs"]
 mod buildings_ui;
 
-/// Apply integration's already-computed relation shift once while preserving other causes.
+/// Apply integration's relation shift only to free classes, preserving slave wellbeing.
 pub(super) fn integrate_province(
     campaign: &mut Campaign,
     province: usize,
     player: usize,
 ) -> Result<(), PoliticalError> {
     let shift = campaign.politics[province].take_ownership(player)?;
-    for happiness in &mut campaign.economy.provinces[province].temporary_happiness {
+    for happiness in &mut campaign.economy.provinces[province].temporary_happiness[..3] {
         *happiness += shift;
     }
     campaign.reconcile_provinces();
